@@ -183,7 +183,7 @@ async function collectCapacity(pool: any, slugs: string[]) {
  * for 6 hours. Bounding it to 7 days keeps a machine that was retired months
  * ago from alerting forever.
  */
-async function collectFleetHealth(pool: any): Promise<{ failures: Record<string, number>; active: number; stale: number }> {
+export async function collectFleetHealth(pool: any): Promise<{ failures: Record<string, number>; active: number; stale: number }> {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const failures: Record<string, number> = {};
@@ -205,18 +205,24 @@ async function collectFleetHealth(pool: any): Promise<{ failures: Record<string,
     //
     // last_beat is NULL for a device that has never sent one, and the COALESCE
     // puts it on the older, wider rule rather than alerting immediately.
+    // Every parameter here is REFERENCED. Postgres cannot infer a type for one
+    // that is not, so a spare in the array fails the whole statement with
+    // 42P18 "could not determine data type of parameter $N" — which this query
+    // did, on every scrape, for as long as the pod had been up. Fleet health
+    // was never recorded and the only sign was a warn line the catch below
+    // swallowed by design.
     const d = await pool.query(
       `SELECT
          count(*) FILTER (WHERE last_ts > $1) AS active,
          count(*) FILTER (
-           WHERE last_ts > $4
-             AND CASE WHEN last_beat IS NOT NULL THEN last_beat <= $5 ELSE last_ts <= $2 END
+           WHERE last_ts > $3
+             AND CASE WHEN last_beat IS NOT NULL THEN last_beat <= $4 ELSE last_ts <= $2 END
          ) AS stale
        FROM (SELECT device_id,
                     max(ts) AS last_ts,
                     max(ts) FILTER (WHERE kind = 'collector_heartbeat') AS last_beat
                FROM client_events WHERE device_id <> '' GROUP BY device_id) d`,
-      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day, now - 7 * day, now - 30 * 60 * 1000]);
+      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day, now - 30 * 60 * 1000]);
     active = Number(d.rows[0]?.active ?? 0);
     stale = Number(d.rows[0]?.stale ?? 0);
   } catch (e) {

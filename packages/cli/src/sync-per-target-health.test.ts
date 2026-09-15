@@ -113,7 +113,12 @@ describe('a walk reports each target separately', () => {
     // Exactly the two configured targets, no more and no fewer.
     expect(Object.keys(per).sort()).toEqual([server.url, deadUrl].sort());
 
-    expect(per[server.url]).toEqual({ ok: true });
+    expect(per[server.url].ok).toBe(true);
+    // What the working target actually took. The health file needs this to tell
+    // "delivered then failed" from "never delivered" — see
+    // sync-partial-success.test.ts.
+    expect(per[server.url].accepted).toBeGreaterThan(0);
+    expect(per[server.url].error).toBeUndefined();
 
     // THE ASSERTION THAT MATTERS: the dead target is not reported as healthy,
     // and the recorded reason names the target that failed. Which layer notices
@@ -123,6 +128,8 @@ describe('a walk reports each target separately', () => {
     expect(per[deadUrl].ok).toBe(false);
     expect(per[deadUrl].error).toBeTruthy();
     expect(per[deadUrl].error).toContain(deadUrl);
+    // And it took nothing, so its lastOkAt must not move.
+    expect(per[deadUrl].accepted ?? 0).toBe(0);
 
     // And the walk itself still succeeded, because one target did — which is
     // exactly the shape that used to hide the other one's failure.

@@ -39,6 +39,7 @@ import {
   claudeBackend, codexBackend, opencodeBackend, listAvailableBackends,
 } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
+import { applySyncOutcome } from '@chat-recall/engine/core/collector-health.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
 // The only "work" import: the HTTP collector that ships sessions to the
@@ -162,7 +163,7 @@ async function shipToServer(trigger: string): Promise<void> {
     // reported it as "Synced 0m ago" for days. An absent map means the walk did
     // not report per-target outcomes; mark nothing rather than guess.
     for (const [server, outcome] of Object.entries(result.perTarget ?? {})) {
-      noteSyncOutcome(server, outcome.ok, outcome.error);
+      noteSyncOutcome(server, outcome.ok, outcome.error, outcome.accepted ?? 0);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -683,16 +684,20 @@ setTimeout(() => { ticks.request('housekeeping', TICK_PRIORITY.housekeeping, sha
 setInterval(() => { ticks.request('housekeeping', TICK_PRIORITY.housekeeping, shadowPruneTick); }, SHADOW_PRUNE_MS).unref();
 
 /** The servers this machine syncs to, for health reporting. Best-effort. */
+/** The health record this module maintains, for tests. */
+export function _targetHealth(): Record<string, { lastOkAt: number | null; failures: number; lastError?: string }> {
+  return targetHealth;
+}
+
 function syncTargetUrls(): string[] {
   try { return loadAllCredentials().map((c) => c.serverUrl); } catch { return []; }
 }
 
-/** Record one target's sync outcome for the health file. */
-function noteSyncOutcome(server: string, ok: boolean, err?: string): void {
-  const t = targetHealth[server] ?? { lastOkAt: null, failures: 0 };
-  if (ok) { t.lastOkAt = Date.now(); t.failures = 0; delete t.lastError; }
-  else { t.failures += 1; t.lastError = (err ?? 'unknown error').slice(0, 160); }
-  targetHealth[server] = t;
+/** Record one target's sync outcome for the health file. The rule itself lives
+ *  in the engine (applySyncOutcome) so it can be tested without booting this
+ *  daemon's watchers and timers. */
+export function noteSyncOutcome(server: string, ok: boolean, err?: string, accepted = 0): void {
+  targetHealth[server] = applySyncOutcome(targetHealth[server], { ok, accepted, error: err });
   publishHealth();
 }
 
