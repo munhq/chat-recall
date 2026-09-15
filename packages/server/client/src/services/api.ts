@@ -425,37 +425,51 @@ export interface Decision {
   since: string | null;
   why: string | null;
   source_session: string | null;
-  scope: 'account' | 'project' | 'user';
+  /** Who decided it. Null when the author has no membership row (or none was set). */
+  by: string | null;
+  scope: 'account' | 'project' | 'workspace' | 'user';
+  /** The exact scope key behind `scope` — `ws:personal`, `example-app`, `*`. */
+  scope_key: string;
   inherited: boolean;
   override: boolean;
   advisory: boolean;
-  history: Array<{ value: string; from: string | null; to: string | null; current: boolean }>;
+  history: Array<{ value: string; from: string | null; to: string | null; current: boolean; by: string | null }>;
 }
 export interface DecisionsResponse {
   scope: string;
   project: string | null;
+  /** The folder group this answer resolved through, without the `ws:` prefix. */
+  workspace: string | null;
+  /** The scope keys the cascade walked, most specific first. */
+  chain: string[];
   decisions: Decision[];
   gaps: Array<{ area: string }>;
   candidates: Array<{ area: string | null; value: string; mentions: number; last_seen: string | null }>;
   areas: string[];
 }
-export async function getDecisions(opts: { project?: string; includeCandidates?: boolean } = {}): Promise<DecisionsResponse> {
+export async function getDecisions(opts: { project?: string; workspace?: string; includeCandidates?: boolean } = {}): Promise<DecisionsResponse> {
   const r = await fetchWithTimeout(`${API_BASE}/decisions${qs({
     project: opts.project,
+    workspace: opts.workspace,
     include_candidates: opts.includeCandidates ? '1' : '0',
   })}`);
-  return r.ok ? r.json() : { scope: 'account', project: null, decisions: [], gaps: [], candidates: [], areas: [] };
+  return r.ok
+    ? r.json()
+    : { scope: 'account', project: null, workspace: null, chain: [], decisions: [], gaps: [], candidates: [], areas: [] };
 }
 /** Confirm a guess into a decision, or discard it. Both retire the guess. */
 export async function resolveCandidate(body: {
   value: string; action: 'confirm' | 'discard'; area?: string; project?: string;
+  workspace?: string; scope?: 'project' | 'workspace' | 'account';
 }): Promise<boolean> {
   const r = await fetchWithTimeout(`${API_BASE}/decisions/candidates/resolve`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   return r.ok;
 }
-export async function recordDecision(body: { area: string; value: string; reason?: string; project?: string }): Promise<boolean> {
+export async function recordDecision(
+  body: { area: string; value: string; reason?: string; project?: string; workspace?: string; scope?: 'project' | 'workspace' | 'account' },
+): Promise<boolean> {
   const r = await fetchWithTimeout(`${API_BASE}/decisions`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });

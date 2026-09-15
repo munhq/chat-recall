@@ -8,10 +8,11 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { resumeCommandFor } from '../core/resume-command.js';
-import { resolveProjectId } from '../core/project-resolver.js';
+import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
+import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
 import {
-  canonArea, isKnownArea, decisionSubject, DECISION_AREAS,
+  canonArea, isKnownArea, decisionSubject, DECISION_AREAS, parseDecisionSubject,
 } from '../core/decision-areas.js';
 import { config } from 'dotenv';
 import {
@@ -565,6 +566,15 @@ const RecallSmartResumeSchema = z.object({
     .describe('Session to resume. Omit for the most recent one.'),
   project_filter: z.string().optional()
     .describe('When session_id is omitted, resume the latest session from this project (path or name substring).'),
+  // "Continue" rarely means one session. Work spans an evening across three of
+  // them, and the newest alone reports a fragment: the tail of a task whose
+  // decision was taken two sessions back. A bare call also takes the globally
+  // newest session, so when the last thing on the machine belonged to another
+  // project, the single-session answer was confidently about the wrong work
+  // with nothing on screen to show it. The trailing digests carry their own
+  // project, which makes that visible instead of silent.
+  depth: z.number().int().min(1).max(5).default(3)
+    .describe('How many recent sessions to cover: the newest in full, the rest as digests. Ignored when session_id is set.'),
 });
 
 // ── Tools added to close the UI↔MCP gap ─────────────────────────────
@@ -843,6 +853,68 @@ const RecallUserPromptsSchema = z.object({
     .describe('Tag each prompt with sentiment / corrective markers (interrupt, frustrated, correction, approval, …). Set false to revert to legacy text-only output.'),
 });
 
+/**
+ * What a `recall_decision_record` call is actually asking for.
+ *
+ * Two inputs make this more than a field copy. A subject like `*:api` or
+ * `example-app:auth` ALREADY names an area and a scope — that shape is what the tool
+ * writes itself, so a caller reading its own earlier output passes it straight
+ * back. Reading it beats recording a decision that supersedes nothing: eight
+ * rows reached the account register exactly that way, with no `area` and no
+ * `project`, and every project then inherited one repository's stack.
+ *
+ * Only a KNOWN area is read back out of a subject, so "chat-recall: use the new
+ * parser" stays the free text it is instead of becoming an area called
+ * `use-the-new-parser`.
+ */
+export function resolveRecordScope(params: {
+  subject: string;
+  area?: string;
+  project?: string;
+  workspace?: string;
+  scope?: 'project' | 'workspace' | 'account';
+  /** The folder group the caller is standing in. Null when it is in none. */
+  cwdWorkspace?: string | null;
+}): {
+  area: string | null;
+  project?: string;
+  workspace?: string;
+  scope?: 'project' | 'workspace' | 'account';
+} {
+  const fromSubject = parseDecisionSubject(params.subject);
+  const subjectArea = fromSubject && isKnownArea(canonArea(fromSubject.area) ?? '')
+    ? canonArea(fromSubject.area) : null;
+  const area = canonArea(params.area) ?? subjectArea;
+
+  // Only a subject that really named an area carries a scope; anything else is
+  // free text that happens to contain a colon.
+  const subjectScope = subjectArea ? fromSubject!.project : null;
+  const subjectProject = subjectScope && subjectScope !== '*' && !subjectScope.startsWith('ws:')
+    ? subjectScope : undefined;
+  const subjectWorkspace = subjectScope?.startsWith('ws:') ? subjectScope.slice(3) : undefined;
+
+  return {
+    area,
+    project: params.project ?? subjectProject,
+    workspace: params.workspace ?? subjectWorkspace ?? (params.cwdWorkspace || undefined),
+    // A subject that named `*` asked for the account and still gets it. The
+    // response says which scope it landed on either way.
+    scope: params.scope ?? (subjectScope === '*' ? 'account' : undefined),
+  };
+}
+
+/**
+ * Name the scope a recorded decision landed on, in the words the reader needs:
+ * who else now inherits it. "Account" alone does not say that, and a caller
+ * that meant one repository should see immediately that it bound every one.
+ */
+function describeWriteScope(subject: string): string {
+  const key = parseDecisionSubject(subject)?.project ?? '*';
+  if (key === '*') return 'account-wide — every project with no decision of its own inherits this';
+  if (key.startsWith('ws:')) return `the ${key.slice(3)} folder group — every repository in it inherits this`;
+  return `${key} only`;
+}
+
 const RecallDecisionRecordSchema = z.object({
   subject: z.string().describe('What the decision is about (e.g., "chat-recall", "auth strategy")'),
   decision: z.string().describe('The decision itself in plain words (e.g., "use Postgres full-text search as the default backend")'),
@@ -853,7 +925,11 @@ const RecallDecisionRecordSchema = z.object({
   area: z.string().optional()
     .describe(`The area this decides, so a later decision about the SAME area supersedes it. Use one of: ${DECISION_AREAS.join(', ')} — or any short slug for an area not listed. Without it the decision is recorded but nothing it contradicts is closed.`),
   project: z.string().optional()
-    .describe('Project this decision applies to. Omit for an account-wide decision that applies everywhere.'),
+    .describe('Project this decision applies to — one repository, e.g. "example-app". The narrowest scope, and the one to prefer when the decision came out of one codebase.'),
+  workspace: z.string().optional()
+    .describe('Folder group this decision applies to, e.g. "personal" for everything under code/personal. Use it for a decision that binds a group of repositories but not the whole account. Resolved from the current directory when omitted.'),
+  scope: z.enum(['project', 'workspace', 'account']).optional()
+    .describe('Which tier to record at. Omit and the narrowest scope you named is used: project, else workspace, else account. Pass "account" ONLY for something true of every project you own — an account decision is inherited by every project that has no opinion of its own.'),
   importance: z.number().min(1).max(5).optional().default(4)
     .describe('1–5; the classifier surfaces 4+ in wake-up context'),
   session_id: z.string().optional().describe('Session this decision was made in (for traceability)'),
@@ -863,6 +939,8 @@ const RecallDecisionRecordSchema = z.object({
 const RecallDecisionsSchema = z.object({
   area: z.string().optional().describe('Only this area'),
   project: z.string().optional().describe('Resolve for this project'),
+  workspace: z.string().optional()
+    .describe('Folder group to resolve through, e.g. "personal". Resolved from the current directory when omitted.'),
   include_candidates: z.boolean().optional().default(false),
 });
 
@@ -1551,25 +1629,32 @@ with recall_show (pass the plan id).`,
       },
       {
         name: 'recall_smart_resume',
-        description: `Get structured resume context for a session — by default, the most recent one.
+        description: `Get structured resume context for recent work — by default the last 3 sessions.
 
-Call it with NO arguments to resume the latest session. That is the common case:
-"continue", "pick up where we left off". Pass session_id only to resume a
-specific one, or project_filter to take the latest from one project.
+Call it with NO arguments to resume. That is the common case: "continue", "pick
+up where we left off". Pass session_id to resume one specific session, or
+project_filter to scope to one project.
 
-Returns:
+Returns, for the newest session:
 - What was done (completed work, decisions made)
 - What's pending (unfinished tasks, TODOs mentioned)
 - Files modified with change summary
 - Token/cost budget used
 - Resume command
 
+Then a digest of each earlier session: its project, outcome, summary, the
+decisions it took and the task lists it left open. Set depth to change how many.
+
+A bare call takes the globally newest sessions, which may belong to different
+projects — the output says so when they do. Pass project_filter to scope it.
+
 Use this instead of recall_context for a more actionable summary when resuming work.`,
         inputSchema: {
           type: 'object',
           properties: {
             session_id: { type: 'string', description: 'Session to resume. OMIT to resume the most recent session.' },
-            project_filter: { type: 'string', description: 'With session_id omitted, resume the latest session from this project.' },
+            project_filter: { type: 'string', description: 'With session_id omitted, resume the latest sessions from this project.' },
+            depth: { type: 'number', default: 3, minimum: 1, maximum: 5, description: 'How many recent sessions to cover: the newest in full, the rest as digests. Ignored when session_id is set.' },
           },
         },
       },
@@ -3442,13 +3527,19 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // No session id: take the newest one, which is what "continue" means.
         // Resolved through the same /recent endpoint recall_recent uses, so the
         // "latest" here and the top row there can never disagree.
+        // The trailing rows the digests are built from. Empty when the caller
+        // named a session: an explicit id asks about that session, not about
+        // what happened around it.
+        let priorRows: RecentRow[] = [];
+
         let sid = params.session_id;
         if (!sid) {
-          const qs = new URLSearchParams({ limit: '1' });
+          const qs = new URLSearchParams({ limit: String(params.depth) });
           if (params.project_filter) qs.set('project', params.project_filter);
-          const recent = await remoteGet<{ sessions: Array<{ sessionId: string }> }>(
+          const recent = await remoteGet<{ sessions: RecentRow[] }>(
             `/api/conversations/recent?${qs.toString()}`);
           sid = recent.sessions?.[0]?.sessionId;
+          priorRows = (recent.sessions ?? []).slice(1);
           if (!sid) {
             return { content: [{ type: 'text', text: params.project_filter
               ? `No sessions found for project \`${params.project_filter}\` — nothing to resume.`
@@ -3641,6 +3732,35 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         lines.push('');
 
         { const rc = resumeCommandFor(sid, meta.tool); if (rc) lines.push(`**Resume:** \`${rc}\``); }
+
+        // ── Sessions before this one ──────────────────────────────────
+        // One digest each: what it was, whether it landed, and the task lists
+        // it left open. The /recent row already carries the summary, project
+        // and tool, so a digest costs the outcome and related calls only, and
+        // the whole set runs in one round trip rather than one per session.
+        if (priorRows.length > 0) {
+          const digests = await Promise.all(priorRows.map(async row => {
+            const renc = encodeURIComponent(row.sessionId);
+            const [o, r] = await Promise.all([
+              remoteGetSoft<Outcome>(`/api/conversations/${renc}/outcome`),
+              remoteGetSoft<Related>(`/api/conversations/${renc}/related`),
+            ]);
+            return {
+              row,
+              outcome: o.data,
+              related: r.data,
+              resumeCmd: resumeCommandFor(row.sessionId, row.tool),
+            };
+          }));
+
+          lines.push('');
+          lines.push(`## Before that (${digests.length} earlier session${digests.length === 1 ? '' : 's'})`);
+          lines.push('');
+          for (const d of digests) lines.push(...formatDigest(d));
+
+          const note = crossProjectNote(projName, priorRows, !!params.project_filter);
+          if (note) lines.push(note);
+        }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
@@ -4680,36 +4800,51 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
         const confidence = Math.min(1, params.importance / 5);
 
-        // The subject a reversal competes on. With an area it is
-        // `<project>:<area>`, so recording a new auth decision closes the old
-        // auth one and leaves the database decision alone — the server already
-        // defaults supersede to on, it just never had a stable key to fire
-        // against. Without an area the caller's free-text subject is used
-        // unchanged, which is the old behaviour: recorded, supersedes nothing.
-        const area = canonArea(params.area);
-        const kgSubject = area ? decisionSubject(params.project, area) : params.subject;
-
-        // 1) Knowledge-graph triple — durable, queryable, time-validated.
-        // Server-backed via POST /api/kg/add (tenant-scoped on the server).
-        await remotePost<{ id: string }>('/api/kg/add', {
-          subject: kgSubject,
-          predicate: 'decided',
-          object: params.decision,
-          confidence,
-          source_session: params.session_id,
+        // The checkout is on THIS machine, so the folder group is resolved here.
+        // The server has no filesystem to answer it from.
+        const { area, project, workspace, scope } = resolveRecordScope({
+          ...params,
+          cwdWorkspace: resolveWorkspaceId(process.cwd())?.slice(3) ?? null,
         });
-        if (params.reason) {
-          // `because` is multi-valued by nature — a decision can have several
-          // reasons and a new one does not falsify the old. Opt out of the
-          // supersede the `decided` write above relies on.
+
+        // 1) The decision itself. With an area this goes through the register's
+        // own endpoint, which owns the cascade: one place decides which scope a
+        // write lands on, so the tool cannot invent a fifth answer. Without an
+        // area there is no scope to resolve and the free-text subject is written
+        // as a plain triple — recorded, superseding nothing, as before.
+        let kgSubject = params.subject;
+        if (area) {
+          const rec = await remotePost<{ subject: string }>('/api/decisions', {
+            area,
+            value: params.decision,
+            reason: params.reason,
+            project,
+            workspace,
+            scope,
+            session_id: params.session_id,
+          });
+          kgSubject = rec.subject;
+        } else {
           await remotePost<{ id: string }>('/api/kg/add', {
             subject: kgSubject,
-            predicate: 'because',
-            object: params.reason,
+            predicate: 'decided',
+            object: params.decision,
             confidence,
             source_session: params.session_id,
-            supersede: false,
           });
+          if (params.reason) {
+            // `because` is multi-valued by nature — a decision can have several
+            // reasons and a new one does not falsify the old. Opt out of the
+            // supersede the `decided` write above relies on.
+            await remotePost<{ id: string }>('/api/kg/add', {
+              subject: kgSubject,
+              predicate: 'because',
+              object: params.reason,
+              confidence,
+              source_session: params.session_id,
+              supersede: false,
+            });
+          }
         }
 
         // 2) Diary entry — readable narrative for the agent's own future reads.
@@ -4734,8 +4869,11 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
               area
                 ? `- Area: ${area}${isKnownArea(area) ? '' : ' (not a standard area — kept as a slug)'} · a later decision on this area supersedes this one`
                 : '- No area given, so nothing this contradicts was closed. Pass `area` to make reversals work.',
+              area
+                ? `- Scope: ${describeWriteScope(kgSubject)}`
+                : '',
               `- Diary entry: ${diary.id} (importance ${params.importance})`,
-            ].join('\n'),
+            ].filter(Boolean).join('\n'),
           }],
         };
       }
@@ -4746,16 +4884,20 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         requireRemote();
         type Row = {
           area: string; value: string; since: string | null; why: string | null;
-          source_session: string | null; scope: string;
+          source_session: string | null; by: string | null;
+          scope: string; scope_key: string;
           inherited: boolean; override: boolean; advisory: boolean;
-          history: Array<{ value: string; from: string | null; to: string | null; current: boolean }>;
+          history: Array<{ value: string; from: string | null; to: string | null; current: boolean; by: string | null }>;
         };
         const r = await remoteGetQS<{
-          scope: string; project: string | null;
+          scope: string; project: string | null; workspace: string | null;
           decisions: Row[]; gaps: Array<{ area: string }>;
           candidates: Array<{ value: string; mentions: number; last_seen: string | null }>;
         }>('/api/decisions', {
           project: p.project,
+          // Resolved HERE: the folder group comes from the checkout, and the
+          // checkout is on this machine.
+          workspace: p.workspace ?? resolveWorkspaceId(process.cwd())?.slice(3),
           include_candidates: p.include_candidates ? '1' : '0',
         });
 
@@ -4765,6 +4907,9 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
         const lines: string[] = [];
         lines.push(r.project ? `Decisions for ${r.project}` : 'Decisions — account-wide');
+        if (r.project && r.workspace) {
+          lines.push(`Resolved through the ${r.workspace.replace(/^ws:/, '')} folder group, then the account.`);
+        }
 
         if (rows.length === 0) {
           lines.push('', p.area
@@ -4773,15 +4918,21 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         } else {
           lines.push('');
           for (const d of rows) {
+            const from = d.scope === 'workspace'
+              ? `the ${d.scope_key.replace(/^ws:/, '')} folder group`
+              : d.scope === 'account' ? 'the account' : d.scope_key;
             const tags = [
-              d.override ? 'OVERRIDES ACCOUNT' : '',
-              d.inherited ? 'inherited from account' : '',
+              d.override ? `OVERRIDES a broader decision` : '',
+              d.inherited ? `inherited from ${from}` : '',
               d.advisory ? 'advisory — a personal preference, not binding' : '',
             ].filter(Boolean).join(' · ');
             lines.push(`${d.area}: ${d.value}${d.since ? `  (since ${d.since})` : ''}${tags ? `  [${tags}]` : ''}`);
             if (d.why) lines.push(`    why: ${d.why}`);
+            if (d.by) lines.push(`    decided by ${d.by}`);
             const replaced = d.history.filter((h) => !h.current);
-            for (const h of replaced) lines.push(`    replaced: ${h.value} (ended ${h.to})`);
+            for (const h of replaced) {
+              lines.push(`    replaced: ${h.value} (ended ${h.to}${h.by ? `, by ${h.by}` : ''})`);
+            }
             if (d.source_session) lines.push(`    from session ${d.source_session}`);
           }
         }

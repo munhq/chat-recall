@@ -2,6 +2,8 @@ import { describe, test, expect } from 'vitest';
 import {
   canonArea, isKnownArea, decisionSubject, parseDecisionSubject, inferArea,
   ACCOUNT_SCOPE, DECISION_AREAS,
+  scopeChain, scopeKind, workspaceScope, workspaceFromPath, userScope,
+  decisionProjectKey, decisionProjectAliases,
 } from './decision-areas.js';
 
 describe('canonArea', () => {
@@ -130,5 +132,156 @@ describe('inferArea', () => {
     expect(inferArea('the second option')).toBeNull();
     expect(inferArea('')).toBeNull();
     expect(inferArea(null)).toBeNull();
+  });
+});
+
+describe('workspaceFromPath', () => {
+  test('the folder above the repository is the group', () => {
+    expect(workspaceFromPath('/home/user/code/personal/example-app')).toBe('ws:personal');
+    expect(workspaceFromPath('/home/user/code/acme/billing')).toBe('ws:acme');
+  });
+
+  test('the same group on a second machine', () => {
+    // The reason the key is a name and not an absolute prefix: one decision
+    // recorded on either machine resolves on both.
+    expect(workspaceFromPath('/home/user/code/personal/example-app'))
+      .toBe(workspaceFromPath('/Users/alice/code/personal/other-app'));
+  });
+
+  test('a worktree resolves to its repository group, not to "worktrees"', () => {
+    expect(workspaceFromPath('/home/user/code/personal/example-app/.agent/worktrees/a1'))
+      .toBe('ws:personal');
+  });
+
+  test('a repository with no folder group returns null', () => {
+    expect(workspaceFromPath('/home/user/example-app')).toBeNull();
+    expect(workspaceFromPath('/Users/alice/example-app')).toBeNull();
+    expect(workspaceFromPath('/example-app')).toBeNull();
+    expect(workspaceFromPath('')).toBeNull();
+    expect(workspaceFromPath('relative/path/app')).toBeNull();
+  });
+});
+
+describe('scope keys', () => {
+  test('each tier is recognised from its key alone', () => {
+    expect(scopeKind(ACCOUNT_SCOPE)).toBe('account');
+    expect(scopeKind('ws:personal')).toBe('workspace');
+    expect(scopeKind('user:u1')).toBe('user');
+    expect(scopeKind('munbot')).toBe('project');
+  });
+
+  test('a scope key round-trips through a subject', () => {
+    // The subject splits on the LAST colon, so a key that contains one
+    // (`ws:personal`, `user:u1`) must survive the trip.
+    for (const key of ['ws:personal', 'user:u1', 'munbot', ACCOUNT_SCOPE]) {
+      const parsed = parseDecisionSubject(decisionSubject(key, 'auth'));
+      expect(parsed).toEqual({ project: key, area: 'auth' });
+    }
+  });
+
+  test('prefixes are not doubled', () => {
+    expect(workspaceScope('ws:personal')).toBe('ws:personal');
+    expect(userScope('user:u1')).toBe('user:u1');
+    expect(workspaceScope('')).toBe('');
+  });
+});
+
+describe('scopeChain', () => {
+  test('most specific first, user last', () => {
+    expect(scopeChain({ project: 'munbot', workspace: 'personal', userId: 'u1' }))
+      .toEqual(['munbot', 'ws:personal', ACCOUNT_SCOPE, 'user:u1']);
+  });
+
+  test('absent tiers are skipped, never filled with a placeholder', () => {
+    expect(scopeChain({})).toEqual([ACCOUNT_SCOPE]);
+    expect(scopeChain({ project: 'munbot' })).toEqual(['munbot', ACCOUNT_SCOPE]);
+    expect(scopeChain({ workspace: 'personal' })).toEqual(['ws:personal', ACCOUNT_SCOPE]);
+  });
+
+  test('a workspace asked for as a project is not listed twice', () => {
+    expect(scopeChain({ project: 'ws:personal', workspace: 'personal' }))
+      .toEqual(['ws:personal', ACCOUNT_SCOPE]);
+  });
+});
+
+describe('decisionProjectKey', () => {
+  test('THE POINT: one repository on two machines gets ONE key', () => {
+    // A project_id cannot do this. Without a git remote it is a sha1 of the
+    // absolute path, so the same repository checked out in two places has two
+    // ids, and keying decisions on it would give each machine its own register.
+    const a = decisionProjectKey('git-local:aaaaaaaaaaaa', '/home/user/code/personal/example-app');
+    const b = decisionProjectKey('git-local:bbbbbbbbbbbb', '/Users/alice/code/personal/example-app');
+    expect(a).toBe(b);
+    expect(a).toBe('ws:personal/example-app');
+  });
+
+  test('a repository with a remote keys on the remote, which is the same everywhere', () => {
+    expect(decisionProjectKey('git:github.com/owner/repo', '/home/user/code/personal/repo'))
+      .toBe('git:github.com/owner/repo');
+    // The path is irrelevant once a remote exists.
+    expect(decisionProjectKey('git:github.com/owner/repo', '/somewhere/else/repo'))
+      .toBe('git:github.com/owner/repo');
+  });
+
+  test('a declared project keeps the name its owner chose', () => {
+    expect(decisionProjectKey('user:billing', '/home/user/code/acme/billing')).toBe('user:billing');
+  });
+
+  test('a worktree keys as the repository it belongs to', () => {
+    expect(decisionProjectKey('git-local:cccccccccccc', '/home/user/code/personal/example-app/.agent/worktrees/a1'))
+      .toBe('ws:personal/example-app');
+  });
+
+  test('a repository in no folder group is just its name', () => {
+    expect(decisionProjectKey('git-local:dddddddddddd', '/home/user/example-app')).toBe('example-app');
+  });
+
+  test('two repositories of the same name in different groups do not collide', () => {
+    expect(decisionProjectKey('git-local:1', '/home/user/code/personal/api'))
+      .not.toBe(decisionProjectKey('git-local:2', '/home/user/code/acme/api'));
+  });
+
+  test('with nothing but a name, the name is the key', () => {
+    expect(decisionProjectKey('example-app', null)).toBe('example-app');
+  });
+
+  test('the key round-trips through a subject', () => {
+    for (const id of ['git:github.com/owner/repo', 'ws:personal/example-app', 'example-app']) {
+      expect(parseDecisionSubject(decisionSubject(id, 'auth'))).toEqual({ project: id, area: 'auth' });
+    }
+  });
+});
+
+describe('decisionProjectAliases', () => {
+  test('the canonical key comes first, older spellings after', () => {
+    const keys = decisionProjectAliases('git:github.com/owner/repo', '/home/user/code/personal/repo', 'repo');
+    expect(keys[0]).toBe('git:github.com/owner/repo');
+    expect(keys).toContain('repo');
+  });
+
+  test('THE POINT: a decision recorded under the old spelling is still found', () => {
+    // Canonicalising without this orphans every decision recorded before it,
+    // silently, for every existing user.
+    const keys = decisionProjectAliases('git:github.com/owner/example-app', '/home/user/code/personal/example-app', 'example-app');
+    expect(keys).toEqual(['git:github.com/owner/example-app', 'example-app']);
+  });
+
+  test('no duplicates, so the chain never checks one key twice', () => {
+    const keys = decisionProjectAliases('example-app', '/home/user/example-app', 'example-app');
+    expect(keys).toEqual([...new Set(keys)]);
+  });
+});
+
+describe('scopeChain with several project keys', () => {
+  test('every project spelling is tried before the group', () => {
+    expect(scopeChain({
+      project: ['git:github.com/owner/repo', 'repo'],
+      workspace: 'personal',
+      userId: 'u1',
+    })).toEqual(['git:github.com/owner/repo', 'repo', 'ws:personal', ACCOUNT_SCOPE, 'user:u1']);
+  });
+
+  test('a single key still works', () => {
+    expect(scopeChain({ project: 'repo' })).toEqual(['repo', ACCOUNT_SCOPE]);
   });
 });

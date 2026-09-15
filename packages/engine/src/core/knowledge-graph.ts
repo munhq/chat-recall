@@ -425,7 +425,7 @@ export class KnowledgeGraph {
       sub_name: string; obj_name: string; predicate: string;
       valid_from: string | null; valid_to: string | null;
       confidence: number; source_session: string | null;
-      extracted_at: string | null;
+      extracted_at: string | null; author_sub?: string | null;
     }>;
 
     return rows.map(row => ({
@@ -439,6 +439,9 @@ export class KnowledgeGraph {
       source_session: row.source_session,
       current: row.valid_to === null,
       recorded_at: normalizeKgDate(row.extracted_at),
+      // Who asserted it. The register shows this as a byline; it is no longer
+      // what decides who may read the row (see pg-schema author_visibility).
+      author_sub: row.author_sub ?? null,
     }));
   }
 

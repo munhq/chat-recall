@@ -192,6 +192,192 @@ export function parseDecisionSubject(subject: string): { project: string; area: 
   return { project: subject.slice(0, i), area: subject.slice(i + 1) };
 }
 
+/* ---------------------------------------------------------------------------
+ * Scopes
+ *
+ * Four of them, and the middle one is the reason this section exists. An
+ * account-wide decision and a per-repository one are the two ends of a range,
+ * and most real decisions sit between: everything under `~/code/personal`
+ * shares a stack, and none of it binds a client repository.
+ *
+ * The group key is the WORKSPACE id the resolver already uses for the sidebar
+ * (`ws:<name>`, core/project-resolver.ts), so a folder group has one name
+ * across the product. It is derived from the folder above the repository,
+ * which makes it machine-independent: `/home/user/code/personal/example-app` and
+ * `/Users/alice/code/personal/other-app` are both `ws:personal`, so a decision
+ * recorded on one machine still resolves on the other.
+ *
+ * Precedence, most specific first:
+ *
+ *   project  >  workspace  >  account  >  user
+ *
+ * User sits LAST, unchanged: a personal preference fills a gap nobody has
+ * decided and never overrules a team decision.
+ * ------------------------------------------------------------------------- */
+
+export const WORKSPACE_SCOPE_PREFIX = 'ws:';
+export const USER_SCOPE_PREFIX = 'user:';
+
+export type DecisionScopeKind = 'project' | 'workspace' | 'account' | 'user';
+
+/** Which tier a scope key belongs to. */
+export function scopeKind(key: string): DecisionScopeKind {
+  if (key === ACCOUNT_SCOPE) return 'account';
+  if (key.startsWith(WORKSPACE_SCOPE_PREFIX)) return 'workspace';
+  if (key.startsWith(USER_SCOPE_PREFIX)) return 'user';
+  return 'project';
+}
+
+/** The scope key for a folder group. */
+export function workspaceScope(name: string): string {
+  const n = (name || '').trim().replace(/^ws:/, '');
+  return n ? `${WORKSPACE_SCOPE_PREFIX}${n}` : '';
+}
+
+/** The scope key for one person's own preferences. */
+export function userScope(userId: string): string {
+  const u = (userId || '').trim().replace(/^user:/, '');
+  return u ? `${USER_SCOPE_PREFIX}${u}` : '';
+}
+
+/**
+ * Tails that name a throwaway checkout rather than the repository itself.
+ * Without this every worktree reports the group `worktrees`, and a decision
+ * recorded from one lands in a group no other session ever resolves to.
+ */
+const WORKTREE_TAIL = /\/\.[^/]+\/worktrees\/[^/]+$/;
+
+/** A path with any worktree tail removed, so a checkout reads as its repository. */
+function repoPath(p: string): string {
+  let out = p;
+  while (WORKTREE_TAIL.test(out)) out = out.replace(WORKTREE_TAIL, '');
+  return out;
+}
+
+/** Path segments that hold repositories but are not a group anybody decides for. */
+const NOT_A_GROUP = new Set(['', '/', 'home', 'Users', 'tmp', 'var', 'mnt', 'opt']);
+
+/**
+ * The folder group a repository path belongs to — the directory ABOVE the
+ * repository, as `ws:<name>`.
+ *
+ * Returns null when the path has no such folder (a repository directly under
+ * `/` or a home directory belongs to no group), so the caller falls through to
+ * the account tier rather than inventing one.
+ */
+export function workspaceFromPath(projectPath: string | null | undefined): string | null {
+  let p = (projectPath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!p || !p.startsWith('/')) return null;
+
+  // A worktree lives inside the repository it belongs to, so cutting the tail
+  // leaves the repository path and the group resolves the same as a normal
+  // checkout of it.
+  p = repoPath(p);
+
+  const segs = p.split('/').filter(Boolean);
+  if (segs.length < 2) return null;              // the repository has no parent folder
+  const group = segs[segs.length - 2];
+  if (NOT_A_GROUP.has(group)) return null;
+  // `/home/<user>/repo` and `/Users/<user>/repo`: the parent is the person, not
+  // a group. Two segments before the repository is what a group needs.
+  if (segs.length === 3 && (segs[0] === 'home' || segs[0] === 'Users')) return null;
+  return workspaceScope(group);
+}
+
+/**
+ * The key a project's decisions live under.
+ *
+ * It must be the SAME string on every machine and for every teammate, or one
+ * repository grows two registers and each half looks complete. A project_id is
+ * not that string: without a git remote it is a sha1 of the absolute path
+ * (project-resolver.ts), so one repository checked out on two machines has two
+ * ids. That is not hypothetical — a repo can already appear as both
+ * `git:github.com/owner/repo` and `git-local:<sha1>` in one account.
+ *
+ * So: the remote when there is one, because it is identical everywhere. When
+ * there is none, the folder name inside its group, because two folders of one
+ * name cannot exist in one folder. Neither is a new naming scheme; both are
+ * built from the ids the resolver already assigns.
+ *
+ * Where it degrades, visibly rather than silently: a remoteless repository kept
+ * in a different group on each machine resolves to two keys, and renaming a
+ * repository on its host changes its remote and orphans its decisions until
+ * someone re-points them.
+ */
+export function decisionProjectKey(projectId: string | null | undefined, projectPath?: string | null): string {
+  const id = (projectId || '').trim();
+
+  // A remote-backed id is already stable everywhere. So is a user-declared one:
+  // the person chose that name, so it does not move when a checkout does.
+  if (id.startsWith('git:') || id.startsWith('user:') || id.startsWith(WORKSPACE_SCOPE_PREFIX)) return id;
+
+  const path = (projectPath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  if (path) {
+    const repo = repoPath(path);
+    const base = repo.split('/').filter(Boolean).pop();
+    if (base) {
+      const group = workspaceFromPath(repo);
+      return group ? `${group}/${base}` : base;
+    }
+  }
+
+  // Nothing but a name to go on — the agent passed one, and it is already the
+  // stable half of the fallback key.
+  return id;
+}
+
+/**
+ * Older spellings the same project's decisions may already sit under.
+ *
+ * Canonicalising without this would orphan every decision recorded before it,
+ * silently, for every existing user. The register reads these AFTER the
+ * canonical key and writes only ever go to the canonical one, so a legacy row
+ * keeps answering until something replaces it.
+ */
+export function decisionProjectAliases(
+  projectId: string | null | undefined,
+  projectPath?: string | null,
+  asked?: string | null,
+): string[] {
+  const canonical = decisionProjectKey(projectId, projectPath);
+  const out: string[] = [canonical];
+  const add = (v: string | null | undefined) => {
+    const t = (v || '').trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+  add(asked);                 // what the caller typed, which is what old writes used
+  add(projectId);
+  const repo = projectPath ? repoPath(projectPath.trim().replace(/\\/g, '/').replace(/\/+$/, '')) : '';
+  add(repo.split('/').filter(Boolean).pop());
+  return out;
+}
+
+/**
+ * The scope keys to resolve against, most specific first.
+ *
+ * The caller passes what it knows; every absent tier is skipped rather than
+ * filled with a placeholder, so a request with no project still answers from
+ * the account tier.
+ */
+export function scopeChain(opts: {
+  /** One key, or the canonical key followed by older spellings of it. */
+  project?: string | string[] | null;
+  workspace?: string | null;
+  userId?: string | null;
+}): string[] {
+  const chain: string[] = [];
+  const projects = (Array.isArray(opts.project) ? opts.project : [opts.project])
+    .map((p) => (p || '').trim())
+    .filter((p, i, a) => p && a.indexOf(p) === i);
+  chain.push(...projects);
+  const ws = opts.workspace ? workspaceScope(opts.workspace) : '';
+  if (ws && !chain.includes(ws)) chain.push(ws);
+  chain.push(ACCOUNT_SCOPE);
+  const user = opts.userId ? userScope(opts.userId) : '';
+  if (user) chain.push(user);
+  return chain;
+}
+
 /**
  * Guess which area a decision VALUE belongs to.
  *

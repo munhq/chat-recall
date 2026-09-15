@@ -9,16 +9,25 @@
  * top, in warning colour, with the action attached — and the settled rows,
  * which are the ones people think a register is for, sit quiet underneath.
  *
- * ── The three states a row can be in ────────────────────────────────────────
+ * ── The states a row can be in ──────────────────────────────────────────────
  *
- *   inherited   this project has no opinion; the account decided
- *   override    this project deliberately disagrees with the account
+ *   inherited   this project has no opinion; a broader scope decided
+ *   override    this scope deliberately disagrees with a broader one
  *   advisory    a personal preference; fills a gap, binds nobody
+ *
+ * "Broader" is one of two things, and the row says which: the folder group the
+ * repository sits in (every repository under `code/personal`), or the account.
+ * Naming it matters — "inherited" without a source sends the reader looking for
+ * a decision in the wrong register.
  *
  * Each is drawn differently because confusing them is expensive. An override is
  * the loudest thing in the settled band: "acme uses Keycloak even though we
  * standardised on BetterAuth" is precisely the fact someone needs to see before
  * they start work, and precisely the one a flat list hides.
+ *
+ * Each row carries the person who decided it. On a team that is the question
+ * straight after "what was decided", and the history line answers the one after
+ * that: who changed it, and when it changed under you.
  *
  * The cascade itself is resolved server-side (routes/decisions.ts). This file
  * renders an answer; it never works out which scope wins.
@@ -78,7 +87,7 @@ export default function Decisions({ project, embedded }: { project?: string | nu
               the whole distinction the cascade exists to express. */}
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>
             {project
-              ? <>What <b>{project.split('/').pop() || project}</b> has settled, including what it inherits from the account.</>
+              ? <>What <b>{project.split('/').pop() || project}</b> has settled, including what it inherits from its folder group and the account.</>
               : <>What this account has settled, what it hasn&apos;t, and what replaced what. Every project inherits these unless it overrides one.</>}
           </div>
           {project && (
@@ -181,7 +190,11 @@ export default function Decisions({ project, embedded }: { project?: string | nu
               overflowWrap: 'anywhere',
             }}>
               {d.value}
-              {d.inherited && <span className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginLeft: 8 }}>· inherited</span>}
+              {d.inherited && (
+                <span className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginLeft: 8 }}>
+                  · inherited{d.scope === 'workspace' ? ` from ${(d.scope_key || '').replace(/^ws:/, '')}` : ''}
+                </span>
+              )}
               {d.override && <Chip kind="brand" size="sm" style={{ marginLeft: 8 }}>override</Chip>}
               {d.advisory && <Chip size="sm" style={{ marginLeft: 8 }}>advisory</Chip>}
             </span>
@@ -217,10 +230,16 @@ function BandHead({ title, count, note }: { title: string; count: string; note: 
 /** The record: scope, rationale, what it replaced, and the conversation behind it. */
 function DecisionDetail({ d, onClose }: { d: Decision; onClose: () => void }) {
   const replaced = d.history.filter((h) => !h.current);
-  const scopeLine = d.inherited ? 'Inherited from the account'
-    : d.override ? 'Overrides the account decision for this project'
-    : d.advisory ? 'Yours only — never overrides a team decision'
-    : d.scope === 'account' ? 'Account-wide' : 'This project only';
+  const source = d.scope === 'workspace'
+    ? `the ${(d.scope_key || '').replace(/^ws:/, '')} folder group`
+    : 'the account';
+  const scopeLine = d.advisory ? 'Yours only — never overrides a team decision'
+    : d.override && d.inherited ? `From ${source}, and it overrides the account`
+    : d.inherited ? `Inherited from ${source}`
+    : d.override ? 'Overrides the broader decision for this project'
+    : d.scope === 'account' ? 'Account-wide'
+    : d.scope === 'workspace' ? `Every repository in ${source}`
+    : 'This project only';
 
   return (
     <div
@@ -256,12 +275,16 @@ function DecisionDetail({ d, onClose }: { d: Decision; onClose: () => void }) {
             <div style={{ borderLeft: '2px solid var(--cr-line-2)', paddingLeft: 12, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ fontSize: 13.5 }}>
                 <b>{d.value}</b><br />
-                <span style={{ color: 'var(--cr-fg-3)' }}>since {fmtDate(d.since) || 'unknown'}</span>
+                <span style={{ color: 'var(--cr-fg-3)' }}>
+                  since {fmtDate(d.since) || 'unknown'}{d.by ? ` · ${d.by}` : ''}
+                </span>
               </div>
               {replaced.map((h, i) => (
                 <div key={i} style={{ fontSize: 13.5, color: 'var(--cr-fg-2)' }}>
                   <b style={{ textDecoration: 'line-through', textDecorationColor: 'var(--cr-line-3)' }}>{h.value}</b><br />
-                  <span style={{ color: 'var(--cr-fg-3)' }}>ended {fmtDate(h.to)}</span>
+                  <span style={{ color: 'var(--cr-fg-3)' }}>
+                    ended {fmtDate(h.to)}{h.by ? ` · ${h.by}` : ''}
+                  </span>
                 </div>
               ))}
               {replaced.length === 0 && (
