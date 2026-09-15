@@ -16,7 +16,7 @@ import { execSync } from 'child_process';
 import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engine/core/paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
-import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import { resolveProjectId, resolveWorkspaceId } from '@chat-recall/engine/core/project-resolver.js';
 import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
@@ -3116,7 +3116,18 @@ program
       // the agent wait is one the user turns off.
       const res = await fetchWithTimeout(
         `${target.base}/api/decisions/check`,
-        { method: 'POST', headers, body: JSON.stringify({ names, via, project: opts.project }) },
+        {
+          method: 'POST',
+          headers,
+          // The folder group is resolved HERE, from the directory the hook runs
+          // in. The server has no checkout to read it from, and a lookup per
+          // tool call is exactly the cost this guard cannot afford.
+          body: JSON.stringify({
+            names, via,
+            project: opts.project,
+            workspace: resolveWorkspaceId(process.cwd())?.slice(3),
+          }),
+        },
         4000,
       );
       if (!res.ok) return;
