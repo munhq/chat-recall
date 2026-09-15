@@ -1088,15 +1088,33 @@ BEGIN
   -- extracted from a session you can see. An UNSOURCED fact is gated on author
   -- (NOT blanket-visible): recall_kg_add without a source must stay private to
   -- its author, else every member's ad-hoc facts leak to the team.
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='kg_triples' AND policyname='author_visibility') THEN
-    CREATE POLICY author_visibility ON kg_triples AS RESTRICTIVE FOR SELECT USING (
-      current_setting('app.viewer', true) = '*'
-      OR kg_triples.author_sub IS NULL
-      OR kg_triples.author_sub = current_setting('app.viewer', true)
-      OR (COALESCE(kg_triples.source_session,'') <> '' AND EXISTS (SELECT 1 FROM memory_metadata m
-            WHERE m.tenant = kg_triples.tenant AND m.id = kg_triples.source_session AND m.source_type='session'))
-    );
-  END IF;
+  --
+  -- DECISIONS ARE THE EXCEPTION, and they are the exception by definition. A
+  -- decision is the rule the whole team is held to — the register exists so
+  -- nobody has to ask a teammate what was settled. Under the author gate, a
+  -- decision recorded in the dashboard had no session to share it, so it stayed
+  -- private to whoever typed it and the team silently got two different answers
+  -- from one register. Measured on the production graph: 5 of 21 live decisions
+  -- were readable by their author alone, one of them the decision about team
+  -- visibility itself.
+  --
+  -- So these four predicates are tenant-wide. author_sub stays on the row and
+  -- becomes a byline: it says who decided, and no longer decides who may read.
+  -- The predicate "chose" is NOT in the list: those are extraction guesses from
+  -- one person's transcripts, not anything a team agreed.
+  --
+  -- DROP-then-CREATE, not IF NOT EXISTS: a definition change never reaches a
+  -- database that already has the old policy. Same lesson as secret_findings
+  -- above, which had to be found in production.
+  DROP POLICY IF EXISTS author_visibility ON kg_triples;
+  CREATE POLICY author_visibility ON kg_triples AS RESTRICTIVE FOR SELECT USING (
+    current_setting('app.viewer', true) = '*'
+    OR kg_triples.predicate IN ('decided', 'because', 'rejected', 'chosen_over')
+    OR kg_triples.author_sub IS NULL
+    OR kg_triples.author_sub = current_setting('app.viewer', true)
+    OR (COALESCE(kg_triples.source_session,'') <> '' AND EXISTS (SELECT 1 FROM memory_metadata m
+          WHERE m.tenant = kg_triples.tenant AND m.id = kg_triples.source_session AND m.source_type='session'))
+  );
 
   -- diary_entries — same: own / legacy / from-a-visible-session. Unlinked
   -- entries are gated on author, not blanket-visible.

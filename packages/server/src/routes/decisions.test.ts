@@ -24,12 +24,25 @@ let tmpHome: string;
 const origHome = homeEnvSnapshot();
 let app: Express;
 
-beforeAll(() => {
+/** One indexed project, so the canonical-key resolution has something to resolve. */
+const PROJ_PATH = '/home/user/code/personal/example-app';
+const PROJ_ID = 'git:github.com/owner/example-app';
+
+beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'decisions-route-'));
   useHomeDir(tmpHome);
   app = express();
   app.use(express.json());
   app.use('/api/decisions', decisionsRouter);
+
+  const { createStore } = await import('@chat-recall/engine/core/store/index.js');
+  const store = await createStore();
+  try {
+    await store.setItem({
+      id: 'sess-example', sourceType: 'session', title: 'a session',
+      projectPath: PROJ_PATH, projectId: PROJ_ID, filePath: `${PROJ_PATH}/t.jsonl`, mtime: 1,
+    });
+  } finally { await store.close(); }
 });
 afterAll(() => {
   restoreHomeEnv(origHome);
@@ -145,6 +158,146 @@ describe('the cascade', () => {
     const r = await get();
     const auth = r.body.decisions.find((d: { area: string }) => d.area === 'auth');
     expect(auth.value).toBe('Passkeys');
+  });
+});
+
+describe('the workspace tier — a folder group of repositories', () => {
+  test('a repository in the group inherits the group decision, not the account one', async () => {
+    await post({ area: 'deploy', value: 'Fly.io' });                       // account
+    await post({ area: 'deploy', value: 'k3s + ArgoCD', workspace: 'personal' });
+
+    const r = await get('?project=example-app&workspace=personal');
+    const deploy = r.body.decisions.find((d: { area: string }) => d.area === 'deploy');
+    expect(deploy.value).toBe('k3s + ArgoCD');
+    expect(deploy.scope).toBe('workspace');
+    expect(deploy.scope_key).toBe('ws:personal');
+    expect(deploy.inherited).toBe(true);   // example-app did not decide it
+    expect(deploy.override).toBe(true);    // but the group overrides the account
+  });
+
+  test('a repository outside the group still sees the account decision', async () => {
+    const r = await get('?project=billing&workspace=acme');
+    const deploy = r.body.decisions.find((d: { area: string }) => d.area === 'deploy');
+    expect(deploy.value).toBe('Fly.io');
+    expect(deploy.scope).toBe('account');
+  });
+
+  test('the repository beats its own group', async () => {
+    await post({ area: 'deploy', value: 'Railway', project: 'example-app' });
+    const r = await get('?project=example-app&workspace=personal');
+    const deploy = r.body.decisions.find((d: { area: string }) => d.area === 'deploy');
+    expect(deploy.value).toBe('Railway');
+    expect(deploy.scope).toBe('project');
+    expect(deploy.override).toBe(true);
+    expect(deploy.inherited).toBe(false);
+  });
+
+  test('a sibling repository in the group is untouched by that override', async () => {
+    const r = await get('?project=other-app&workspace=personal');
+    const deploy = r.body.decisions.find((d: { area: string }) => d.area === 'deploy');
+    expect(deploy.value).toBe('k3s + ArgoCD');
+    expect(deploy.scope).toBe('workspace');
+  });
+
+  test('the account register is unchanged by either', async () => {
+    const r = await get();
+    const deploy = r.body.decisions.find((d: { area: string }) => d.area === 'deploy');
+    expect(deploy.value).toBe('Fly.io');
+    expect(deploy.scope).toBe('account');
+  });
+
+  test('the response names the chain it resolved through', async () => {
+    const r = await get('?project=example-app&workspace=personal');
+    // The canonical key first, then the spelling that was asked for, then the
+    // broader tiers. Both project keys are tried before the group.
+    expect(r.body.chain).toEqual([PROJ_ID, 'example-app', 'ws:personal', '*']);
+    expect(r.body.workspace).toBe('personal');
+  });
+});
+
+describe('one repository, one register, whatever it is called', () => {
+  // The two surfaces name a project differently: the dashboard passes the
+  // project_id it resolved, an agent passes whatever the user typed. Both must
+  // reach the same rows, or a decision recorded in the browser is invisible to
+  // the agent and each half of the register looks complete.
+
+  test('a decision recorded by NAME is found when the dashboard asks by ID', async () => {
+    await post({ area: 'frontend', value: 'Svelte', project: 'example-app' });
+    const r = await get(`?project=${encodeURIComponent(PROJ_ID)}`);
+    expect(r.body.decisions.find((d: { area: string }) => d.area === 'frontend').value).toBe('Svelte');
+  });
+
+  test('and when asked by path, and by the name again', async () => {
+    for (const spelling of [PROJ_PATH, 'example-app']) {
+      const r = await get(`?project=${encodeURIComponent(spelling)}`);
+      const row = r.body.decisions.find((d: { area: string }) => d.area === 'frontend');
+      expect(row.value, `asked as ${spelling}`).toBe('Svelte');
+    }
+  });
+
+  test('every write lands on the canonical key, whatever spelling was used', async () => {
+    const r = await post({ area: 'observability', value: 'Grafana Cloud', project: 'example-app' });
+    expect(r.body.subject).toBe(`${PROJ_ID}:observability`);
+  });
+
+  test('the response names the key writes will use', async () => {
+    const r = await get('?project=example-app');
+    expect(r.body.project_key).toBe(PROJ_ID);
+  });
+
+  test('THE UPGRADE: a decision written under the OLD key still answers', async () => {
+    // Recorded straight into the graph under the bare name, which is what every
+    // decision recorded before canonicalisation looks like. Nobody has to
+    // migrate anything: the chain reads the canonical key first, then the
+    // spellings that came before it.
+    const kg = await createKnowledgeGraph();
+    await kg.addTriple('example-app:vector-store', 'decided', 'pgvector', { confidence: 1 } as never);
+    await kg.close();
+
+    const r = await get(`?project=${encodeURIComponent(PROJ_ID)}`);
+    expect(r.body.chain[0]).toBe(PROJ_ID);
+    expect(r.body.chain).toContain('example-app');
+    const row = r.body.decisions.find((d: { area: string }) => d.area === 'vector-store');
+    expect(row.value).toBe('pgvector');
+    expect(row.scope_key).toBe('example-app');
+  });
+
+  test('and the canonical key wins as soon as that area is decided again', async () => {
+    await post({ area: 'vector-store', value: 'Qdrant', project: PROJ_ID });
+    const r = await get('?project=example-app');
+    const row = r.body.decisions.find((d: { area: string }) => d.area === 'vector-store');
+    expect(row.value).toBe('Qdrant');
+    expect(row.scope_key).toBe(PROJ_ID);
+  });
+});
+
+describe('a write must know which scope it meant', () => {
+  test('a workspace write with no workspace named is refused, not widened', async () => {
+    // Widening is how eight rows reached the account register and every
+    // project inherited one repository's stack.
+    const r = await post({ area: 'auth', value: 'Auth0', scope: 'workspace' });
+    expect(r.status).toBe(400);
+  });
+
+  test('a project write with no project named is refused', async () => {
+    const r = await post({ area: 'auth', value: 'Auth0', scope: 'project' });
+    expect(r.status).toBe(400);
+  });
+
+  test('naming both, with no scope, binds the narrower one', async () => {
+    // The project, canonicalised — the group is the broader of the two.
+    const r = await post({ area: 'testing', value: 'Vitest', project: 'example-app', workspace: 'personal' });
+    expect(r.body.subject).toBe(`${PROJ_ID}:testing`);
+  });
+
+  test('a workspace alone binds the group', async () => {
+    const r = await post({ area: 'api', value: 'Hono', workspace: 'personal' });
+    expect(r.body.subject).toBe('ws:personal:api');
+  });
+
+  test('an explicit account scope is still available for something true everywhere', async () => {
+    const r = await post({ area: 'licensing', value: 'Elastic-2.0', project: 'example-app', scope: 'account' });
+    expect(r.body.subject).toBe('*:licensing');
   });
 });
 

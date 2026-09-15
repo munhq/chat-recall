@@ -154,7 +154,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     const asOfClause = asOf ? ` AND (t.valid_from IS NULL OR t.valid_from <= $3) AND (t.valid_to IS NULL OR t.valid_to >= $3)` : '';
     const params = asOf ? [this.t, pred, asOf] : [this.t, pred];
     const rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND t.predicate=$2${asOfClause}`, params);
-    return rows.map(row => ({ direction: 'outgoing' as const, subject: row.sub_name, predicate: pred, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null, recorded_at: kgDay(row.extracted_at) }));
+    return rows.map(row => ({ direction: 'outgoing' as const, subject: row.sub_name, predicate: pred, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null, recorded_at: kgDay(row.extracted_at), author_sub: row.author_sub ?? null }));
   }
 
   async timeline(...a: Args<'timeline'>) {
