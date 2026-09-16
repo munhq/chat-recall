@@ -28,6 +28,15 @@ import { stripInjectedBanners, summaryTitle } from '../utils/clean';
  *   - Marker chips collapse to a tiny right column ONLY when present.
  */
 interface ConversationListProps {
+  /**
+   * Sessions, or everything those sessions left behind.
+   *
+   * It belongs in this header because it is a facet OF this list, and because
+   * the alternative was a direct flex child of .app-row — a column standing
+   * beside the list, holding one toggle, with the list starting after it.
+   */
+  facet?: 'sessions' | 'notes';
+  onFacetChange?: (f: 'sessions' | 'notes') => void;
   results: SessionInfo[];
   selected: string | null;
   onSelect: (id: string) => void;
@@ -56,6 +65,8 @@ interface ConversationListProps {
 }
 
 export default function ConversationList({
+  facet,
+  onFacetChange,
   results,
   selected,
   onSelect,
@@ -123,6 +134,25 @@ export default function ConversationList({
         overflow: 'hidden',
       }}
     >
+      {/* WHAT THE LIST HOLDS, above HOW IT IS ORDERED.
+          The facet is not a peer of the sort control: one chooses the contents,
+          the other arranges them. Sharing a row, the two controls plus the
+          panel title did not fit this column — "Notes & memory" clipped to
+          "Notes & mer" and the title was pushed off entirely. */}
+      {facet && onFacetChange && (
+        <div style={{
+          flexShrink: 0, padding: '8px 18px',
+          borderBottom: '1px solid var(--cr-line-1)',
+        }}>
+          <SegmentedControl
+            size="sm"
+            options={[{ value: 'sessions', label: 'Sessions' }, { value: 'notes', label: 'Notes & memory' }]}
+            value={facet}
+            onChange={(v) => onFacetChange(v as 'sessions' | 'notes')}
+          />
+        </div>
+      )}
+
       {/* Subheader — title + sort */}
       <div
         className="cr-subbar"
@@ -136,7 +166,7 @@ export default function ConversationList({
           borderBottom: '1px solid var(--cr-line-2)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
           {/* A panel name, in the grotesk. It was set uppercase in the display
               face, which reads as an eyebrow and breaks the mono duty rule. */}
           <h3 style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.005em', textTransform: 'none' }}>
