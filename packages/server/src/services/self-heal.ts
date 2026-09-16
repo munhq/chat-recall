@@ -23,7 +23,7 @@
  *  stops new damage, so paying archive-parse latency on every open buys nothing.)
  */
 import {
-  createStore, createControlPlane, createMetadataCache, runWithTenant,
+  createStore, createControlPlane, createMetadataCache, runWithTenant, runWithAuthor,
   gunzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION,
   getBackend,
   type SourceType,
@@ -159,7 +159,23 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       const cks = chunksFromTurns(sessionId, textSource, projectPath, mtime, projectId, healFirstPrompt);
       const subs = subagentChunks(sessionId, (parsed.subagents ?? []) as unknown as EnvSubagent[], projectPath, mtime);
       const all = subs.length > 0 ? [...cks, ...subs] : cks;
-      if (all.length > 0) await store.addChunksFTS(all);
+      // WRITE AS THE SESSION'S OWNER, not as nobody. The sweep runs inside
+      // runWithTenant alone, so currentAuthor() is empty and addChunksFTS
+      // stamped author_sub = NULL — which the chunk policy now reads as
+      // "unattributed", visible to no member. That is what put 162 of one
+      // tenant's chunks outside their owner's reach. The author comes from the
+      // parent row, so a genuinely legacy session still heals to NULL rather
+      // than being handed to whoever happens to sweep it.
+      if (all.length > 0) {
+        const owner = await store.itemAuthor(sessionId, 'session' as SourceType);
+        // No parent row means this session's metadata was hard-deleted and the
+        // block above just recreated it from the archive — which also wrote a
+        // NULL author, because the archive records project_id and not who owned
+        // the session. The author is genuinely unknowable here, so the chunks
+        // inherit that NULL rather than being handed to whoever swept them.
+        if (owner) await runWithAuthor(owner, () => store.addChunksFTS(all));
+        else await store.addChunksFTS(all);
+      }
     }
 
     // 3. Derived diff — the Changes tab. Same store/key /api/.../diff reads.
