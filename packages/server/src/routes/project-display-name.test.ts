@@ -14,9 +14,9 @@ const { parseProjectId } = __testing;
 
 describe('git-local projects are named, not hashed', () => {
   test('uses the basename of the representative path', () => {
-    const r = parseProjectId('git-local:9c548119504c', '/Users/alice/code/personal/coolcode');
+    const r = parseProjectId('git-local:9c548119504c', '/Users/alice/code/personal/example-app');
     expect(r.source).toBe('git-local');
-    expect(r.displayName).toBe('coolcode');
+    expect(r.displayName).toBe('example-app');
   });
 
   test('reads a Windows path too — sessions are indexed on both', () => {

@@ -331,7 +331,7 @@ describe('globMatch is separator-agnostic', () => {
  * "no remote", so a repo whose remote is named `upstream`, or a machine where
  * git was slow or absent, got a permanent `git-local:<sha1(path)>` id — a
  * second identity for a project that already had one, splitting its sessions.
- * `coolcode`, with a plain https origin, reached a real board as
+ * A repository with a plain https origin reached a real board as
  * `git-local:9c548119504c`.
  */
 describe('a remote is found however it is named', () => {
