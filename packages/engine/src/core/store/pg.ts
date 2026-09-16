@@ -40,6 +40,21 @@ export function intMs(x: unknown): number { return Math.floor(Number(x) || 0); }
 /** (database, tenant) pairs whose row this process has already written. */
 const TENANT_BOOTSTRAPPED = new Set<string>();
 
+/**
+ * How many trigram candidates the typo fallback will rank.
+ *
+ * Ranking is per candidate and the cost is the heap fetch plus the visibility
+ * subquery, so the ceiling on candidates is the ceiling on latency. 2,000 puts
+ * the worst measured query at 1.6s against a 2.5s cap; ranking all 50,942 of
+ * them took 13.7s and the cap threw the results away.
+ *
+ * It is a SAMPLE, not the best 2,000: the bitmap yields rows in physical order,
+ * so a query with more candidates than this ranks an arbitrary subset. That is
+ * the trade — an approximate answer for a misspelling, rather than the empty
+ * one a timeout produces.
+ */
+const TRGM_CANDIDATE_CAP = 2000;
+
 
 export class PgStore implements StorageDriver {
   private pool: any;
@@ -1132,10 +1147,34 @@ export class PgStore implements StorageDriver {
             // 10s+. Cap at 2.5s — if it can't surface a close match fast, return
             // nothing rather than hang the request (measured: 16s without this).
             await client.query(`SET LOCAL statement_timeout = '2500ms'`);
+            // The index scan is never the cost — it returns candidates in
+            // 60-140ms. What follows it is: a heap fetch, a word_similarity()
+            // and the author_visibility subquery PER CANDIDATE. Measured on
+            // production, as the app role, ranking every candidate:
+            //
+            //   kubernets   7,719 candidates   2,391 ms
+            //   keyclock   19,707              6,073 ms
+            //   revenucat  25,553              7,903 ms
+            //   postgress  50,942             13,733 ms
+            //
+            // Four of those five blow the 2.5s cap, and the cap discards the
+            // whole query — so the typo fallback returned NOTHING for exactly
+            // the common words people mistype.
+            //
+            // Two bounds, because they fix different halves. The threshold
+            // drops candidates that are merely trigram-adjacent (keyclock:
+            // 19,707 to 3,312). It cannot help a typo whose neighbours are
+            // real: "postgress" still finds 12,562 genuine "postgres" rows at
+            // any threshold. So the candidate set is capped as well.
+            await client.query(`SET LOCAL pg_trgm.word_similarity_threshold = 0.7`);
             const r = await client.query(
               `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
                       word_similarity($2, text) AS rank
-               FROM memory_chunks WHERE ${tw}
+               FROM (
+                 SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime
+                   FROM memory_chunks WHERE ${tw}
+                  LIMIT ${TRGM_CANDIDATE_CAP}
+               ) c
                ORDER BY rank DESC, mtime DESC NULLS LAST
                LIMIT $${tp.length}`, tp);
             return r.rows;
