@@ -4,7 +4,7 @@
  * notices, transient API errors). These aren't part of the user's
  * actual prompt and shouldn't leak into summaries or previews.
  *
- * Mirrors the server-side stripper in src/parsers/chunker.ts.
+ * Mirrors the engine stripper in packages/engine/src/parsers/banners.ts.
  */
 const INJECTED_BANNERS: RegExp[] = [
   /MCP issues detected\. ?Run \/mcp list for status\.?/g,

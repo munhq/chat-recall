@@ -16,7 +16,6 @@ import { getEmbedder, type EmbedderProvider } from '@chat-recall/engine/core/emb
 import { createVectorStore } from '@chat-recall/engine/core/store/vector.js';
 import { createStore } from '@chat-recall/engine/core/store/index.js';
 import { SourceRegistry } from '@chat-recall/engine/core/source-registry.js';
-import { SessionSource } from '@chat-recall/engine/parsers/session-source.js';
 import { PlanSource } from '@chat-recall/engine/parsers/plan-source.js';
 import { TaskSource } from '@chat-recall/engine/parsers/task-source.js';
 import type { SourceType, MemoryItem } from '@chat-recall/engine/types/memory.js';
@@ -79,7 +78,6 @@ async function main() {
 
   // Register sources
   const registry = new SourceRegistry();
-  registry.register(new SessionSource());
   registry.register(new PlanSource());
   registry.register(new TaskSource());
 

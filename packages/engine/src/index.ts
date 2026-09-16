@@ -188,7 +188,6 @@ export {
   type SessionBlocker,
   type ClaimReactionPair,
 } from './core/session-outcome.js';
-export { SessionSource } from './parsers/session-source.js';
 export { PlanSource } from './parsers/plan-source.js';
 export { TaskSource } from './parsers/task-source.js';
 export { ClaudeMdSource } from './parsers/claude-md-source.js';
