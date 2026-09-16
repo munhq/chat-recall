@@ -374,7 +374,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
       const tgt = ln.trim(); if (!tgt) continue;
       if (fileEdges.length < 4000) fileEdges.push({ from: sr, to: rel(tgt) });
       const dp = pkg(tgt);
-      if (dp !== sp) { const k = `${sp} ${dp}`; pkgEdges.set(k, (pkgEdges.get(k) ?? 0) + 1); }
+      if (dp !== sp) { const k = `${sp}\u0000${dp}`; pkgEdges.set(k, (pkgEdges.get(k) ?? 0) + 1); }
     }
   }
 
@@ -815,7 +815,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
         - Math.min(4, qualityNoise * 0.1))));
 
   const nodes: CodeMapNode[] = [...symByPkg.entries()].map(([p, sym]) => ({ file: p, pkg: p, symbols: sym, lines: 0 }));
-  const edges: CodeMapEdge[] = [...pkgEdges.entries()].filter(([, w]) => w >= 2).map(([k]) => { const [from, to] = k.split(' '); return { from, to }; });
+  const edges: CodeMapEdge[] = [...pkgEdges.entries()].filter(([, w]) => w >= 2).map(([k]) => { const [from, to] = k.split('\u0000'); return { from, to }; });
 
   const metric = (m: any) => ({ file: rel(m.file), fanIn: m.fan_in ?? 0, fanOut: m.fan_out ?? 0, instability: Math.round((m.instability ?? 0) * 100) / 100 });
 

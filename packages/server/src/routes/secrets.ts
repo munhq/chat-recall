@@ -366,7 +366,7 @@ router.get('/rules', async (_req, res) => {
     const rules = await store.listSecretRules();
     const material = rules
       .filter((r) => r.enabled)
-      .map((r) => `${r.name} ${r.regex} ${r.redact ? 1 : 0}`)
+      .map((r) => `${r.name}\u0000${r.regex}\u0000${r.redact ? 1 : 0}`)
       .sort()
       .join('');
     const version = rules.length === 0
