@@ -68,6 +68,12 @@ const FILES = [
   // member can see on the day they join.
   './migrations/0011_backfill_author_sub.sql',
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Ends the validity window on decisions that reached the account sentinel
+  // because the writer had nothing to key them on — every project with no
+  // opinion of its own was inheriting one repository's stack. Retires by
+  // `valid_to`, so the history still shows they were asserted.
+  './migrations/0014_retire_unkeyed_account_decisions.sql',
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
   // Removes the children a purge left behind (a deleted session kept its chunks,
   // its envelope and its embeddings, so it could resurface) and copies
   // author/project from parent to chunk where they disagree. MUST RUN AFTER
