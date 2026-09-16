@@ -13,7 +13,7 @@ import type { SessionContent } from '@chat-recall/engine/parsers/session.js';
 import { createMetadataCache } from '@chat-recall/engine/core/store/caches.js';
 import { createStore } from '@chat-recall/engine/core/store/index.js';
 import { SummaryGenerator } from '@chat-recall/engine/core/summary-generator.js';
-import { stripInjectedBanners } from '@chat-recall/engine/parsers/chunker.js';
+import { stripInjectedBanners } from '@chat-recall/engine/parsers/banners.js';
 
 // Load .env
 config({ path: join(process.cwd(), '.env') });

@@ -7,7 +7,6 @@
  * see packages/server/src/services/memory.ts for the conditional set.
  */
 import { SourceRegistry } from '../core/source-registry.js';
-import { SessionSource } from './session-source.js';
 import { PlanSource } from './plan-source.js';
 import { TaskSource } from './task-source.js';
 import { ClaudeMdSource } from './claude-md-source.js';
@@ -28,7 +27,6 @@ import { PluginsSource } from './plugins-source.js';
 
 /** Register every shipped source on `registry` (creates one when omitted). */
 export function buildSourceRegistry(registry: SourceRegistry = new SourceRegistry()): SourceRegistry {
-  registry.register(new SessionSource());
   registry.register(new PlanSource());
   registry.register(new TaskSource());
   registry.register(new ClaudeMdSource());

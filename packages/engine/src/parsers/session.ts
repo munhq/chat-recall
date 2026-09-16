@@ -6,7 +6,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync, open
 import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { join, basename } from 'path';
-import { stripInjectedBanners } from './chunker.js';
+import { stripInjectedBanners } from './banners.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { claudeProjectDirs } from '../core/tool-paths.js';
 import { resolveProjectDirName } from '../core/project-dir-name.js';
@@ -585,18 +585,6 @@ export async function parseSessionFile(
   return content;
 }
 
-/**
- * Decode a Claude Code project directory name back to a real filesystem path.
- *
- * This used to be a second, hand-rolled greedy prober living here — the
- * "eleventh decoder" project-dir-name.ts explicitly warns against. It tried
- * '-', '_' and '.' as JOIN separators but never as a PREFIX, so a dot-directory
- * was unreachable: `app--agent-worktrees-a1` resolved to `app//agent/...`
- * instead of `app/.agent/worktrees/a1`, and every per-session worktree was
- * filed under a project that does not exist rather than the repo it belongs to.
- *
- * There is now one probing decoder for the whole engine. Do not add another.
- */
 /**
  * Get all sessions across one or more Claude directories.
  * @param claudeDir - Single projects dir path, OR undefined to auto-discover all Claude dirs

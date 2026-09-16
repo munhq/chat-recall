@@ -19,7 +19,6 @@ import {
   _resetSourceSettingsCache,
 } from './settings.js';
 import { claudeHomeDir } from './tool-paths.js';
-import { SessionSource } from '../parsers/session-source.js';
 import { PasteSource } from '../parsers/paste-source.js';
 import { PlanSource } from '../parsers/plan-source.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
@@ -169,30 +168,6 @@ async function collect<T>(g: AsyncGenerator<T>): Promise<T[]> {
   return out;
 }
 
-describe('SessionSource gate', () => {
-  test('discover() yields nothing when claude.sessions is disabled', async () => {
-    // Create one Claude session on disk so the plugin would normally
-    // emit it.
-    const projDir = join(tmpHome, '.claude', 'projects', '-tmp-x');
-    mkdirSync(projDir, { recursive: true });
-    writeFileSync(
-      join(projDir, '11111111-2222-4333-8444-555555555555.jsonl'),
-      JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'hi' }] } }) + '\n',
-    );
-
-    // Sanity: with sessions enabled, the plugin yields it.
-    expect((await collect(new SessionSource().discover())).length).toBeGreaterThanOrEqual(1);
-
-    // Disable, expect zero.
-    const cur = loadSettings();
-    saveSettings({
-      ...cur,
-      sources: { ...cur.sources, enabled: { ...cur.sources.enabled, claude: { ...cur.sources.enabled.claude, sessions: false } } },
-    });
-    _resetSourceSettingsCache();
-    expect(await collect(new SessionSource().discover())).toEqual([]);
-  });
-});
 
 describe('PasteSource gate', () => {
   test('discover() yields nothing when claude.pasteCache is disabled', async () => {
