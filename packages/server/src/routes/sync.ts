@@ -43,6 +43,9 @@ import {
   gunzipContainer, gzipContainer, mergeContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import type { StorageDriver } from '@chat-recall/engine/core/store/driver.js';
+import type { MemoryItem, MemoryChunk } from '@chat-recall/engine/types/memory.js';
+import type { IngestBatch, IngestSessionMeta } from '@chat-recall/engine/core/store/ingest-batch.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { isEntitled, syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
@@ -53,6 +56,322 @@ import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { growth } from '../util/growth.js';
 
 const log = createLogger('sync');
+
+
+/** What ingestConversation needs. Named, rather than closed over. */
+interface ConvContext {
+  store: StorageDriver;
+  agent: { tenant: string; deviceId: string };
+  /** Sessions tombstoned in this request — never resurrect one. */
+  deadSet: Set<string>;
+  /** Prefetched for the whole batch, so the loop makes no database call. */
+  priorContent: Map<string, { content: string; mtime: number }>;
+  priorChunkIdx: Map<string, number>;
+  priorArchive: Map<string, { size: number; mtime: number; project_id: string }>;
+  /** Appended to, never written — the handler flushes the batch once. */
+  itemBatch: MemoryItem[];
+  chunkBatch: MemoryChunk[];
+  appendChunkBatch: MemoryChunk[];
+  cachedContentBatch: NonNullable<IngestBatch['cachedContent']>;
+  sessionMetaBatch: IngestSessionMeta[];
+  touchBatch: NonNullable<IngestBatch['touchMtime']>;
+  /** Sessions the client must re-send in full, returned in the response. */
+  fullResyncNeeded: string[];
+  tally: { conv: number; appendConv: number; shrinkGuarded: number };
+}
+
+/**
+ * Everything one conversation contributes to the batch.
+ *
+ * Extracted from the request handler, which ran as a single 588-line closure
+ * with this 274-line loop body in the middle. The logic is unchanged: what it
+ * used to reach out of scope for is named in `ctx`, and the counters it
+ * incremented are in `tally`. The eight `continue`s that skipped to the next
+ * conversation are `return`s — every one of them was at the top level of that
+ * loop, so the translation is exact.
+ *
+ * It APPENDS to the batch arrays and writes nothing. The handler hands the
+ * whole batch to the store once. See docs/SYNC-BATCH-WRITES.md §4.
+ */
+async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promise<void> {
+  const {
+    store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
+    itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch, sessionMetaBatch,
+    touchBatch, fullResyncNeeded, tally,
+  } = ctx;
+    if (!cv.session_id) return;
+    if (deadSet.has(cv.session_id)) return; // deleted — never resurrect
+    const mtime = Math.floor(Number(cv.mtime) || 0);
+    const projectPath = cv.project_path || '';
+
+    // ── APPEND path (tail-only sync, docs/SYNC-INCREMENTAL.md) ──────
+    // The client shipped only the new tail. Merge the envelope + append
+    // chunks WITHOUT deleting the head's chunks. Touch ONLY mtime on the
+    // metadata row (title/preview/extra are head-derived; prior values
+    // stand). If the server has no prior envelope, signal full_resync.
+    if (cv.append) {
+      // Emergency off-switch (default ON now that the continuity check
+      // below makes append safe). CHAT_RECALL_TAIL_APPEND=0 disables.
+      if (process.env.CHAT_RECALL_TAIL_APPEND === '0') {
+        fullResyncNeeded.push(cv.session_id);
+        return;
+      }
+      // Need a client envelope for the tail messages.
+      if (!cv.envelope || cv.envelope.v !== PARSER_VERSION || !Array.isArray(cv.envelope.messages)) {
+        // No usable tail envelope → ask for full. (Shouldn't happen — the
+        // client always sends an envelope on append — but be defensive.)
+        fullResyncNeeded.push(cv.session_id);
+        return;
+      }
+      // Read the existing envelope from content_cache (stale read —
+      // the stored mtime may be older than the incoming append's mtime;
+      // we want the prior envelope regardless, to merge into it).
+      const existing = priorContent.get(cv.session_id) ?? null;
+      if (!existing || !existing.content) {
+        // No prior envelope on the server (data loss, first sync, rotation)
+        // → the client must FULL re-sync this session.
+        fullResyncNeeded.push(cv.session_id);
+        return;
+      }
+      try {
+        const prev = JSON.parse(existing.content) as { v: number; messages: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
+        // ── OFFSET-CONTINUITY GUARD (the fix that makes append safe) ──
+        // The append's tail starts at byte `base_offset`. It is valid to
+        // merge ONLY if our stored envelope is synced through exactly that
+        // offset (`prev.o`). Any mismatch — a base truncated by an
+        // interrupted full sync, a server purge, a re-ordered tick, or an
+        // envelope stored before this field existed (prev.o undefined) —
+        // means the tail would graft onto the wrong base. Refuse → FULL
+        // re-sync. This is what the original append lacked: it trusted the
+        // base was complete. (1079-msg session stored as 65 was a base at
+        // a different offset than the tail expected — now caught here.)
+        if (typeof prev.o !== 'number' || prev.o !== (cv.base_offset ?? -1)) {
+          fullResyncNeeded.push(cv.session_id);
+          return;
+        }
+        const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
+        // Continue line numbers from the stored envelope's last line.
+        const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
+        const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
+        const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
+        // Advance the synced-through offset to where this tail ends.
+        const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
+        cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
+
+        // Append chunks for the tail's text turns. The server owns the
+        // chunk-id index: continue from MAX(existing :sync: index) + 1.
+        const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
+        if (textSource.length > 0) {
+          const maxIdx = priorChunkIdx.get(cv.session_id) ?? 0;
+          const tailChunks = chunksFromTurns(
+            cv.session_id,
+            textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
+            projectPath, mtime, cv.project_id || undefined,
+          );
+          // Re-number: shift each chunk's :sync:<i> to continue from maxIdx+1.
+          for (let i = 0; i < tailChunks.length; i++) {
+            tailChunks[i].chunkId = `${cv.session_id}:sync:${maxIdx + 1 + i}`;
+          }
+          appendChunkBatch.push(...tailChunks);
+        }
+
+        // Touch ONLY mtime on the metadata row — title/preview/extra are
+        // head-derived and must survive the append untouched.
+        touchBatch.push({ sessionId: cv.session_id, mtime });
+        tally.appendConv++;
+      } catch {
+        // Merge failed (corrupt prior envelope, etc.) → ask for full.
+        fullResyncNeeded.push(cv.session_id);
+      }
+      return;
+    }
+
+    // ── FULL path (the existing whole-conversation ingest) ──────────
+    // Raw container (highest fidelity): archive shrink-protected and
+    // derive the envelope from the bytes with the canonical parser.
+    // Falls back to the client envelope, then legacy turns.
+    let envelope: { v: number; messages: SyncEnvelopeMessage[]; subagents: unknown[] } | null = null;
+    let rawArchiveResult: 'stored' | 'shrink-protected' | 'unchanged' | null = null;
+    if (cv.raw_b64) {
+      try {
+        const gz = Buffer.from(cv.raw_b64, 'base64');
+        const container = gunzipContainer(gz);
+        if (container) {
+          // The archive metadata came with the batch's prefetch, so this
+          // no longer reads per session — `?? null` says "prefetched, and
+          // there is no row", which is what stops it reading again.
+          rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length, cv.project_id || '', projectPath, priorArchive.get(cv.session_id) ?? null);
+
+          // ── Smaller is not the same as stale ────────────────────────
+          // The shrink guard exists to survive a resume-truncated file,
+          // and for that it is exactly right. But it decides on SIZE, and
+          // size cannot tell a truncation from a DISJOINT FRAGMENT: a
+          // second device, or a session resumed under another profile,
+          // legitimately holds records this archive has never seen while
+          // being smaller overall. Rejecting those loses them silently —
+          // the client has already moved on, and nothing ever retries.
+          //
+          // So on a rejection, merge by RECORD (the same union the client
+          // shadow uses) and re-store only if the result actually grew.
+          // Truncation still cannot shrink the archive: a strict subset
+          // merges back to the stored container and is a no-op.
+          if (rawArchiveResult === 'shrink-protected') {
+            try {
+              const prior = await store.getRawSession(cv.session_id);
+              const priorContainer = prior?.gz ? gunzipContainer(prior.gz) : null;
+              if (priorContainer) {
+                const merged = mergeContainer(priorContainer, container);
+                const { gz: mergedGz, size: mergedSize } = gzipContainer(merged.container);
+                if (mergedSize > Number(prior!.size)) {
+                  rawArchiveResult = await store.putRawSession(
+                    cv.session_id, merged.container.tool, mtime, mergedGz, mergedSize,
+                    cv.project_id || '', projectPath,
+                  );
+                  log.info(
+                    { session: cv.session_id, priorSize: Number(prior!.size), incoming: Number(cv.raw_size) || gz.length, mergedSize },
+                    'raw archive: merged a disjoint fragment that the shrink guard would have dropped',
+                  );
+                }
+              }
+            } catch (err) {
+              // A failed merge must leave the stored archive exactly as it
+              // was — the fragment is lost either way, but the history is not.
+              log.warn({ err, session: cv.session_id }, 'raw archive fragment merge failed; kept the stored copy');
+            }
+          }
+          const t = parseTranscriptFromContainer(container);
+          if (t.messages.length > 0 || t.subagents.length > 0) {
+            envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };
+          }
+        }
+      } catch { /* corrupt raw — derived fallbacks below still apply */ }
+    }
+    if (!envelope && cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)) {
+      envelope = { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] };
+    }
+
+    // ── SHRINK GUARD (server-side defense-in-depth) ─────────────────
+    // The client shadow (packages/engine/src/transcript/shadow.ts) is the
+    // primary fix: it merges a resume-truncated transcript back to full
+    // BEFORE shipping, so a current client never sends a shrink. But an
+    // OLD client (no shadow), or one whose local shadow was wiped, can
+    // still send a FULL sync carrying LESS than the server already holds —
+    // the exact way the 2026-07-09 incident emptied conversations. The raw
+    // archive is already shrink-protected in putRawSession; extend that to
+    // the envelope + search chunks: never overwrite a fuller stored
+    // conversation with a smaller one. Two-signal test (bytes shrank AND
+    // fewer messages, or — when no raw was sent — a large message drop)
+    // keeps false positives near zero; a genuine edit that merely re-trims
+    // is not fewer messages. Best-effort: any error falls through to the
+    // normal ingest, never blocking a legitimate sync.
+    if (envelope) {
+      try {
+        const stored = priorContent.get(cv.session_id) ?? null;
+        if (stored?.content) {
+          const prevEnv = JSON.parse(stored.content) as { messages?: unknown[] };
+          const storedCount = Array.isArray(prevEnv.messages) ? prevEnv.messages.length : 0;
+          const incomingCount = envelope.messages.length;
+          const bytesShrank = rawArchiveResult === 'shrink-protected';
+          const suspectedShrink = incomingCount < storedCount &&
+            (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
+          if (suspectedShrink) {
+            log.warn(
+              { session: cv.session_id, storedCount, incomingCount, bytesShrank, device: agent.deviceId },
+              'shrink-guard: kept fuller stored conversation, ignored a smaller full sync (upstream in-place truncation reached a client without a shadow)',
+            );
+            tally.shrinkGuarded++;
+            return; // preserve stored envelope/chunks/title — write nothing
+          }
+        }
+      } catch { /* guard is best-effort — fall through to normal ingest */ }
+    }
+    const turns: SyncTurn[] = envelope
+      ? []
+      : Array.isArray(cv.turns) && cv.turns.length > 0
+        ? cv.turns
+        : cv.redacted_text
+          ? [{ role: 'assistant', text: cv.redacted_text }]
+          : [];
+    const textSource: Array<{ role: string; text: string }> = envelope
+      ? envelope.messages.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }))
+      : turns.filter((t) => t.role === 'user' || t.role === 'assistant').map((t) => ({ role: t.role, text: t.text }));
+    const firstPrompt = (cv.first_prompt
+      || textSource.find((t) => t.role === 'user')?.text
+      || '').slice(0, 200);
+
+    // 1. Metadata row — what recent/analytics/search enrichment read.
+    // Collected, not written — setItems flushes the batch after the loop.
+    itemBatch.push({
+      id: cv.session_id,
+      sourceType: 'session' as SourceType,
+      title: firstPrompt.slice(0, 100),
+      projectPath,
+      projectId: cv.project_id || undefined,
+      contentPreview: firstPrompt,
+      filePath: '',
+      mtime,
+      extra: {
+        tool: cv.tool || 'claude',
+        synced: true,
+        syncedDeviceId: agent.deviceId,
+        ...(cv.meta && typeof cv.meta === 'object' ? cv.meta : {}),
+      },
+    } as Parameters<typeof store.setItem>[0]);
+
+    // 2. FTS chunks — what search reads (text turns only; see
+    // chunksFromTurns). Replace-then-insert semantics come from
+    // addChunksFTS itself (it deletes the item's rows first).
+    const cks = chunksFromTurns(
+      cv.session_id,
+      textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
+      projectPath, mtime, cv.project_id || undefined, firstPrompt,
+    );
+    // Subagent chunks — the envelope carries each subagent's (redacted,
+    // trimmed) messages; index them as `subagent:<kind>` chunks so
+    // recall_subagent_search can query them server-side (chunkId encodes
+    // the subagent id for result rendering). MUST go in the SAME
+    // addChunksFTS call as the turn chunks: addChunksFTS deletes all of an
+    // item's rows first, so a second call for the same session would wipe
+    // the turn chunks.
+    const subagents = (envelope?.subagents ?? []) as EnvSubagent[];
+    // Subagent transcripts → embed-safe windowed chunks (see
+    // services/session-chunks.ts). Same call the self-heal uses.
+    const subChunks = subagentChunks(cv.session_id, subagents, projectPath, mtime);
+    const allChunks = subChunks.length > 0 ? [...cks, ...subChunks] : cks;
+    if (allChunks.length > 0) chunkBatch.push(...allChunks);
+
+    // 3. First-prompt cache — what the conversation list hydrates from.
+    sessionMetaBatch.push({
+      sessionId: cv.session_id,
+      firstPrompt,
+      summary: (cv.meta?.summary as string) || '',
+      summarySource: ((cv.meta?.summarySource as string) || 'original') as 'original' | 'gemini' | 'claude' | 'ollama',
+      mtime,
+      indexedAt: Date.now(),
+    });
+    // Native tool title is NOT set here — it's a derived field reconciled
+    // via the fields[] batch (sync-fields.ts), conversation-free.
+
+    // 4. Conversation envelope — the complete redacted turn view
+    // (text + tool calls + result snippets), NOT the raw transcript.
+    // Upsert by (id, source_type): re-syncs replace any stale
+    // envelope a previous ingest version left behind.
+    // Record the byte offset this FULL sync is synced THROUGH (`o`) — the
+    // next append validates its base against it (offset-continuity guard).
+    // `cv.from_offset` is the file size at full-sync time for append-only
+    // backends (0/undefined otherwise — those never append).
+    const syncedOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
+    // Collected, not written — flushed in one statement after the loop.
+    if (envelope) {
+      cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }) });
+    } else if (turns.length > 0) {
+      cachedContentBatch.push({
+        id: cv.session_id, sourceType: 'session', mtime,
+        content: JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
+      });
+    }
+    tally.conv++;
+}
 
 const router = express.Router();
 
@@ -375,278 +694,18 @@ router.post('/', async (req, res) => {
         const convIds = conversations.map((c) => c.session_id).filter(Boolean);
         const priorContent = await store.getCachedContentStaleMany('session', convIds);
         const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
+        const priorArchive = await store.rawSessionMetaMany(convIds);
 
+        const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
         for (const cv of conversations) {
-          if (!cv.session_id) continue;
-          if (deadSet.has(cv.session_id)) continue; // deleted — never resurrect
-          const mtime = Math.floor(Number(cv.mtime) || 0);
-          const projectPath = cv.project_path || '';
-
-          // ── APPEND path (tail-only sync, docs/SYNC-INCREMENTAL.md) ──────
-          // The client shipped only the new tail. Merge the envelope + append
-          // chunks WITHOUT deleting the head's chunks. Touch ONLY mtime on the
-          // metadata row (title/preview/extra are head-derived; prior values
-          // stand). If the server has no prior envelope, signal full_resync.
-          if (cv.append) {
-            // Emergency off-switch (default ON now that the continuity check
-            // below makes append safe). CHAT_RECALL_TAIL_APPEND=0 disables.
-            if (process.env.CHAT_RECALL_TAIL_APPEND === '0') {
-              fullResyncNeeded.push(cv.session_id);
-              continue;
-            }
-            // Need a client envelope for the tail messages.
-            if (!cv.envelope || cv.envelope.v !== PARSER_VERSION || !Array.isArray(cv.envelope.messages)) {
-              // No usable tail envelope → ask for full. (Shouldn't happen — the
-              // client always sends an envelope on append — but be defensive.)
-              fullResyncNeeded.push(cv.session_id);
-              continue;
-            }
-            // Read the existing envelope from content_cache (stale read —
-            // the stored mtime may be older than the incoming append's mtime;
-            // we want the prior envelope regardless, to merge into it).
-            const existing = priorContent.get(cv.session_id) ?? null;
-            if (!existing || !existing.content) {
-              // No prior envelope on the server (data loss, first sync, rotation)
-              // → the client must FULL re-sync this session.
-              fullResyncNeeded.push(cv.session_id);
-              continue;
-            }
-            try {
-              const prev = JSON.parse(existing.content) as { v: number; messages: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
-              // ── OFFSET-CONTINUITY GUARD (the fix that makes append safe) ──
-              // The append's tail starts at byte `base_offset`. It is valid to
-              // merge ONLY if our stored envelope is synced through exactly that
-              // offset (`prev.o`). Any mismatch — a base truncated by an
-              // interrupted full sync, a server purge, a re-ordered tick, or an
-              // envelope stored before this field existed (prev.o undefined) —
-              // means the tail would graft onto the wrong base. Refuse → FULL
-              // re-sync. This is what the original append lacked: it trusted the
-              // base was complete. (1079-msg session stored as 65 was a base at
-              // a different offset than the tail expected — now caught here.)
-              if (typeof prev.o !== 'number' || prev.o !== (cv.base_offset ?? -1)) {
-                fullResyncNeeded.push(cv.session_id);
-                continue;
-              }
-              const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
-              // Continue line numbers from the stored envelope's last line.
-              const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
-              const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
-              const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
-              // Advance the synced-through offset to where this tail ends.
-              const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
-              cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
-
-              // Append chunks for the tail's text turns. The server owns the
-              // chunk-id index: continue from MAX(existing :sync: index) + 1.
-              const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
-              if (textSource.length > 0) {
-                const maxIdx = priorChunkIdx.get(cv.session_id) ?? 0;
-                const tailChunks = chunksFromTurns(
-                  cv.session_id,
-                  textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
-                  projectPath, mtime, cv.project_id || undefined,
-                );
-                // Re-number: shift each chunk's :sync:<i> to continue from maxIdx+1.
-                for (let i = 0; i < tailChunks.length; i++) {
-                  tailChunks[i].chunkId = `${cv.session_id}:sync:${maxIdx + 1 + i}`;
-                }
-                appendChunkBatch.push(...tailChunks);
-              }
-
-              // Touch ONLY mtime on the metadata row — title/preview/extra are
-              // head-derived and must survive the append untouched.
-              touchBatch.push({ sessionId: cv.session_id, mtime });
-              appendConv++;
-            } catch {
-              // Merge failed (corrupt prior envelope, etc.) → ask for full.
-              fullResyncNeeded.push(cv.session_id);
-            }
-            continue;
-          }
-
-          // ── FULL path (the existing whole-conversation ingest) ──────────
-          // Raw container (highest fidelity): archive shrink-protected and
-          // derive the envelope from the bytes with the canonical parser.
-          // Falls back to the client envelope, then legacy turns.
-          let envelope: { v: number; messages: SyncEnvelopeMessage[]; subagents: unknown[] } | null = null;
-          let rawArchiveResult: 'stored' | 'shrink-protected' | 'unchanged' | null = null;
-          if (cv.raw_b64) {
-            try {
-              const gz = Buffer.from(cv.raw_b64, 'base64');
-              const container = gunzipContainer(gz);
-              if (container) {
-                rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length, cv.project_id || '', projectPath);
-
-                // ── Smaller is not the same as stale ────────────────────────
-                // The shrink guard exists to survive a resume-truncated file,
-                // and for that it is exactly right. But it decides on SIZE, and
-                // size cannot tell a truncation from a DISJOINT FRAGMENT: a
-                // second device, or a session resumed under another profile,
-                // legitimately holds records this archive has never seen while
-                // being smaller overall. Rejecting those loses them silently —
-                // the client has already moved on, and nothing ever retries.
-                //
-                // So on a rejection, merge by RECORD (the same union the client
-                // shadow uses) and re-store only if the result actually grew.
-                // Truncation still cannot shrink the archive: a strict subset
-                // merges back to the stored container and is a no-op.
-                if (rawArchiveResult === 'shrink-protected') {
-                  try {
-                    const prior = await store.getRawSession(cv.session_id);
-                    const priorContainer = prior?.gz ? gunzipContainer(prior.gz) : null;
-                    if (priorContainer) {
-                      const merged = mergeContainer(priorContainer, container);
-                      const { gz: mergedGz, size: mergedSize } = gzipContainer(merged.container);
-                      if (mergedSize > Number(prior!.size)) {
-                        rawArchiveResult = await store.putRawSession(
-                          cv.session_id, merged.container.tool, mtime, mergedGz, mergedSize,
-                          cv.project_id || '', projectPath,
-                        );
-                        log.info(
-                          { session: cv.session_id, priorSize: Number(prior!.size), incoming: Number(cv.raw_size) || gz.length, mergedSize },
-                          'raw archive: merged a disjoint fragment that the shrink guard would have dropped',
-                        );
-                      }
-                    }
-                  } catch (err) {
-                    // A failed merge must leave the stored archive exactly as it
-                    // was — the fragment is lost either way, but the history is not.
-                    log.warn({ err, session: cv.session_id }, 'raw archive fragment merge failed; kept the stored copy');
-                  }
-                }
-                const t = parseTranscriptFromContainer(container);
-                if (t.messages.length > 0 || t.subagents.length > 0) {
-                  envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };
-                }
-              }
-            } catch { /* corrupt raw — derived fallbacks below still apply */ }
-          }
-          if (!envelope && cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)) {
-            envelope = { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] };
-          }
-
-          // ── SHRINK GUARD (server-side defense-in-depth) ─────────────────
-          // The client shadow (packages/engine/src/transcript/shadow.ts) is the
-          // primary fix: it merges a resume-truncated transcript back to full
-          // BEFORE shipping, so a current client never sends a shrink. But an
-          // OLD client (no shadow), or one whose local shadow was wiped, can
-          // still send a FULL sync carrying LESS than the server already holds —
-          // the exact way the 2026-07-09 incident emptied conversations. The raw
-          // archive is already shrink-protected in putRawSession; extend that to
-          // the envelope + search chunks: never overwrite a fuller stored
-          // conversation with a smaller one. Two-signal test (bytes shrank AND
-          // fewer messages, or — when no raw was sent — a large message drop)
-          // keeps false positives near zero; a genuine edit that merely re-trims
-          // is not fewer messages. Best-effort: any error falls through to the
-          // normal ingest, never blocking a legitimate sync.
-          if (envelope) {
-            try {
-              const stored = priorContent.get(cv.session_id) ?? null;
-              if (stored?.content) {
-                const prevEnv = JSON.parse(stored.content) as { messages?: unknown[] };
-                const storedCount = Array.isArray(prevEnv.messages) ? prevEnv.messages.length : 0;
-                const incomingCount = envelope.messages.length;
-                const bytesShrank = rawArchiveResult === 'shrink-protected';
-                const suspectedShrink = incomingCount < storedCount &&
-                  (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
-                if (suspectedShrink) {
-                  log.warn(
-                    { session: cv.session_id, storedCount, incomingCount, bytesShrank, device: agent.deviceId },
-                    'shrink-guard: kept fuller stored conversation, ignored a smaller full sync (upstream in-place truncation reached a client without a shadow)',
-                  );
-                  shrinkGuarded++;
-                  continue; // preserve stored envelope/chunks/title — write nothing
-                }
-              }
-            } catch { /* guard is best-effort — fall through to normal ingest */ }
-          }
-          const turns: SyncTurn[] = envelope
-            ? []
-            : Array.isArray(cv.turns) && cv.turns.length > 0
-              ? cv.turns
-              : cv.redacted_text
-                ? [{ role: 'assistant', text: cv.redacted_text }]
-                : [];
-          const textSource: Array<{ role: string; text: string }> = envelope
-            ? envelope.messages.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }))
-            : turns.filter((t) => t.role === 'user' || t.role === 'assistant').map((t) => ({ role: t.role, text: t.text }));
-          const firstPrompt = (cv.first_prompt
-            || textSource.find((t) => t.role === 'user')?.text
-            || '').slice(0, 200);
-
-          // 1. Metadata row — what recent/analytics/search enrichment read.
-          // Collected, not written — setItems flushes the batch after the loop.
-          itemBatch.push({
-            id: cv.session_id,
-            sourceType: 'session' as SourceType,
-            title: firstPrompt.slice(0, 100),
-            projectPath,
-            projectId: cv.project_id || undefined,
-            contentPreview: firstPrompt,
-            filePath: '',
-            mtime,
-            extra: {
-              tool: cv.tool || 'claude',
-              synced: true,
-              syncedDeviceId: agent.deviceId,
-              ...(cv.meta && typeof cv.meta === 'object' ? cv.meta : {}),
-            },
-          } as Parameters<typeof store.setItem>[0]);
-
-          // 2. FTS chunks — what search reads (text turns only; see
-          // chunksFromTurns). Replace-then-insert semantics come from
-          // addChunksFTS itself (it deletes the item's rows first).
-          const cks = chunksFromTurns(
-            cv.session_id,
-            textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
-            projectPath, mtime, cv.project_id || undefined, firstPrompt,
-          );
-          // Subagent chunks — the envelope carries each subagent's (redacted,
-          // trimmed) messages; index them as `subagent:<kind>` chunks so
-          // recall_subagent_search can query them server-side (chunkId encodes
-          // the subagent id for result rendering). MUST go in the SAME
-          // addChunksFTS call as the turn chunks: addChunksFTS deletes all of an
-          // item's rows first, so a second call for the same session would wipe
-          // the turn chunks.
-          const subagents = (envelope?.subagents ?? []) as EnvSubagent[];
-          // Subagent transcripts → embed-safe windowed chunks (see
-          // services/session-chunks.ts). Same call the self-heal uses.
-          const subChunks = subagentChunks(cv.session_id, subagents, projectPath, mtime);
-          const allChunks = subChunks.length > 0 ? [...cks, ...subChunks] : cks;
-          if (allChunks.length > 0) chunkBatch.push(...allChunks);
-
-          // 3. First-prompt cache — what the conversation list hydrates from.
-          sessionMetaBatch.push({
-            sessionId: cv.session_id,
-            firstPrompt,
-            summary: (cv.meta?.summary as string) || '',
-            summarySource: ((cv.meta?.summarySource as string) || 'original') as 'original' | 'gemini' | 'claude' | 'ollama',
-            mtime,
-            indexedAt: Date.now(),
+          await ingestConversation(cv, {
+            store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
+            deadSet, priorContent, priorChunkIdx, priorArchive,
+            itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
+            sessionMetaBatch, touchBatch, fullResyncNeeded, tally,
           });
-          // Native tool title is NOT set here — it's a derived field reconciled
-          // via the fields[] batch (sync-fields.ts), conversation-free.
-
-          // 4. Conversation envelope — the complete redacted turn view
-          // (text + tool calls + result snippets), NOT the raw transcript.
-          // Upsert by (id, source_type): re-syncs replace any stale
-          // envelope a previous ingest version left behind.
-          // Record the byte offset this FULL sync is synced THROUGH (`o`) — the
-          // next append validates its base against it (offset-continuity guard).
-          // `cv.from_offset` is the file size at full-sync time for append-only
-          // backends (0/undefined otherwise — those never append).
-          const syncedOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
-          // Collected, not written — flushed in one statement after the loop.
-          if (envelope) {
-            cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }) });
-          } else if (turns.length > 0) {
-            cachedContentBatch.push({
-              id: cv.session_id, sourceType: 'session', mtime,
-              content: JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
-            });
-          }
-          conv++;
         }
+        conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
 
         // Non-session source items (plan/task/claude_md/skill/…): metadata
         // row + FTS chunks, same write path the local indexer uses.

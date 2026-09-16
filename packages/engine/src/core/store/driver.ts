@@ -192,6 +192,8 @@ export interface StorageDriver {
   // caller measuring statement counts must run against Postgres — the SQLite
   // numbers mean nothing. See docs/SYNC-BATCH-WRITES.md.
 
+  /** What the raw archive already holds for these sessions, in one query. */
+  rawSessionMetaMany(sessionIds: string[]): Promise<Map<string, { size: number; mtime: number; project_id: string }>>;
   /** Prior cached content for a whole batch, in one query. */
   getCachedContentStaleMany(sourceType: string, ids: string[]): Promise<Map<string, { content: string; mtime: number }>>;
   /** The tail-append chunk cursor for a whole batch, in one query. */
@@ -260,7 +262,14 @@ export interface StorageDriver {
   purgeSession: AsyncMethod<MemoryStore['purgeSession']>;
 
   // ── raw session archive ──
-  putRawSession: AsyncMethod<MemoryStore['putRawSession']>;
+  /**
+   * `known` is the prefetched archive row for this session, from
+   * rawSessionMetaMany. `undefined` means the driver reads it itself;
+   * `null` means the caller read it and there is none.
+   */
+  putRawSession(
+    ...a: [...Parameters<MemoryStore['putRawSession']>, known?: { size: number; mtime: number; project_id: string } | null]
+  ): Promise<ReturnType<MemoryStore['putRawSession']>>;
   getRawSession: AsyncMethod<MemoryStore['getRawSession']>;
   listRawSessionVersions: AsyncMethod<MemoryStore['listRawSessionVersions']>;
   listEnvelopesMissingRawArchive: AsyncMethod<MemoryStore['listEnvelopesMissingRawArchive']>;

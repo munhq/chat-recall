@@ -1270,8 +1270,31 @@ export class PgStore implements StorageDriver {
   }
 
   // ── raw session archive (shrink-protected — see memory-store.ts) ──
-  async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number, projectId = '', projectPath = ''): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
-    const existing = await this.one(`SELECT size, mtime, project_id FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+  /**
+   * What the archive already holds for these sessions, in one query.
+   *
+   * putRawSession reads this per call to decide unchanged / shrink-protected,
+   * and the ingest calls it once per session — the last per-session round trip
+   * left in the batch path. Fetching it for the whole batch and handing it back
+   * through `known` removes it. See docs/SYNC-BATCH-WRITES.md §4.
+   */
+  async rawSessionMetaMany(sessionIds: string[]): Promise<Map<string, { size: number; mtime: number; project_id: string }>> {
+    const out = new Map<string, { size: number; mtime: number; project_id: string }>();
+    if (sessionIds.length === 0) return out;
+    const rows = await this.q(
+      `SELECT session_id, size, mtime, project_id FROM raw_sessions WHERE tenant=$1 AND session_id = ANY($2)`,
+      [this.t, sessionIds]);
+    for (const r of rows) out.set(r.session_id, { size: Number(r.size), mtime: Number(r.mtime), project_id: r.project_id });
+    return out;
+  }
+
+  async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number, projectId = '', projectPath = '', known?: { size: number; mtime: number; project_id: string } | null): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
+    // `known` is the prefetched row for this session when the caller already
+    // read the batch's archive metadata. `undefined` means it did not, and the
+    // read happens here; `null` means it did and there is no row.
+    const existing = known !== undefined
+      ? known
+      : await this.one(`SELECT size, mtime, project_id FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     if (existing) {
       // Fill a missing project id even when the capture is unchanged/shrunk, so a
       // legacy archive becomes self-sufficient the next time it's re-synced.
