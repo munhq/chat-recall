@@ -8,6 +8,7 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { resumeCommandFor } from '../core/resume-command.js';
+import { detectStackAt, evidenceLine, type StackEvidence } from '../core/stack-detect.js';
 import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
 import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
@@ -944,6 +945,15 @@ const RecallDecisionsSchema = z.object({
   include_candidates: z.boolean().optional().default(false),
 });
 
+const RecallDecisionScanSchema = z.object({
+  path: z.string().optional().describe('Repository root to read. Defaults to the current directory.'),
+  project: z.string().optional().describe('Project the decisions belong to. Defaults to the repository name.'),
+  area: z.string().optional().describe('Only this area.'),
+  record: z.boolean().optional().default(false)
+    .describe('Record the areas the manifests answer, at project scope, citing the file and line.'),
+  session_id: z.string().optional().describe('Session to attribute the writes to.'),
+});
+
 // ── Analytics summary + wake-up ────────────────────────────────────────────
 
 const RecallAnalyticsSummarySchema = z.object({
@@ -1213,6 +1223,7 @@ const WRITE_TOOLS = new Set<string>([
   'recall_kg_invalidate',
   'recall_diary_write',
   'recall_decision_record',
+  'recall_decision_scan',      // writes only with record:true, and only what a manifest proves
   'recall_set',
   'recall_task_create',
   'recall_task_update',
@@ -2147,6 +2158,32 @@ free to choose, and where recording the choice afterwards is worth doing.`,
             area: { type: 'string', description: `Only this area. Standard areas: ${DECISION_AREAS.join(', ')}.` },
             project: { type: 'string', description: 'Resolve for this project, so its overrides win over account-wide decisions. Omit for the account-wide view.' },
             include_candidates: { type: 'boolean', default: false, description: 'Also return unconfirmed guesses the indexer extracted. These are NOT decisions — never treat one as settled.' },
+          },
+        },
+      },
+      {
+        name: 'recall_decision_scan',
+        description: `What THIS repository's manifests say its stack is, beside what the register currently
+answers. Use it when a decision card asks you to record an area, or before recording one yourself.
+
+The register is push-only: it holds what somebody asserted, and it never reads a repository. So a
+project that never had the conversation inherits an answer from a broader scope — which is how a
+Tauri app whose store is \`rusqlite\` came to be told its database decision was Postgres.
+
+This reads package.json, Cargo.toml, pyproject.toml, requirements.txt, go.mod, Gemfile and
+composer.json at rest, and reports the product that answers each area with the file and line it
+read. That is EVIDENCE, not a decision: it says what is there, never what was ruled out or why.
+
+\`record: true\` writes the areas the manifests answer, at project scope, with the file and line as
+the reason. Areas the manifests do not answer are never written — ask the user instead.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Repository root to read. Defaults to the current directory.' },
+            project: { type: 'string', description: 'Project the decisions belong to. Defaults to the repository folder name.' },
+            area: { type: 'string', description: `Only this area. Standard areas: ${DECISION_AREAS.join(', ')}.` },
+            record: { type: 'boolean', default: false, description: 'Record what the manifests answer, at project scope, citing the file and line. Leave false to look first.' },
+            session_id: { type: 'string', description: 'Your current session id, so each write traces back to this conversation.' },
           },
         },
       },
@@ -4949,6 +4986,98 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           }
         }
 
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      // ── What the repository itself says ────────────────────────
+      //
+      // The one place in this product that reads a repository to answer a
+      // decision. It runs HERE, in the session, because the checkout is on this
+      // machine and never on the server.
+      case 'recall_decision_scan': {
+        const p = RecallDecisionScanSchema.parse(args ?? {});
+        requireRemote();
+
+        // The repository root, not the directory the agent happens to be in: a
+        // monorepo's manifests sit above a package, and a session's cwd is
+        // arbitrary.
+        const start = resolve(p.path ?? process.cwd());
+        let root = start;
+        for (let dir = start, last = ''; dir && dir !== last; last = dir, dir = resolve(dir, '..')) {
+          if (existsSync(join(dir, '.git'))) { root = dir; break; }
+        }
+        const project = p.project ?? root.split('/').filter(Boolean).pop() ?? root;
+        const wantArea = p.area ? canonArea(p.area) : null;
+
+        const evidence = detectStackAt(root).filter((e) => !wantArea || e.area === wantArea);
+
+        // What the register answers today, so the two can be compared in one
+        // reading rather than by the agent making a second call and holding
+        // both in its head.
+        type Row = { area: string; value: string; scope: string; scope_key: string; inherited: boolean };
+        const reg = await remoteGetQS<{ decisions: Row[]; project_key: string | null }>('/api/decisions', {
+          project,
+          workspace: resolveWorkspaceId(root)?.slice(3),
+          include_candidates: '0',
+        });
+        const answered = new Map(reg.decisions.map((d) => [d.area, d]));
+
+        const byArea = new Map<string, StackEvidence[]>();
+        for (const e of evidence) byArea.set(e.area, [...(byArea.get(e.area) ?? []), e]);
+
+        const lines: string[] = [`Stack evidence in ${project} (${root})`, ''];
+        if (!byArea.size) {
+          lines.push('No manifest in this repository names a product this tool recognises.');
+          lines.push('Ask the user what the repository uses, and record their answer with recall_decision_record.');
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        /** Areas with one candidate: the only ones a write can be sure of. */
+        const unambiguous: Array<{ area: string; value: string; reason: string }> = [];
+
+        for (const [area, found] of [...byArea.entries()].sort()) {
+          const now = answered.get(area);
+          lines.push(`${area}`);
+          for (const e of found) lines.push(`  found:    ${e.value.padEnd(22)} ${evidenceLine(e)}`);
+          if (now) {
+            const from = now.scope === 'account' ? 'the account'
+              : now.scope === 'workspace' ? `the ${now.scope_key.replace(/^ws:/, '')} folder group`
+              : now.scope === 'user' ? 'a personal preference' : 'this project';
+            const agrees = found.some((e) => e.value.toLowerCase().includes(now.value.toLowerCase())
+              || now.value.toLowerCase().includes(e.value.toLowerCase()));
+            lines.push(`  register: ${now.value.padEnd(22)} from ${from}${agrees ? '' : '  ← DISAGREES with the manifests'}`);
+          } else {
+            lines.push('  register: nothing recorded');
+          }
+          if (found.length === 1) {
+            unambiguous.push({ area, value: found[0].value, reason: evidenceLine(found[0]) });
+          } else {
+            lines.push(`  ${found.length} products answer this area. Pick one and record it with recall_decision_record —`);
+            lines.push('  a second write to the same area supersedes the first, so recording all of them keeps only the last.');
+          }
+          lines.push('');
+        }
+
+        if (!p.record) {
+          lines.push(unambiguous.length
+            ? `Run again with record: true to record ${unambiguous.map((u) => u.area).join(', ')} at project scope, citing the file and line.`
+            : 'Nothing here can be recorded without a choice. Ask the user which product answers each area.');
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        const written: string[] = [];
+        for (const u of unambiguous) {
+          await remotePost('/api/decisions', {
+            area: u.area, value: u.value, reason: u.reason,
+            project, scope: 'project', session_id: p.session_id,
+          });
+          written.push(`${u.area}: ${u.value}`);
+        }
+        lines.push(written.length
+          ? `Recorded at project scope for ${project}:\n  ${written.join('\n  ')}`
+          : 'Recorded nothing: every area the manifests answer has more than one candidate.');
+        const left = [...byArea.keys()].filter((a) => !unambiguous.some((u) => u.area === a));
+        if (left.length) lines.push('', `Still yours to decide: ${left.join(', ')}.`);
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 

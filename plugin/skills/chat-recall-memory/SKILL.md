@@ -39,6 +39,21 @@ future sessions inherit them.
   Project overrides beat account-wide decisions. A personal preference is
   returned marked `advisory` and never overrides a team decision.
 
+- `mcp__chat-recall__recall_decision_scan` — what THIS repository's manifests
+  say its stack is, beside what the register currently answers. The register is
+  push-only and never reads a repository, so a project that never had the
+  conversation inherits an answer from a broader scope — which is how an app
+  whose store is `rusqlite` came to be told its database decision was Postgres.
+  Run it when a decision card asks you to record an area, and before recording
+  one yourself. It names the product that answers each area with the file and
+  line it read: that is EVIDENCE, not a decision — it says what is there, never
+  what was ruled out or why.
+
+  `record: true` writes the areas the manifests answer, at project scope, with
+  that file and line as the reason. It never writes an area with more than one
+  candidate, and it never writes one the manifests are silent about. For those,
+  ask the user and record their answer in their words.
+
 ## Record new knowledge (do this when something non-obvious is decided)
 
 - `mcp__chat-recall__recall_decision_record` — an explicit decision (subject,
