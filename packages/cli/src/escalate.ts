@@ -256,11 +256,11 @@ export async function runEscalate(deps: EscalateDeps, opts: EscalateOptions): Pr
   try {
     const tl = await deps.get<TimelineResponse>(`/api/kg/timeline?entity=${encodeURIComponent(projectName)}&limit=500`);
     for (const e of tl.entries ?? []) {
-      if (e.current) existing.add(`${e.predicate} ${e.object}`.toLowerCase());
+      if (e.current) existing.add(`${e.predicate}\u0000${e.object}`.toLowerCase());
     }
   } catch { /* best-effort */ }
 
-  const fresh = learnings.filter((l) => !existing.has(`${l.predicate} ${l.object}`.toLowerCase()));
+  const fresh = learnings.filter((l) => !existing.has(`${l.predicate}\u0000${l.object}`.toLowerCase()));
   const skippedExisting = learnings.length - fresh.length;
 
   // 5. Print (and in dry-run: stop here).
