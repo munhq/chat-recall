@@ -352,6 +352,12 @@ router.post('/', async (req, res) => {
       // Append chunks go through a SEPARATE batch (appendChunksFTS — no per-item
       // delete) so they don't wipe the head's chunks.
       const appendChunkBatch: Parameters<typeof store.appendChunksFTS>[0] = [];
+      // Cached content, collected in the conversation loop and flushed once —
+      // it was a round trip per session. See docs/SYNC-BATCH-WRITES.md §4.
+      const cachedContentBatch: Array<{ id: string; sourceType: string; mtime: number; content: string }> = [];
+      const sessionMetaBatch: Parameters<typeof metaCache.set>[0][] = [];
+      const touchBatch: Array<{ sessionId: string; mtime: number }> = [];
+      const computeBatch: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }> = [];
       try {
         // Tombstones first: purge + remember, and build the do-not-write set
         // so nothing in THIS payload resurrects a deleted session.
@@ -362,6 +368,13 @@ router.post('/', async (req, res) => {
           dead++;
         }
         const deadSet = new Set((await store.listTombstones()).map((t) => t.session_id));
+
+        // PREFETCHED, before the loop. Both of these were read once per session
+        // inside it — `getCachedContentStale` twice. One query each for the
+        // whole batch. See docs/SYNC-BATCH-WRITES.md §4.
+        const convIds = conversations.map((c) => c.session_id).filter(Boolean);
+        const priorContent = await store.getCachedContentStaleMany('session', convIds);
+        const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
 
         for (const cv of conversations) {
           if (!cv.session_id) continue;
@@ -391,7 +404,7 @@ router.post('/', async (req, res) => {
             // Read the existing envelope from content_cache (stale read —
             // the stored mtime may be older than the incoming append's mtime;
             // we want the prior envelope regardless, to merge into it).
-            const existing = await store.getCachedContentStale(cv.session_id, 'session');
+            const existing = priorContent.get(cv.session_id) ?? null;
             if (!existing || !existing.content) {
               // No prior envelope on the server (data loss, first sync, rotation)
               // → the client must FULL re-sync this session.
@@ -421,13 +434,13 @@ router.post('/', async (req, res) => {
               const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
               // Advance the synced-through offset to where this tail ends.
               const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
-              await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify(merged));
+              cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
 
               // Append chunks for the tail's text turns. The server owns the
               // chunk-id index: continue from MAX(existing :sync: index) + 1.
               const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
               if (textSource.length > 0) {
-                const maxIdx = await store.maxSyncChunkIndex(cv.session_id);
+                const maxIdx = priorChunkIdx.get(cv.session_id) ?? 0;
                 const tailChunks = chunksFromTurns(
                   cv.session_id,
                   textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
@@ -442,7 +455,7 @@ router.post('/', async (req, res) => {
 
               // Touch ONLY mtime on the metadata row — title/preview/extra are
               // head-derived and must survive the append untouched.
-              await store.touchSessionMtime(cv.session_id, mtime);
+              touchBatch.push({ sessionId: cv.session_id, mtime });
               appendConv++;
             } catch {
               // Merge failed (corrupt prior envelope, etc.) → ask for full.
@@ -528,7 +541,7 @@ router.post('/', async (req, res) => {
           // normal ingest, never blocking a legitimate sync.
           if (envelope) {
             try {
-              const stored = await store.getCachedContentStale(cv.session_id, 'session');
+              const stored = priorContent.get(cv.session_id) ?? null;
               if (stored?.content) {
                 const prevEnv = JSON.parse(stored.content) as { messages?: unknown[] };
                 const storedCount = Array.isArray(prevEnv.messages) ? prevEnv.messages.length : 0;
@@ -562,7 +575,8 @@ router.post('/', async (req, res) => {
             || '').slice(0, 200);
 
           // 1. Metadata row — what recent/analytics/search enrichment read.
-          await store.setItem({
+          // Collected, not written — setItems flushes the batch after the loop.
+          itemBatch.push({
             id: cv.session_id,
             sourceType: 'session' as SourceType,
             title: firstPrompt.slice(0, 100),
@@ -602,7 +616,7 @@ router.post('/', async (req, res) => {
           if (allChunks.length > 0) chunkBatch.push(...allChunks);
 
           // 3. First-prompt cache — what the conversation list hydrates from.
-          await metaCache.set({
+          sessionMetaBatch.push({
             sessionId: cv.session_id,
             firstPrompt,
             summary: (cv.meta?.summary as string) || '',
@@ -622,13 +636,14 @@ router.post('/', async (req, res) => {
           // `cv.from_offset` is the file size at full-sync time for append-only
           // backends (0/undefined otherwise — those never append).
           const syncedOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
+          // Collected, not written — flushed in one statement after the loop.
           if (envelope) {
-            await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify({ ...envelope, o: syncedOffset }));
+            cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }) });
           } else if (turns.length > 0) {
-            await store.setCachedContent(
-              cv.session_id, 'session', mtime,
-              JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
-            );
+            cachedContentBatch.push({
+              id: cv.session_id, sourceType: 'session', mtime,
+              content: JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
+            });
           }
           conv++;
         }
@@ -677,28 +692,22 @@ router.post('/', async (req, res) => {
           item++;
         }
 
-        // Flush the whole batch's metadata + chunks ONCE (bulk, one tx each).
-        if (itemBatch.length > 0) await store.setItems(itemBatch);
-        if (chunkBatch.length > 0) chunks += await store.addChunksFTS(chunkBatch);
-        // Append chunks (tail-only sync) — inserted WITHOUT per-item delete so
-        // the head's chunks survive. Idempotent on retry (ON CONFLICT update).
-        if (appendChunkBatch.length > 0) chunks += await store.appendChunksFTS(appendChunkBatch);
+        // NOTHING IS WRITTEN YET. Collection continues to the end of this
+        // handler and the whole batch goes to the database in one call, in one
+        // transaction — see docs/SYNC-BATCH-WRITES.md §4.
 
-        // Relationship links — upsert semantics (pg ON CONFLICT) make
-        // re-syncs idempotent.
+        // Relationship links — upsert semantics make re-syncs idempotent.
         const validLinks = links.filter((l) =>
           l.source_type && l.source_id && l.target_type && l.target_id && l.link_type);
-        if (validLinks.length > 0) {
-          await store.addLinks(validLinks.map((l) => ({
-            sourceType: l.source_type as SourceType,
-            sourceId: l.source_id,
-            targetType: l.target_type as SourceType,
-            targetId: l.target_id,
-            linkType: l.link_type as any,
-            confidence: typeof l.confidence === 'number' ? l.confidence : 1.0,
-          })));
-          link += validLinks.length;
-        }
+        const linkBatch = validLinks.map((l) => ({
+          sourceType: l.source_type as SourceType,
+          sourceId: l.source_id,
+          targetType: l.target_type as SourceType,
+          targetId: l.target_id,
+          linkType: l.link_type as any,
+          confidence: typeof l.confidence === 'number' ? l.confidence : 1.0,
+        }));
+        link += validLinks.length;
 
         // Findings: group per session, replace wholesale (idempotent re-sync).
         // Drop fuzzy/low-precision rules on the way in too (defense for older
@@ -709,6 +718,20 @@ router.post('/', async (req, res) => {
           (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
         }
         const verifiedHits: VerifiedHit[] = [];
+        // One existence query for every session carrying a finding, and one
+        // write for all of them — it was two round trips per session.
+        // See docs/SYNC-BATCH-WRITES.md §4.
+        const findingSessions = [...bySession.keys()];
+        // A session counts as present if it is ALREADY stored or is being
+        // written by this very batch. The second half matters now that nothing
+        // is written until the end: checking the database alone would drop
+        // every finding belonging to a session in this request.
+        const haveMetadata = findingSessions.length
+          ? await store.existingItemIds('session', findingSessions)
+          : new Set<string>();
+        for (const it of itemBatch) if (it.sourceType === 'session') haveMetadata.add(it.id);
+        const findingBatch: Array<{ sessionId: string; findings: Array<{ detector: string; rule: string; line: number; preview: string; verified?: boolean }> }> = [];
+
         for (const [sessionId, fs] of bySession) {
           // AN ORPHAN FINDING MUST NOT 500 THE WHOLE BATCH.
           //
@@ -726,23 +749,26 @@ router.post('/', async (req, res) => {
           // right answer rather than elevating the write — secret_findings DOES
           // carry an author-write-guard (see pg-schema.ts), and elevating would
           // bypass it. Logged, never silent.
-          if (!(await store.getItem(sessionId, 'session'))) {
+          if (!haveMetadata.has(sessionId)) {
             log.warn({ sessionId, findings: fs.length },
               'skipping secret findings for a session with no metadata row on this server');
             continue;
           }
-          const r = await store.replaceSecretFindings(sessionId, fs.map((f) => ({
-            detector: f.detector,
-            rule: f.rule,
-            line: f.line,
-            preview: f.preview,
-            verified: f.verified_at ? true : undefined,
-          })));
-          find += r.written;
+          findingBatch.push({
+            sessionId,
+            findings: fs.map((f) => ({
+              detector: f.detector,
+              rule: f.rule,
+              line: f.line,
+              preview: f.preview,
+              verified: f.verified_at ? true : undefined,
+            })),
+          });
           for (const f of fs) {
             if (f.verified_at && f.preview) verifiedHits.push({ sessionId, detector: f.detector, rule: f.rule, preview: f.preview });
           }
         }
+
         // Fire customer alerts for newly-seen verified-live secrets. Paid +
         // deduped + non-blocking — a webhook hiccup must never fail a sync.
         if (verifiedHits.length > 0) {
@@ -756,13 +782,14 @@ router.post('/', async (req, res) => {
         // the only producer.
         if (derived.length > 0) {
           const outcomeCache = await createOutcomeCache();
+
           try {
             for (const d of derived) {
               if (!d.session_id) continue;
               for (const c of d.compute ?? []) {
                 if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
-                await metaCache.setCompute(d.session_id, c.kind, Math.floor(Number(c.mtime) || 0), c.data);
-                der++;
+                // Collected — one statement for the whole batch below.
+                computeBatch.push({ sessionId: d.session_id, kind: c.kind, mtime: Math.floor(Number(c.mtime) || 0), data: c.data });
               }
               const row = d.outcome_row;
               if (row && typeof row === 'object' && typeof row.status === 'string') {
@@ -792,6 +819,26 @@ router.post('/', async (req, res) => {
 
         // Knowledge graph: idempotent imports (importTriple matches expired
         // facts too, so re-syncs never duplicate).
+        // ── THE WRITE ───────────────────────────────────────────────────────
+        // Everything above collected; nothing above touched the database except
+        // the tombstone purge and three batch reads. One call, one transaction,
+        // one connection, eight statements — whatever the batch size.
+        // docs/SYNC-BATCH-WRITES.md §4.
+        const written = await store.writeIngestBatch({
+          items: itemBatch,
+          chunks: chunkBatch,
+          appendChunks: appendChunkBatch,
+          cachedContent: cachedContentBatch,
+          sessionMeta: sessionMetaBatch,
+          touchMtime: touchBatch,
+          compute: computeBatch,
+          findings: findingBatch,
+          links: linkBatch,
+        }, metaCache);
+        chunks += written.chunks;
+        find += written.findings;
+        der += written.computeOffered;
+
         if (kgEntities.length > 0 || kgTriples.length > 0) {
           const kg = await createKnowledgeGraph();
           try {
@@ -800,10 +847,12 @@ router.post('/', async (req, res) => {
               await kg.addEntity(e.name, e.type ?? 'unknown', e.properties ?? {});
               kgE++;
             }
-            for (const t of kgTriples) {
-              if (!t.subject || !t.predicate || !t.object) continue;
-              if (await kg.importTriple(t) === 'inserted') kgT++;
-            }
+            // ONE call, not one per triple. Each importTriple is four sequential
+            // round trips, so a sync carrying 5905 triples issued ~23600 queries
+            // in a row while holding a pooled connection — long enough for the
+            // pooler to time the request out at its 120s ceiling.
+            const usable = kgTriples.filter((t) => t.subject && t.predicate && t.object);
+            if (usable.length) kgT += (await kg.importTriples(usable)).inserted;
           } finally {
             await kg.close();
           }

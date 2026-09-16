@@ -552,6 +552,26 @@ ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'ex
 CREATE INDEX IF NOT EXISTS idx_kgt_subject ON kg_triples(tenant, subject);
 CREATE INDEX IF NOT EXISTS idx_kgt_object ON kg_triples(tenant, object);
 CREATE INDEX IF NOT EXISTS idx_kgt_predicate ON kg_triples(tenant, predicate);
+-- The key an ingest upserts on. Without it every imported triple needed a SELECT
+-- of its own before its INSERT, which is four round trips per triple: a sync
+-- carrying 5905 of them issued ~23600 statements in sequence while holding one
+-- pooled connection.
+--
+-- PARTIAL, on live rows. A full index including valid_to breaks supersede:
+-- addTriple and invalidate expire a row by setting valid_to, which MOVES that
+-- row's key, and if an expired row already sits at the destination the UPDATE
+-- raises a unique violation and fails the whole request. Reachable when a client
+-- imports a historical expired fact and the same fact is later asserted live
+-- with the same start date. A row leaves a partial index when it expires, so the
+-- move is always free.
+CREATE UNIQUE INDEX IF NOT EXISTS kg_triples_live_key
+    ON kg_triples (tenant, subject, predicate, object, COALESCE(valid_from,''))
+ WHERE valid_to IS NULL;
+-- The import path matches EXPIRED rows too, so it cannot use the partial index.
+-- This one carries its anti-join; non-unique, because two concurrent imports of
+-- the same historical fact are not an error worth failing a sync over.
+CREATE INDEX IF NOT EXISTS idx_kgt_import_key
+    ON kg_triples (tenant, subject, predicate, object, valid_from, valid_to);
 
 -- WAL audit + agent diary
 CREATE TABLE IF NOT EXISTS session_tombstones (

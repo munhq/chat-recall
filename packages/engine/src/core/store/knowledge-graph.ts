@@ -20,6 +20,8 @@ export interface KnowledgeGraphDriver {
   addEntity: AsyncMethod<KnowledgeGraph['addEntity']>;
   addTriple: AsyncMethod<KnowledgeGraph['addTriple']>;
   importTriple: AsyncMethod<KnowledgeGraph['importTriple']>;
+  /** Import many at once. See PgKnowledgeGraph.importTriples for why. */
+  importTriples(ts: Parameters<KnowledgeGraph['importTriple']>[0][]): Promise<{ inserted: number; exists: number }>;
   invalidate: AsyncMethod<KnowledgeGraph['invalidate']>;
   queryEntity: AsyncMethod<KnowledgeGraph['queryEntity']>;
   queryRelationship: AsyncMethod<KnowledgeGraph['queryRelationship']>;
@@ -38,6 +40,11 @@ export class SqliteKnowledgeGraph implements KnowledgeGraphDriver {
   async addEntity(...a: Args<'addEntity'>) { return this.inner.addEntity(...a); }
   async addTriple(...a: Args<'addTriple'>) { return this.inner.addTriple(...a); }
   async importTriple(...a: Args<'importTriple'>) { return this.inner.importTriple(...a); }
+  async importTriples(ts: Args<'importTriple'>[0][]) {
+    let inserted = 0, exists = 0;
+    for (const t of ts) (this.inner.importTriple(t) === 'inserted') ? inserted++ : exists++;
+    return { inserted, exists };
+  }
   async invalidate(...a: Args<'invalidate'>) { return this.inner.invalidate(...a); }
   async queryEntity(...a: Args<'queryEntity'>) { return this.inner.queryEntity(...a); }
   async queryRelationship(...a: Args<'queryRelationship'>) { return this.inner.queryRelationship(...a); }
@@ -60,9 +67,22 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
   private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
 
   private entityId(name: string): string { return name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_'); }
+  /**
+   * A surrogate id for one triple row. Uniqueness is all it carries — the
+   * LOGICAL key is (subject, predicate, object, valid_from, valid_to), and that
+   * is what the indexes enforce.
+   *
+   * The entropy is random, not the clock. `Date.now()` has millisecond
+   * resolution and a batch insert builds far more than one row per millisecond,
+   * so two rows in the same batch computed the same id and the second was
+   * dropped by ON CONFLICT DO NOTHING. Caught by the two-validity-windows case
+   * in kg-live-key.test.ts, which stored one row where it asserted two.
+   */
   private async tripleId(subject: string, predicate: string, object: string): Promise<string> {
-    const { createHash } = await import('crypto');
-    const hash = createHash('sha256').update(`${subject}|${predicate}|${object}|${Date.now()}`).digest('hex').slice(0, 12);
+    const { createHash, randomBytes } = await import('crypto');
+    const hash = createHash('sha256')
+      .update(`${subject}|${predicate}|${object}|${Date.now()}|${randomBytes(8).toString('hex')}`)
+      .digest('hex').slice(0, 12);
     return `t_${this.entityId(subject)}_${predicate}_${this.entityId(object)}_${hash}`;
   }
 
@@ -119,6 +139,88 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
       `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,author_sub) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10)`,
       [this.t, id, subId, pred, objId, t.valid_from ?? null, t.valid_to ?? null, t.confidence ?? 1.0, t.source_session ?? null, currentAuthor().sub]);
     return 'inserted' as const;
+  }
+
+  /**
+   * Import many triples in three queries instead of four per triple.
+   *
+   * `importTriple` costs four sequential round trips: two entity upserts, a
+   * lookup, an insert. The sync route called it in a loop, so one user syncing
+   * 5905 triples issued ~23600 queries in sequence, each one a hop to the
+   * pooler and back while holding a pooled connection for the whole request.
+   * With PG_POOL_MAX at 20 per process and the deployment scaling to six pods,
+   * that demands 120 server connections from a pooler configured for 20, and
+   * everything else queues behind it until PgBouncer's 120s limit cuts it off —
+   * which is what a 124997 ms ingest request is.
+   *
+   * Three queries per chunk: upsert the distinct entities, ask which triples
+   * already exist, insert the rest. Chunked because Postgres takes at most
+   * 65535 bind parameters per statement.
+   */
+  async importTriples(ts: Args<'importTriple'>[0][]) {
+    let inserted = 0, exists = 0;
+    const CHUNK = 500;
+    for (let i = 0; i < ts.length; i += CHUNK) {
+      const chunk = ts.slice(i, i + CHUNK);
+      const rows = chunk.map((t) => ({
+        t,
+        sub: this.entityId(t.subject),
+        obj: this.entityId(t.object),
+        pred: t.predicate.toLowerCase().replace(/\s+/g, '_'),
+        vf: t.valid_from ?? '',
+        vt: t.valid_to ?? '',
+      }));
+
+      // 1. Entities. Distinct by id, because the same subject repeats across a
+      //    batch and a duplicate inside one INSERT would conflict with itself.
+      const ents = new Map<string, string>();
+      for (const r of rows) { ents.set(r.sub, r.t.subject); ents.set(r.obj, r.t.object); }
+      if (ents.size) {
+        const vals: unknown[] = [this.t];
+        const tuples = [...ents].map(([id, name]) => {
+          vals.push(id, name);
+          return `($1, $${vals.length - 1}, $${vals.length})`;
+        });
+        await this.q(`INSERT INTO kg_entities (tenant,id,name) VALUES ${tuples.join(',')} ON CONFLICT (tenant,id) DO NOTHING`, vals);
+      }
+
+      // 2. Which of these already exist, matched on the same key importTriple
+      //    uses — so a re-sync still inserts nothing.
+      const seekVals: unknown[] = [this.t];
+      const seekTuples = rows.map((r) => {
+        seekVals.push(r.sub, r.pred, r.obj, r.vf, r.vt);
+        const n = seekVals.length;
+        return `($${n - 4}::text,$${n - 3}::text,$${n - 2}::text,$${n - 1}::text,$${n}::text)`;
+      });
+      const found = await this.qRo(
+        `SELECT v.s, v.p, v.o, v.vf, v.vt FROM (VALUES ${seekTuples.join(',')}) AS v(s,p,o,vf,vt)
+         WHERE EXISTS (SELECT 1 FROM kg_triples t WHERE t.tenant=$1
+           AND t.subject=v.s AND t.predicate=v.p AND t.object=v.o
+           AND COALESCE(t.valid_from,'')=v.vf AND COALESCE(t.valid_to,'')=v.vt)`,
+        seekVals);
+      const already = new Set(found.map((r: any) => [r.s, r.p, r.o, r.vf, r.vt].join('\u0000')));
+
+      // 3. Insert what is left, in one statement.
+      const fresh = rows.filter((r) => !already.has([r.sub, r.pred, r.obj, r.vf, r.vt].join('\u0000')));
+      exists += rows.length - fresh.length;
+      if (fresh.length) {
+        const author = currentAuthor().sub;
+        const insVals: unknown[] = [this.t];
+        const insTuples: string[] = [];
+        for (const r of fresh) {
+          const id = await this.tripleId(r.t.subject, r.pred, r.t.object);
+          insVals.push(id, r.sub, r.pred, r.obj, r.t.valid_from ?? null, r.t.valid_to ?? null,
+            r.t.confidence ?? 1.0, r.t.source_session ?? null, author);
+          const n = insVals.length;
+          insTuples.push(`($1,$${n - 8},$${n - 7},$${n - 6},$${n - 5},$${n - 4},$${n - 3},$${n - 2},$${n - 1},NULL,$${n})`);
+        }
+        await this.q(
+          `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,author_sub)
+           VALUES ${insTuples.join(',')} ON CONFLICT (tenant,id) DO NOTHING`, insVals);
+        inserted += fresh.length;
+      }
+    }
+    return { inserted, exists };
   }
 
   async invalidate(...a: Args<'invalidate'>) {

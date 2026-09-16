@@ -15,7 +15,7 @@ import { gzipSync, gunzipSync } from 'zlib';
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery, tenantQueryRo } from './pg-pool.js';
+import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery, tenantQueryRo, tenantTx, bulkInsert } from './pg-pool.js';
 
 // Postgres BIGINT columns reject the fractional `stat.mtimeMs` values that
 // SQLite stores verbatim. Floor to whole ms at every pg bind and mtime
@@ -53,6 +53,10 @@ export interface MetadataCacheDriver {
   getSummaryErrors: AsyncMethod<MetadataCache['getSummaryErrors']>;
   clearSummaryError: AsyncMethod<MetadataCache['clearSummaryError']>;
   set: AsyncMethod<MetadataCache['set']>;
+  /** Many rows in one statement, writing only what differs. */
+  setMany(rows: Parameters<MetadataCache['set']>[0][]): Promise<void>;
+  /** Many compute rows in one statement. Returns how many were offered. */
+  setComputeMany(rows: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }>): Promise<number>;
   setUserTitle: AsyncMethod<MetadataCache['setUserTitle']>;
   setToolTitle: AsyncMethod<MetadataCache['setToolTitle']>;
   get: AsyncMethod<MetadataCache['get']>;
@@ -106,10 +110,107 @@ export async function computeShrinkRefused(
   return stored !== null && incoming < stored;
 }
 
+/**
+ * Write session-metadata rows on an ALREADY-OPEN client.
+ *
+ * Exported so the ingest's single-transaction batch writer (store/pg.ts) and
+ * this module's own `setMany` share one implementation of the statement. The
+ * guard on DO UPDATE suppresses the write when the content columns already
+ * match; `indexed_at` is set on a real update but stays out of the guard,
+ * because it moves on every sync and would make every row differ.
+ * See docs/SYNC-BATCH-WRITES.md §3.
+ */
+export async function writeSessionMetaRows(
+  client: any, tenant: string, rows: Array<Parameters<MetadataCache['set']>[0]>,
+): Promise<void> {
+  if (rows.length === 0) return;
+  const au = currentAuthor();
+  const byId = new Map<string, Parameters<MetadataCache['set']>[0]>();
+  for (const m of rows) byId.set(m.sessionId, m);
+  // Sorted by the conflict key: two concurrent batches lock in the same order
+  // and cannot deadlock (§5).
+  const list = [...byId.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  await bulkInsert(client, 'session_metadata',
+    ['tenant', 'session_id', 'first_prompt', 'summary', 'summary_source', 'mtime', 'indexed_at', 'author_sub', 'author_device'],
+    list.map((m) => [tenant, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt, au.sub, au.device]),
+    `ON CONFLICT (tenant,session_id) DO UPDATE SET
+       first_prompt=excluded.first_prompt, summary=excluded.summary,
+       summary_source=excluded.summary_source, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
+       author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+       author_device=COALESCE(session_metadata.author_device, excluded.author_device)
+     WHERE session_metadata.first_prompt   IS DISTINCT FROM excluded.first_prompt
+        OR session_metadata.summary        IS DISTINCT FROM excluded.summary
+        OR session_metadata.summary_source IS DISTINCT FROM excluded.summary_source
+        OR session_metadata.mtime          IS DISTINCT FROM excluded.mtime`);
+}
+
+/**
+ * The stored marker payloads the shrink guard needs, for a whole batch.
+ *
+ * Only `markers` is guarded (see computeShrinkRefused), so only those sessions
+ * are read, and in one query rather than one per session.
+ */
+export async function readStaleMarkers(
+  client: any, tenant: string, sessionIds: string[],
+): Promise<Map<string, { data: unknown }>> {
+  const out = new Map<string, { data: unknown }>();
+  if (sessionIds.length === 0) return out;
+  const r = await client.query(
+    `SELECT session_id, mtime, payload_json, payload_gz FROM compute_cache
+      WHERE tenant=$1 AND kind='markers' AND session_id = ANY($2)`,
+    [tenant, sessionIds]);
+  for (const row of r.rows) {
+    const data = decodeComputePayload(row);
+    if (data !== null) out.set(row.session_id, { data });
+  }
+  return out;
+}
+
+/**
+ * Write compute rows on an ALREADY-OPEN client, applying the markers shrink
+ * guard against `stale`. Returns how many rows were offered to the database.
+ */
+export async function writeComputeRows(
+  client: any, tenant: string,
+  rows: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }>,
+  stale: Map<string, { data: unknown }>,
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const byKey = new Map<string, unknown[]>();
+  let offered = 0;
+  for (const r of rows) {
+    if (await computeShrinkRefused(r.kind, r.data, async () => stale.get(r.sessionId) ?? null)) continue;
+    let payload: string;
+    try { payload = JSON.stringify(r.data); } catch { continue; }
+    if (payload.length > 20_000_000) continue;
+    let gz: Buffer | null = null; let text: string | null = null;
+    if (payload.length >= 1024) { try { gz = gzipSync(payload, { level: 6 }); } catch { text = payload; } } else text = payload;
+    byKey.set(`${r.sessionId}\u0000${r.kind}`, [tenant, r.sessionId, r.kind, intMs(r.mtime), text ?? '', gz, Date.now()]);
+    offered++;
+  }
+  if (byKey.size === 0) return 0;
+  const values = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+  await bulkInsert(client, 'compute_cache',
+    ['tenant', 'session_id', 'kind', 'mtime', 'payload_json', 'payload_gz', 'computed_at'],
+    values,
+    `ON CONFLICT (tenant,session_id,kind) DO UPDATE
+        SET mtime=excluded.mtime, payload_json=excluded.payload_json,
+            payload_gz=excluded.payload_gz, computed_at=excluded.computed_at
+      WHERE compute_cache.payload_json IS DISTINCT FROM excluded.payload_json
+         OR compute_cache.payload_gz   IS DISTINCT FROM excluded.payload_gz
+         OR compute_cache.mtime        IS DISTINCT FROM excluded.mtime`);
+  return offered;
+}
+
 export class SqliteMetadataCache implements MetadataCacheDriver {
   readonly inner: MetadataCache;
   constructor(inner: MetadataCache) { this.inner = inner; }
 
+  async setComputeMany(rows: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }>) {
+    let n = 0;
+    for (const r of rows) { await this.setCompute(r.sessionId, r.kind as never, r.mtime, r.data as never); n++; }
+    return n;
+  }
   async setCompute(...a: MArgs<'setCompute'>) {
     const [sessionId, kind, , data] = a;
     if (await computeShrinkRefused(kind, data, (k) => this.getComputeStale(sessionId, k))) return;
@@ -124,6 +225,7 @@ export class SqliteMetadataCache implements MetadataCacheDriver {
   async getSummaryErrors(...a: MArgs<'getSummaryErrors'>) { return this.inner.getSummaryErrors(...a); }
   async clearSummaryError(...a: MArgs<'clearSummaryError'>) { return this.inner.clearSummaryError(...a); }
   async set(...a: MArgs<'set'>) { return this.inner.set(...a); }
+  async setMany(rows: MArgs<'set'>[0][]) { for (const m of rows) this.inner.set(m); }
   async setUserTitle(...a: MArgs<'setUserTitle'>) { return this.inner.setUserTitle(...a); }
   async setToolTitle(...a: MArgs<'setToolTitle'>) { return this.inner.setToolTitle(...a); }
   async get(...a: MArgs<'get'>) { return this.inner.get(...a); }
@@ -169,6 +271,21 @@ export class PgMetadataCache implements MetadataCacheDriver {
        ON CONFLICT (tenant,session_id,kind) DO UPDATE SET mtime=excluded.mtime, payload_json=excluded.payload_json, payload_gz=excluded.payload_gz, computed_at=excluded.computed_at`,
       [this.t, sessionId, kind, intMs(mtime), text ?? '', gz, Date.now()]));
   }
+  /** Many compute rows, one statement. Returns how many rows were OFFERED —
+   *  the markers shrink guard may refuse some, and a row whose payload already
+   *  matches is skipped by the database. The ingest has always counted what it
+   *  offered. Statement shared with the batch writer (writeComputeRows). */
+  async setComputeMany(rows: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }>): Promise<number> {
+    if (rows.length === 0) return 0;
+    const markerSessions = [...new Set(rows.filter((r) => r.kind === 'markers').map((r) => r.sessionId))];
+    // UNRESTRICTED for the reason setCompute gives: compute_cache's SELECT
+    // policy is applied as the WITH CHECK of an upsert.
+    return runUnrestricted(() => tenantTx(this.pool, this.t, async (client: any) => {
+      const stale = await readStaleMarkers(client, this.t, markerSessions);
+      return writeComputeRows(client, this.t, rows, stale);
+    }));
+  }
+
   async invalidateCompute(...a: MArgs<'invalidateCompute'>) {
     await this.q(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]);
   }
@@ -221,6 +338,13 @@ export class PgMetadataCache implements MetadataCacheDriver {
          author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
       [this.t, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt, au.sub, au.device]);
   }
+  /** Many rows, one statement. The statement lives in writeSessionMetaRows,
+   *  shared with the ingest's single-transaction batch writer. */
+  async setMany(rows: MArgs<'set'>[0][]): Promise<void> {
+    if (rows.length === 0) return;
+    await tenantTx(this.pool, this.t, (client: any) => writeSessionMetaRows(client, this.t, rows));
+  }
+
   async setUserTitle(sessionId: string, title: string | null) {
     // Touches only user_title; the summary/indexer set() above never does, so
     // the two writers can't clobber each other. Stub-row insert mirrors SQLite.
