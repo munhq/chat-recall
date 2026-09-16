@@ -21,7 +21,7 @@ router.get('/sync', async (_req, res) => {
     const store = await createStore();
     try {
       const stats = await store.getStats();
-      const raw = await store.listRawSessionVersions();
+      const rawArchived = await store.countRawSessions();
       const sessions = Number((stats as Record<string, number>).session || 0);
       // Most recent session row mtime = how fresh this store is.
       const recent = await store.querySessionIndex({ limit: 1, offset: 0, includeUntracked: true });
@@ -37,7 +37,7 @@ router.get('/sync', async (_req, res) => {
 
       res.json({
         sessions,
-        rawArchived: raw.length,
+        rawArchived,
         rawBytes: 0, // size omitted from the cheap listing; panel shows counts
         newestSessionAgeMs: newestMtime ? Date.now() - newestMtime : null,
         sourceTypes: stats,

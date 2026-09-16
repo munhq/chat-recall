@@ -417,11 +417,14 @@ router.get('/tasks/tracked', async (_req, res) => {
   const store = await createStore();
   try {
     const projects = await store.listCodeProjects();
+    // Which projects have an open action, in one query. Asking per project cost
+    // a query each — and answered a boolean by fetching up to 100 whole action
+    // rows and filtering them here.
+    const open = await store.projectsWithOpenCodeActions();
     const out: string[] = [];
     for (const p of projects) {
       if (!p.rootPath) continue;
-      const actionable = (await store.listCodeActions(p.projectId, { limit: 100 })).some((a) => a.status !== 'dismissed');
-      if (actionable) out.push(p.rootPath);
+      if (open.has(p.projectId)) out.push(p.rootPath);
     }
     res.json({ projects: [...new Set(out)].sort() });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
