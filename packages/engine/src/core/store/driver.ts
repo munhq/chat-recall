@@ -200,6 +200,33 @@ export interface StorageDriver {
   maxSyncChunkIndexMany(itemIds: string[]): Promise<Map<string, number>>;
   /** Which of these ids already have a metadata row — one query for a batch. */
   existingItemIds(sourceType: string, ids: string[]): Promise<Set<string>>;
+  /** Who owns this item — for repair paths that must write as its author. */
+  itemAuthor(id: string, sourceType: string): Promise<{ sub: string | null; device: string | null } | null>;
+  /** Item counts by (source_type, tool), aggregated by the database. */
+  sourceToolCounts(): Promise<Record<string, Record<string, number>>>;
+  /** Sessions per project path, aggregated by the database not by the caller. */
+  sessionProjectCounts(): Promise<{ projects: Record<string, number>; total: number }>;
+  /** How many archives this tenant holds, without listing them. */
+  countRawSessions(): Promise<number>;
+  /** Project ids with an action nobody has dismissed — one query for all. */
+  projectsWithOpenCodeActions(): Promise<Set<string>>;
+  /** Purge a whole set of sessions in a fixed number of statements. */
+  purgeSessionsMany(sessionIds: string[]): Promise<void>;
+  /** Tombstone a whole set of sessions in one statement. */
+  addTombstonesMany(sessionIds: string[]): Promise<void>;
+  /** Which of these sessions are tombstoned — bounded by the batch, not by
+   *  how many the tenant has ever deleted. */
+  tombstonedAmong(sessionIds: string[]): Promise<Set<string>>;
+  /**
+   * Run everything `fn` does on ONE transaction.
+   *
+   * On Postgres the tenant GUC that RLS reads is transaction-local, so a store
+   * call outside a transaction has to open one for itself: the ingest route
+   * measured 6 transactions and 40 round trips for a push, 25 of them BEGIN,
+   * COMMIT and set_config, and 6 PgBouncer checkouts from a pool of 20.
+   * Reentrant: a nested call joins the transaction already open.
+   */
+  withTransaction<T>(fn: () => Promise<T>): Promise<T>;
   /**
    * One ingest request's writes, in order, in one transaction.
    *
