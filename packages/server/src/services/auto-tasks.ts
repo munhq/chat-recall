@@ -32,7 +32,8 @@
  *     the run also re-checks, because a policy left on by a lapsed tenant must
  *     not keep writing to a board their plan no longer includes.
  */
-import { createStore, createControlPlane, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
+import { createStore, createControlPlane, createKnowledgeGraph, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
+import { listDecisionGaps, type DecidedFact } from './decision-gaps.js';
 import {
   severityOfPri, PRI_SEVERITY, actionIdentityKey, priOfSeverity,
 } from '@chat-recall/engine/types/code-intel.js';
@@ -218,6 +219,31 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
  * Materialize + close, for one tenant. Fire-and-forget from ingest paths:
  * errors are logged, never thrown — a board hiccup must not fail a sync.
  */
+/**
+ * The decision gaps for this tenant: an area a project never decided for itself.
+ *
+ * Read here rather than in the producer so the producer stays a pure function
+ * of (projects, decided rows) and can be tested without a database.
+ *
+ * Best-effort. A register that cannot be read must not stop code findings being
+ * filed — this feature is additive to a loop that already works.
+ */
+async function readDecisionGaps(store: { listAllProjectIdPaths(): Promise<Array<{ project_id: string; project_path: string }>> }) {
+  const kg = await createKnowledgeGraph();
+  try {
+    const [projects, decided] = await Promise.all([
+      store.listAllProjectIdPaths(),
+      kg.queryRelationship('decided') as Promise<DecidedFact[]>,
+    ]);
+    return listDecisionGaps(projects, decided);
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'decision gaps unreadable');
+    return [];
+  } finally {
+    await kg.close();
+  }
+}
+
 export async function runAutoTasks(
   tenant: string,
   opts: { force?: boolean } = {},
@@ -292,7 +318,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         ...Object.values(policy.perProject).map((o) => o.maxPri ?? policy.maxPri),
       );
       const wantedSeverities = PRI_SEVERITY.filter((sv) => priOfSeverity(sv) <= widestPri);
-      const { openActions, fileable, existing } = await runUnrestricted(async () => {
+      const { openActions, fileable, existing, gaps } = await runUnrestricted(async () => {
         const tasks = await store.teamTasksByFindingIds();
         const perSeverity = await Promise.all(
           wantedSeverities.map((severity) => store.listCodeFindings(undefined, { severity, limit: 2000 })),
@@ -301,6 +327,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           openActions: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
           fileable: perSeverity.flat(),
           existing: tasks,
+          gaps: await readDecisionGaps(store),
         };
       });
 
@@ -351,6 +378,24 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
             category: f.category ?? '',
             covers: [] as string[],       // a finding summarises nothing
           })),
+        // ── DECISION GAPS ────────────────────────────────────────────────
+        //
+        // An area a project never decided for itself. Not a code finding: it
+        // comes from the register rather than the collector, and there is
+        // nothing to re-index — it stops being reported the moment the project
+        // has an answer of its own, which is what closes the card.
+        //
+        // The same shape as the two above on purpose, so the dedup, the
+        // ceiling, the re-point and the close sweep need no second copy of
+        // themselves for a third source.
+        ...gaps.map((g) => ({
+          id: g.id, pri: g.pri, title: g.title, fix: g.fix, agentPrompt: g.agentPrompt,
+          projectId: g.projectId,
+          loc: g.loc,
+          identity: g.identity,
+          category: g.category as string,
+          covers: [] as string[],
+        })),
       ];
       // Per project, because one floor across every repository forces the
       // strictest one on all of them. policyFor() is the single place that
@@ -576,7 +621,9 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
             a.fix,
             a.loc?.length ? `Where: ${a.loc.slice(0, 6).map((l) => l.line ? `${l.file}:${l.line}` : l.file).join('; ')}` : '',
             a.agentPrompt ? 'Agent prompt:\n```\n' + a.agentPrompt + '\n```' : '',
-            '_Filed automatically from a code finding. It closes itself when a re-index no longer reports the finding._',
+            a.category === 'decisions'
+              ? '_Filed automatically from the decision register. It closes itself once this project has an answer of its own._'
+              : '_Filed automatically from a code finding. It closes itself when a re-index no longer reports the finding._',
           ].filter(Boolean).join('\n\n'),
           projectId: a.projectId,
           createdBy: 'auto-tasks',
