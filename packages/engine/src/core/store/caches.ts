@@ -53,6 +53,8 @@ export interface MetadataCacheDriver {
   getSummaryErrors: AsyncMethod<MetadataCache['getSummaryErrors']>;
   clearSummaryError: AsyncMethod<MetadataCache['clearSummaryError']>;
   set: AsyncMethod<MetadataCache['set']>;
+  /** Cached rows for a whole page, in one statement. */
+  getMany(sessionIds: string[]): Promise<Map<string, Awaited<ReturnType<MetadataCache['get']>>>>;
   /** Many rows in one statement, writing only what differs. */
   setMany(rows: Parameters<MetadataCache['set']>[0][]): Promise<void>;
   /** Many compute rows in one statement. Returns how many were offered. */
@@ -229,6 +231,11 @@ export class SqliteMetadataCache implements MetadataCacheDriver {
   async setUserTitle(...a: MArgs<'setUserTitle'>) { return this.inner.setUserTitle(...a); }
   async setToolTitle(...a: MArgs<'setToolTitle'>) { return this.inner.setToolTitle(...a); }
   async get(...a: MArgs<'get'>) { return this.inner.get(...a); }
+  async getMany(sessionIds: string[]) {
+    const out = new Map<string, any>();
+    for (const id of sessionIds) { const r = this.inner.get(id); if (r) out.set(id, r); }
+    return out;
+  }
   async needsUpdate(...a: MArgs<'needsUpdate'>) { return this.inner.needsUpdate(...a); }
   async getStats(...a: MArgs<'getStats'>) { return this.inner.getStats(...a); }
   async close(...a: MArgs<'close'>) { return this.inner.close(...a); }
@@ -400,6 +407,30 @@ export class PgMetadataCache implements MetadataCacheDriver {
   async get(...a: MArgs<'get'>) {
     const r = (await this.q(`SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
     return r ? { sessionId: r.session_id, firstPrompt: r.first_prompt, summary: r.summary, summarySource: r.summary_source, mtime: r.mtime, indexedAt: r.indexed_at, userTitle: r.user_title ?? null, toolTitle: r.tool_title ?? null } : null;
+  }
+  /**
+   * The cached rows for a whole page, in one statement.
+   *
+   * The conversation list called `get` once per row. Its comment said "N small
+   * SQLite reads", which it was — on Postgres behind a transaction-mode pooler
+   * each one is a connection checkout and five round trips, and the list route
+   * measured 125 queries a request.
+   */
+  async getMany(sessionIds: string[]) {
+    const out = new Map<string, any>();
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await this.q(
+      `SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title
+         FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, ids]);
+    for (const r of rows) {
+      out.set(r.session_id, {
+        sessionId: r.session_id, firstPrompt: r.first_prompt, summary: r.summary,
+        summarySource: r.summary_source, mtime: r.mtime, indexedAt: r.indexed_at,
+        userTitle: r.user_title ?? null, toolTitle: r.tool_title ?? null,
+      });
+    }
+    return out;
   }
   async needsUpdate(...a: MArgs<'needsUpdate'>) {
     const cached = await this.get(a[0]); return !cached || cached.mtime < intMs(a[1]);

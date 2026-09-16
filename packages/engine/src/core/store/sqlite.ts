@@ -174,6 +174,61 @@ export class SqliteStore implements StorageDriver {
   async listTombstones(...a: Args<'listTombstones'>) { return this.inner.listTombstones(...a); }
   async removeTombstone(...a: Args<'removeTombstone'>) { return this.inner.removeTombstone(...a); }
   async purgeSession(...a: Args<'purgeSession'>) { return this.inner.purgeSession(...a); }
+  // Row by row, per the driver contract: this is the unit-test driver and its
+  // store is a local file, so a loop costs microseconds. Statement counts mean
+  // nothing here — measure them against Postgres.
+  async purgeSessionsMany(sessionIds: string[]) {
+    for (const id of sessionIds) this.inner.purgeSession(id);
+  }
+  async addTombstonesMany(sessionIds: string[]) {
+    for (const id of sessionIds) this.inner.addTombstone(id);
+  }
+  // No pooling and no row-level security here, so there is no per-statement
+  // transaction to save: the calls already run against one local file.
+  async withTransaction<T>(fn: () => Promise<T>): Promise<T> { return fn(); }
+  // No row-level security here, so nothing reads an author back.
+  async itemAuthor(_id: string, _sourceType: string) { return null; }
+  async sourceToolCounts() {
+    const out: Record<string, Record<string, number>> = {};
+    const types = ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary',
+      'skill', 'mcp', 'command', 'agent', 'hook', 'plugin'];
+    for (const t of types) {
+      const items = this.inner.listItems(t as never, 50_000, 0);
+      if (items.length === 0) continue;
+      const m: Record<string, number> = {};
+      for (const it of items) {
+        let tool = 'claude';
+        try { tool = JSON.parse((it as { extra_json?: string }).extra_json || '{}').tool || 'claude'; } catch { /* default */ }
+        m[tool] = (m[tool] || 0) + 1;
+      }
+      out[t] = m;
+    }
+    return out;
+  }
+  async sessionProjectCounts() {
+    const projects: Record<string, number> = {};
+    let total = 0;
+    for (const it of this.inner.listItems('session' as never, 100_000, 0)) {
+      total++;
+      const p = (it as { project_path?: string }).project_path || '';
+      if (p) projects[p] = (projects[p] || 0) + 1;
+    }
+    return { projects, total };
+  }
+  async countRawSessions() { return this.inner.listRawSessionVersions().length; }
+  async projectsWithOpenCodeActions() {
+    const out = new Set<string>();
+    for (const a of this.inner.listCodeActions(undefined, { limit: 100000 })) {
+      if (a.status !== 'dismissed' && a.projectId) out.add(a.projectId);
+    }
+    return out;
+  }
+  async tombstonedAmong(sessionIds: string[]) {
+    const want = new Set(sessionIds.filter(Boolean));
+    const out = new Set<string>();
+    for (const t of this.inner.listTombstones()) if (want.has(t.session_id)) out.add(t.session_id);
+    return out;
+  }
 
   // ── raw archive ──
   async putRawSession(...a: Args<'putRawSession'>) { return this.inner.putRawSession(...a); }

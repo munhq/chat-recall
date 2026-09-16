@@ -678,272 +678,290 @@ router.post('/', async (req, res) => {
       const touchBatch: Array<{ sessionId: string; mtime: number }> = [];
       const computeBatch: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }> = [];
       try {
-        // Tombstones first: purge + remember, and build the do-not-write set
-        // so nothing in THIS payload resurrects a deleted session.
-        for (const t of tombstones) {
-          if (!t.session_id) continue;
-          await store.purgeSession(t.session_id);
-          await store.addTombstone(t.session_id);
-          dead++;
-        }
-        const deadSet = new Set((await store.listTombstones()).map((t) => t.session_id));
+        // ONE transaction for the whole ingest. Tenant scoping is a
+        // transaction-local GUC that RLS reads, so every store call outside a
+        // transaction opened its own: measured on this route, 6 transactions and
+        // 40 round trips for a push, 25 of them BEGIN, COMMIT and set_config, and
+        // 6 PgBouncer checkouts from a pool of 20 shared by every tenant.
+        //
+        // It also gives the prefetches and the write one snapshot. The chunk-id
+        // cursor was read in its own transaction and used in a later one, so two
+        // devices pushing the same session between them both got the same cursor
+        // and the second overwrote the first’s chunks.
+        await store.withTransaction(async () => {
+          // Tombstones first: purge + remember, and build the do-not-write set
+          // so nothing in THIS payload resurrects a deleted session.
+          // The whole set goes in one call each — purgeSession costs 12
+          // statements, so a per-tombstone loop put 650 round trips at the top of
+          // a request this file holds to 15 (docs/SYNC-BATCH-WRITES.md §4).
+          const tombIds = tombstones.map((t) => t.session_id).filter(Boolean);
+          if (tombIds.length > 0) {
+            await store.purgeSessionsMany(tombIds);
+            await store.addTombstonesMany(tombIds);
+            dead += tombIds.length;
+          }
+          // Only this payload's sessions are ever asked about, so only they are
+          // read. The tombstones written just above are already committed, so a
+          // session deleted and re-sent in the SAME request still reads as dead.
+          const deadSet = await store.tombstonedAmong(conversations.map((c) => c.session_id));
 
-        // PREFETCHED, before the loop. Both of these were read once per session
-        // inside it — `getCachedContentStale` twice. One query each for the
-        // whole batch. See docs/SYNC-BATCH-WRITES.md §4.
-        const convIds = conversations.map((c) => c.session_id).filter(Boolean);
-        const priorContent = await store.getCachedContentStaleMany('session', convIds);
-        const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
-        const priorArchive = await store.rawSessionMetaMany(convIds);
+          // PREFETCHED, before the loop. Both of these were read once per session
+          // inside it — `getCachedContentStale` twice. One query each for the
+          // whole batch. See docs/SYNC-BATCH-WRITES.md §4.
+          const convIds = conversations.map((c) => c.session_id).filter(Boolean);
+          const priorContent = await store.getCachedContentStaleMany('session', convIds);
+          const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
+          const priorArchive = await store.rawSessionMetaMany(convIds);
 
-        const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
-        for (const cv of conversations) {
-          await ingestConversation(cv, {
-            store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
-            deadSet, priorContent, priorChunkIdx, priorArchive,
-            itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
-            sessionMetaBatch, touchBatch, fullResyncNeeded, tally,
-          });
-        }
-        conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
-
-        // Non-session source items (plan/task/claude_md/skill/…): metadata
-        // row + FTS chunks, same write path the local indexer uses.
-        for (const it of items) {
-          if (!it.id || !ITEM_SOURCE_TYPES.has(it.source_type)) continue;
-          const mtime = Math.floor(Number(it.mtime) || 0);
-          const sourceType = it.source_type as SourceType;
-          itemBatch.push({
-            id: it.id,
-            sourceType,
-            title: (it.title || '').slice(0, 200),
-            projectPath: it.project_path || '',
-            projectId: it.project_id || undefined,
-            contentPreview: (it.content_preview || '').slice(0, 500),
-            filePath: '',
-            mtime,
-            extra: {
-              synced: true,
-              syncedDeviceId: agent.deviceId,
-              ...(it.extra && typeof it.extra === 'object' ? it.extra : {}),
-            },
-          } as Parameters<typeof store.setItem>[0]);
-
-          const cks = (it.chunks ?? [])
-            .filter((c) => c.text?.trim())
-            .map((c, i) => {
-              let chunkType = c.chunk_type || sourceType;
-              const cls = classifyChunk(c.text);
-              if (cls.memoryType !== 'general') chunkType = `${chunkType}:${cls.memoryType}:imp${cls.importance}`;
-              return {
-                chunkId: `${it.id}:sync:${i}`,
-                itemId: it.id,
-                sourceType,
-                title: c.title || it.title || '',
-                text: c.text,
-                chunkType,
-                projectPath: it.project_path || '',
-                filePath: '',
-                mtime,
-              };
+          const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
+          for (const cv of conversations) {
+            await ingestConversation(cv, {
+              store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
+              deadSet, priorContent, priorChunkIdx, priorArchive,
+              itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
+              sessionMetaBatch, touchBatch, fullResyncNeeded, tally,
             });
-          if (cks.length > 0) chunkBatch.push(...cks);
-          item++;
-        }
-
-        // NOTHING IS WRITTEN YET. Collection continues to the end of this
-        // handler and the whole batch goes to the database in one call, in one
-        // transaction — see docs/SYNC-BATCH-WRITES.md §4.
-
-        // Relationship links — upsert semantics make re-syncs idempotent.
-        const validLinks = links.filter((l) =>
-          l.source_type && l.source_id && l.target_type && l.target_id && l.link_type);
-        const linkBatch = validLinks.map((l) => ({
-          sourceType: l.source_type as SourceType,
-          sourceId: l.source_id,
-          targetType: l.target_type as SourceType,
-          targetId: l.target_id,
-          linkType: l.link_type as any,
-          confidence: typeof l.confidence === 'number' ? l.confidence : 1.0,
-        }));
-        link += validLinks.length;
-
-        // Findings: group per session, replace wholesale (idempotent re-sync).
-        // Drop fuzzy/low-precision rules on the way in too (defense for older
-        // collectors that still ship them); CHAT_RECALL_INCLUDE_FUZZY=1 keeps them.
-        const bySession = new Map<string, SyncFinding[]>();
-        for (const f of dropFuzzyFindings(findings, (x) => ({ detector: x.detector, rule: x.rule }))) {
-          if (!f.session_id || !f.detector || !f.rule) continue;
-          (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
-        }
-        const verifiedHits: VerifiedHit[] = [];
-        // One existence query for every session carrying a finding, and one
-        // write for all of them — it was two round trips per session.
-        // See docs/SYNC-BATCH-WRITES.md §4.
-        const findingSessions = [...bySession.keys()];
-        // A session counts as present if it is ALREADY stored or is being
-        // written by this very batch. The second half matters now that nothing
-        // is written until the end: checking the database alone would drop
-        // every finding belonging to a session in this request.
-        const haveMetadata = findingSessions.length
-          ? await store.existingItemIds('session', findingSessions)
-          : new Set<string>();
-        for (const it of itemBatch) if (it.sourceType === 'session') haveMetadata.add(it.id);
-        const findingBatch: Array<{ sessionId: string; findings: Array<{ detector: string; rule: string; line: number; preview: string; verified?: boolean }> }> = [];
-
-        for (const [sessionId, fs] of bySession) {
-          // AN ORPHAN FINDING MUST NOT 500 THE WHOLE BATCH.
-          //
-          // `findings` is a top-level array keyed by session_id, independent of
-          // the conversations in this request — so a collector can ship a
-          // finding for a session whose metadata row was never uploaded (an
-          // excluded project, a session the walk skipped). secret_findings
-          // carries the RESTRICTIVE `author_visibility` policy whose USING needs
-          // a VISIBLE memory_metadata session row, and PostgreSQL applies that
-          // USING as the WITH CHECK of an `INSERT … ON CONFLICT`, so the write
-          // fails with 42501 and takes the entire ingest request with it. Seen in
-          // production: four findings blocked a sync that had otherwise landed.
-          //
-          // A finding is meaningless without its session, so skipping it is the
-          // right answer rather than elevating the write — secret_findings DOES
-          // carry an author-write-guard (see pg-schema.ts), and elevating would
-          // bypass it. Logged, never silent.
-          if (!haveMetadata.has(sessionId)) {
-            log.warn({ sessionId, findings: fs.length },
-              'skipping secret findings for a session with no metadata row on this server');
-            continue;
           }
-          findingBatch.push({
-            sessionId,
-            findings: fs.map((f) => ({
-              detector: f.detector,
-              rule: f.rule,
-              line: f.line,
-              preview: f.preview,
-              verified: f.verified_at ? true : undefined,
-            })),
-          });
-          for (const f of fs) {
-            if (f.verified_at && f.preview) verifiedHits.push({ sessionId, detector: f.detector, rule: f.rule, preview: f.preview });
+          conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
+
+          // Non-session source items (plan/task/claude_md/skill/…): metadata
+          // row + FTS chunks, same write path the local indexer uses.
+          for (const it of items) {
+            if (!it.id || !ITEM_SOURCE_TYPES.has(it.source_type)) continue;
+            const mtime = Math.floor(Number(it.mtime) || 0);
+            const sourceType = it.source_type as SourceType;
+            itemBatch.push({
+              id: it.id,
+              sourceType,
+              title: (it.title || '').slice(0, 200),
+              projectPath: it.project_path || '',
+              projectId: it.project_id || undefined,
+              contentPreview: (it.content_preview || '').slice(0, 500),
+              filePath: '',
+              mtime,
+              extra: {
+                synced: true,
+                syncedDeviceId: agent.deviceId,
+                ...(it.extra && typeof it.extra === 'object' ? it.extra : {}),
+              },
+            } as Parameters<typeof store.setItem>[0]);
+
+            const cks = (it.chunks ?? [])
+              .filter((c) => c.text?.trim())
+              .map((c, i) => {
+                let chunkType = c.chunk_type || sourceType;
+                const cls = classifyChunk(c.text);
+                if (cls.memoryType !== 'general') chunkType = `${chunkType}:${cls.memoryType}:imp${cls.importance}`;
+                return {
+                  chunkId: `${it.id}:sync:${i}`,
+                  itemId: it.id,
+                  sourceType,
+                  title: c.title || it.title || '',
+                  text: c.text,
+                  chunkType,
+                  projectPath: it.project_path || '',
+                  filePath: '',
+                  mtime,
+                };
+              });
+            if (cks.length > 0) chunkBatch.push(...cks);
+            item++;
           }
-        }
 
-        // Fire customer alerts for newly-seen verified-live secrets. Paid +
-        // deduped + non-blocking — a webhook hiccup must never fail a sync.
-        if (verifiedHits.length > 0) {
-          try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
-          catch (e) { log.error({ err: e }, 'secret alert failed'); }
-        }
+          // NOTHING IS WRITTEN YET. Collection continues to the end of this
+          // handler and the whole batch goes to the database in one call, in one
+          // transaction — see docs/SYNC-BATCH-WRITES.md §4.
 
-        // Derived data: compute_cache rows (what the diff/outcome/commits/
-        // markers routes serve via the heavy cache) + outcome-badge rows.
-        // The server never recomputes these — it has no FS/git; the CLI is
-        // the only producer.
-        if (derived.length > 0) {
-          const outcomeCache = await createOutcomeCache();
+          // Relationship links — upsert semantics make re-syncs idempotent.
+          const validLinks = links.filter((l) =>
+            l.source_type && l.source_id && l.target_type && l.target_id && l.link_type);
+          const linkBatch = validLinks.map((l) => ({
+            sourceType: l.source_type as SourceType,
+            sourceId: l.source_id,
+            targetType: l.target_type as SourceType,
+            targetId: l.target_id,
+            linkType: l.link_type as any,
+            confidence: typeof l.confidence === 'number' ? l.confidence : 1.0,
+          }));
+          link += validLinks.length;
 
-          try {
-            for (const d of derived) {
-              if (!d.session_id) continue;
-              for (const c of d.compute ?? []) {
-                if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
-                // Collected — one statement for the whole batch below.
-                computeBatch.push({ sessionId: d.session_id, kind: c.kind, mtime: Math.floor(Number(c.mtime) || 0), data: c.data });
-              }
-              const row = d.outcome_row;
-              if (row && typeof row === 'object' && typeof row.status === 'string') {
-                await outcomeCache.put({
-                  sessionId: d.session_id,
-                  tool: String(row.tool ?? 'claude'),
-                  status: row.status as any,
-                  reason: String(row.reason ?? ''),
-                  fileMtime: Math.floor(Number(row.fileMtime) || 0),
-                  fileSize: Number(row.fileSize) || 0,
-                  contentHash: String(row.contentHash ?? ''),
-                  fileCount: Number(row.fileCount) || 0,
-                  linesAdded: Number(row.linesAdded) || 0,
-                  linesRemoved: Number(row.linesRemoved) || 0,
-                  commits: Number(row.commits) || 0,
-                  isFull: !!row.isFull,
-                  classifiedAt: Number(row.classifiedAt) || Date.now(),
-                  lastScannedOffset: Number(row.lastScannedOffset) || 0,
-                });
-                der++;
-              }
+          // Findings: group per session, replace wholesale (idempotent re-sync).
+          // Drop fuzzy/low-precision rules on the way in too (defense for older
+          // collectors that still ship them); CHAT_RECALL_INCLUDE_FUZZY=1 keeps them.
+          const bySession = new Map<string, SyncFinding[]>();
+          for (const f of dropFuzzyFindings(findings, (x) => ({ detector: x.detector, rule: x.rule }))) {
+            if (!f.session_id || !f.detector || !f.rule) continue;
+            (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
+          }
+          const verifiedHits: VerifiedHit[] = [];
+          // One existence query for every session carrying a finding, and one
+          // write for all of them — it was two round trips per session.
+          // See docs/SYNC-BATCH-WRITES.md §4.
+          const findingSessions = [...bySession.keys()];
+          // A session counts as present if it is ALREADY stored or is being
+          // written by this very batch. The second half matters now that nothing
+          // is written until the end: checking the database alone would drop
+          // every finding belonging to a session in this request.
+          const haveMetadata = findingSessions.length
+            ? await store.existingItemIds('session', findingSessions)
+            : new Set<string>();
+          for (const it of itemBatch) if (it.sourceType === 'session') haveMetadata.add(it.id);
+          const findingBatch: Array<{ sessionId: string; findings: Array<{ detector: string; rule: string; line: number; preview: string; verified?: boolean }> }> = [];
+
+          for (const [sessionId, fs] of bySession) {
+            // AN ORPHAN FINDING MUST NOT 500 THE WHOLE BATCH.
+            //
+            // `findings` is a top-level array keyed by session_id, independent of
+            // the conversations in this request — so a collector can ship a
+            // finding for a session whose metadata row was never uploaded (an
+            // excluded project, a session the walk skipped). secret_findings
+            // carries the RESTRICTIVE `author_visibility` policy whose USING needs
+            // a VISIBLE memory_metadata session row, and PostgreSQL applies that
+            // USING as the WITH CHECK of an `INSERT … ON CONFLICT`, so the write
+            // fails with 42501 and takes the entire ingest request with it. Seen in
+            // production: four findings blocked a sync that had otherwise landed.
+            //
+            // A finding is meaningless without its session, so skipping it is the
+            // right answer rather than elevating the write — secret_findings DOES
+            // carry an author-write-guard (see pg-schema.ts), and elevating would
+            // bypass it. Logged, never silent.
+            if (!haveMetadata.has(sessionId)) {
+              log.warn({ sessionId, findings: fs.length },
+                'skipping secret findings for a session with no metadata row on this server');
+              continue;
             }
-          } finally {
-            await outcomeCache.close();
-          }
-        }
-
-        // Knowledge graph: idempotent imports (importTriple matches expired
-        // facts too, so re-syncs never duplicate).
-        // ── THE WRITE ───────────────────────────────────────────────────────
-        // Everything above collected; nothing above touched the database except
-        // the tombstone purge and three batch reads. One call, one transaction,
-        // one connection, eight statements — whatever the batch size.
-        // docs/SYNC-BATCH-WRITES.md §4.
-        const written = await store.writeIngestBatch({
-          items: itemBatch,
-          chunks: chunkBatch,
-          appendChunks: appendChunkBatch,
-          cachedContent: cachedContentBatch,
-          sessionMeta: sessionMetaBatch,
-          touchMtime: touchBatch,
-          compute: computeBatch,
-          findings: findingBatch,
-          links: linkBatch,
-        }, metaCache);
-        chunks += written.chunks;
-        find += written.findings;
-        der += written.computeOffered;
-
-        if (kgEntities.length > 0 || kgTriples.length > 0) {
-          const kg = await createKnowledgeGraph();
-          try {
-            for (const e of kgEntities) {
-              if (!e.name) continue;
-              await kg.addEntity(e.name, e.type ?? 'unknown', e.properties ?? {});
-              kgE++;
+            findingBatch.push({
+              sessionId,
+              findings: fs.map((f) => ({
+                detector: f.detector,
+                rule: f.rule,
+                line: f.line,
+                preview: f.preview,
+                verified: f.verified_at ? true : undefined,
+              })),
+            });
+            for (const f of fs) {
+              if (f.verified_at && f.preview) verifiedHits.push({ sessionId, detector: f.detector, rule: f.rule, preview: f.preview });
             }
-            // ONE call, not one per triple. Each importTriple is four sequential
-            // round trips, so a sync carrying 5905 triples issued ~23600 queries
-            // in a row while holding a pooled connection — long enough for the
-            // pooler to time the request out at its 120s ceiling.
-            const usable = kgTriples.filter((t) => t.subject && t.predicate && t.object);
-            if (usable.length) kgT += (await kg.importTriples(usable)).inserted;
-          } finally {
-            await kg.close();
           }
-        }
 
-        // Secret dismissals + custom rules — small tables, upserted whole.
-        for (const d of dismissals) {
-          if (!d.preview || !DISMISSAL_STATUSES.has(d.status)) continue;
-          await store.setSecretDismissal(d.preview, d.status as any, d.reason ?? undefined);
-        }
-        for (const r of customRules) {
-          if (!r.name || !r.regex || !RULE_SEVERITIES.has(r.severity)) continue;
-          await store.upsertSecretRule({
-            name: r.name,
-            regex: r.regex,
-            severity: r.severity,
-            description: r.description ?? undefined,
-            enabled: r.enabled !== false,
-          });
-        }
-        // Derived-field backfill: set ONE column per row (no conversation
-        // re-push). Idempotent; routed by field name. Unknown fields are
-        // ignored (forward-compat: a newer client may send a field this server
-        // doesn't know yet). value:null clears.
-        for (const fr of fields) {
-          if (!fr.session_id || !fr.field) continue;
-          const setter = FIELD_SETTERS[fr.field];
-          if (!setter) continue;
-          const v = typeof fr.value === 'string' ? fr.value.trim().slice(0, 200) : '';
-          await setter(metaCache, fr.session_id, v || null);
-          fielded++;
-        }
+          // Fire customer alerts for newly-seen verified-live secrets. Paid +
+          // deduped + non-blocking — a webhook hiccup must never fail a sync.
+          if (verifiedHits.length > 0) {
+            try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
+            catch (e) { log.error({ err: e }, 'secret alert failed'); }
+          }
+
+          // Derived data: compute_cache rows (what the diff/outcome/commits/
+          // markers routes serve via the heavy cache) + outcome-badge rows.
+          // The server never recomputes these — it has no FS/git; the CLI is
+          // the only producer.
+          if (derived.length > 0) {
+            const outcomeCache = await createOutcomeCache();
+
+            try {
+              for (const d of derived) {
+                if (!d.session_id) continue;
+                for (const c of d.compute ?? []) {
+                  if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
+                  // Collected — one statement for the whole batch below.
+                  computeBatch.push({ sessionId: d.session_id, kind: c.kind, mtime: Math.floor(Number(c.mtime) || 0), data: c.data });
+                }
+                const row = d.outcome_row;
+                if (row && typeof row === 'object' && typeof row.status === 'string') {
+                  await outcomeCache.put({
+                    sessionId: d.session_id,
+                    tool: String(row.tool ?? 'claude'),
+                    status: row.status as any,
+                    reason: String(row.reason ?? ''),
+                    fileMtime: Math.floor(Number(row.fileMtime) || 0),
+                    fileSize: Number(row.fileSize) || 0,
+                    contentHash: String(row.contentHash ?? ''),
+                    fileCount: Number(row.fileCount) || 0,
+                    linesAdded: Number(row.linesAdded) || 0,
+                    linesRemoved: Number(row.linesRemoved) || 0,
+                    commits: Number(row.commits) || 0,
+                    isFull: !!row.isFull,
+                    classifiedAt: Number(row.classifiedAt) || Date.now(),
+                    lastScannedOffset: Number(row.lastScannedOffset) || 0,
+                  });
+                  der++;
+                }
+              }
+            } finally {
+              await outcomeCache.close();
+            }
+          }
+
+          // Knowledge graph: idempotent imports (importTriple matches expired
+          // facts too, so re-syncs never duplicate).
+          // ── THE WRITE ───────────────────────────────────────────────────────
+          // Everything above collected; nothing above touched the database except
+          // the tombstone purge and three batch reads. One call, one transaction,
+          // one connection, eight statements — whatever the batch size.
+          // docs/SYNC-BATCH-WRITES.md §4.
+          const written = await store.writeIngestBatch({
+            items: itemBatch,
+            chunks: chunkBatch,
+            appendChunks: appendChunkBatch,
+            cachedContent: cachedContentBatch,
+            sessionMeta: sessionMetaBatch,
+            touchMtime: touchBatch,
+            compute: computeBatch,
+            findings: findingBatch,
+            links: linkBatch,
+          }, metaCache);
+          chunks += written.chunks;
+          find += written.findings;
+          der += written.computeOffered;
+
+          if (kgEntities.length > 0 || kgTriples.length > 0) {
+            const kg = await createKnowledgeGraph();
+            try {
+              for (const e of kgEntities) {
+                if (!e.name) continue;
+                await kg.addEntity(e.name, e.type ?? 'unknown', e.properties ?? {});
+                kgE++;
+              }
+              // ONE call, not one per triple. Each importTriple is four sequential
+              // round trips, so a sync carrying 5905 triples issued ~23600 queries
+              // in a row while holding a pooled connection — long enough for the
+              // pooler to time the request out at its 120s ceiling.
+              const usable = kgTriples.filter((t) => t.subject && t.predicate && t.object);
+              if (usable.length) kgT += (await kg.importTriples(usable)).inserted;
+            } finally {
+              await kg.close();
+            }
+          }
+
+          // Secret dismissals + custom rules — small tables, upserted whole.
+          for (const d of dismissals) {
+            if (!d.preview || !DISMISSAL_STATUSES.has(d.status)) continue;
+            await store.setSecretDismissal(d.preview, d.status as any, d.reason ?? undefined);
+          }
+          for (const r of customRules) {
+            if (!r.name || !r.regex || !RULE_SEVERITIES.has(r.severity)) continue;
+            await store.upsertSecretRule({
+              name: r.name,
+              regex: r.regex,
+              severity: r.severity,
+              description: r.description ?? undefined,
+              enabled: r.enabled !== false,
+            });
+          }
+          // Derived-field backfill: set ONE column per row (no conversation
+          // re-push). Idempotent; routed by field name. Unknown fields are
+          // ignored (forward-compat: a newer client may send a field this server
+          // doesn't know yet). value:null clears.
+          for (const fr of fields) {
+            if (!fr.session_id || !fr.field) continue;
+            const setter = FIELD_SETTERS[fr.field];
+            if (!setter) continue;
+            const v = typeof fr.value === 'string' ? fr.value.trim().slice(0, 200) : '';
+            await setter(metaCache, fr.session_id, v || null);
+            fielded++;
+          }
+        });
       } finally {
         await metaCache.close();
         await store.close();

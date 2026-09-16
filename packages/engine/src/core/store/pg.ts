@@ -37,6 +37,9 @@ type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => in
 // cache would never hit).
 export function intMs(x: unknown): number { return Math.floor(Number(x) || 0); }
 
+/** (database, tenant) pairs whose row this process has already written. */
+const TENANT_BOOTSTRAPPED = new Set<string>();
+
 
 export class PgStore implements StorageDriver {
   private pool: any;
@@ -47,6 +50,8 @@ export class PgStore implements StorageDriver {
   private readonly databaseUrl: string;
   private readonly roUrl: string;
   private readonly tenant: string;
+  /** The client of the transaction opened by `withTransaction`, while it runs. */
+  private pinned: any = null;
 
   constructor(databaseUrl?: string, tenant?: string) {
     this.databaseUrl =
@@ -83,16 +88,62 @@ export class PgStore implements StorageDriver {
     }
     // display_name = tenant keeps migrated databases happy (legacy schema
     // declared the column NOT NULL).
-    await this.q(`INSERT INTO tenants (tenant, display_name, created_at) VALUES ($1, $1, $2) ON CONFLICT DO NOTHING`, [this.tenant, Date.now()]);
+    //
+    // Once per process per (database, tenant). A store is constructed per
+    // request, so in production this ran on every push — five round trips
+    // (BEGIN, two set_config, the INSERT, COMMIT) to insert a row that was
+    // already there, and one PgBouncer checkout out of a pool of 20.
+    const bootKey = `${this.databaseUrl}\u0000${this.tenant}`;
+    if (!TENANT_BOOTSTRAPPED.has(bootKey)) {
+      await this.q(`INSERT INTO tenants (tenant, display_name, created_at) VALUES ($1, $1, $2) ON CONFLICT DO NOTHING`, [this.tenant, Date.now()]);
+      TENANT_BOOTSTRAPPED.add(bootKey);
+    }
+  }
+
+  /**
+   * Run everything `fn` does on ONE transaction.
+   *
+   * Tenant scoping is a transaction-local GUC (`set_config(..., true)`), which
+   * RLS reads, so a statement outside a transaction has no tenant and every
+   * single-statement call has to open its own. Measured on the real ingest
+   * route: 6 transactions and 40 round trips, 25 of them BEGIN, COMMIT and
+   * set_config. Against PgBouncer in transaction mode each of those six also
+   * checks a server connection out of a pool of 20 and hands it back.
+   *
+   * With the client pinned here, the GUCs are set once and `q`/`qr`/`one`/`tx`
+   * run their statements on it directly: one transaction, one checkout.
+   *
+   * Reentrant — a nested call joins the open transaction rather than opening a
+   * second one, so a store method that manages its own transaction still works
+   * when a caller has already started one.
+   */
+  async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.pinned) return fn();
+    return tenantTx(this.pool, this.tenant, async (client: any) => {
+      this.pinned = client;
+      try { return await fn(); } finally { this.pinned = null; }
+    });
+  }
+  /** A client for a multi-statement write: the pinned one when a transaction is
+   *  already open, else a fresh transaction of its own. */
+  private async tx<T>(fn: (client: any) => Promise<T>): Promise<T> {
+    if (this.pinned) return fn(this.pinned);
+    return tenantTx(this.pool, this.tenant, fn);
   }
 
   private async q(sql: string, params: unknown[] = []): Promise<any[]> {
+    if (this.pinned) return (await this.pinned.query(sql, params)).rows;
     const r = await tenantQuery(this.pool, this.tenant, sql, params);
     return r.rows;
   }
   /** Read query → replica pool (falls back to the write pool when no RO DSN).
    *  Use ONLY for pure, lag-tolerant SELECTs — never read-after-write. */
   private async qr(sql: string, params: unknown[] = []): Promise<any[]> {
+    // Inside an open transaction the read runs on THAT connection. The replica
+    // is a different server and cannot see rows this transaction has written
+    // but not committed, so routing there mid-transaction would read a state
+    // the caller has already moved past.
+    if (this.pinned) return (await this.pinned.query(sql, params)).rows;
     // Falls back to the primary when the replica goes away MID-LIFE, not only
     // when it was already down at init — see tenantQueryRo.
     const r = await tenantQueryRo(this.roPool, this.pool, this.tenant, sql, params);
@@ -132,7 +183,7 @@ export class PgStore implements StorageDriver {
 
   async setItems(items: MemoryItem[]): Promise<void> {
     if (items.length === 0) return;
-    await tenantTx(this.pool, this.t, (client) => this.writeItemRows(client, items));
+    await this.tx((client) => this.writeItemRows(client, items));
   }
 
   private static COLS = 'id, source_type, title, project_path, project_id, content_preview, file_path, mtime, indexed_at, extra_json';
@@ -155,6 +206,22 @@ export class PgStore implements StorageDriver {
   // re-index churn or a wrong promote. Single-row fetch, so ~zero offload lost.
   async getItem(id: string, sourceType: SourceType): Promise<MemoryMetadataRow | null> {
     return (await this.one(`SELECT ${PgStore.COLS} FROM memory_metadata WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType])) || null;
+  }
+  /**
+   * Who owns this item.
+   *
+   * Server-side repair paths run with no author in context, so anything they
+   * write is stamped NULL. Now that a NULL author fails closed on chunks, a
+   * repair that rebuilt a member's chunks without their author would hide the
+   * session from them. The parent row is the authority, so the repair reads it
+   * and writes as that author. Not folded into `getItem`: its column list is
+   * the shape every caller of that row already expects.
+   */
+  async itemAuthor(id: string, sourceType: SourceType): Promise<{ sub: string | null; device: string | null } | null> {
+    const r = await this.one(
+      `SELECT author_sub, author_device FROM memory_metadata WHERE tenant=$1 AND id=$2 AND source_type=$3`,
+      [this.t, id, sourceType]);
+    return r ? { sub: r.author_sub ?? null, device: r.author_device ?? null } : null;
   }
 
   async needsUpdate(id: string, sourceType: SourceType, currentMtime: number): Promise<boolean> {
@@ -415,7 +482,7 @@ export class PgStore implements StorageDriver {
   async addLinks(links: MemoryLink[]): Promise<void> {
     if (links.length === 0) return;
     // Unrestricted write — see addLink.
-    await runUnrestricted(() => tenantTx(this.pool, this.t, (client) => this.writeLinkRows(client, links)));
+    await runUnrestricted(() => this.tx((client) => this.writeLinkRows(client, links)));
   }
   async getLinksFrom(sourceType: SourceType, sourceId: string): Promise<MemoryLinkRow[]> {
     return this.qr(`SELECT * FROM memory_links WHERE tenant=$1 AND source_type=$2 AND source_id=$3`, [this.t, sourceType, sourceId]);
@@ -496,7 +563,7 @@ export class PgStore implements StorageDriver {
 
   async setCachedContentMany(rows: Array<{ id: string; sourceType: string; mtime: number; content: string }>): Promise<void> {
     if (rows.length === 0) return;
-    await tenantTx(this.pool, this.t, (client) => this.writeCachedContent(client, rows));
+    await this.tx((client) => this.writeCachedContent(client, rows));
   }
 
   async setCachedContent(id: string, sourceType: string, mtime: number, content: string): Promise<void> {
@@ -529,7 +596,7 @@ export class PgStore implements StorageDriver {
     bySession: Array<{ sessionId: string; findings: Args<'replaceSecretFindings'>[1] }>,
   ): Promise<{ written: number }> {
     if (bySession.length === 0) return { written: 0 };
-    const written = await tenantTx(this.pool, this.t, (client) => this.writeFindingRows(client, bySession as never));
+    const written = await this.tx((client) => this.writeFindingRows(client, bySession as never));
     return { written };
   }
 
@@ -876,7 +943,7 @@ export class PgStore implements StorageDriver {
     // author-write-guard, and reads keep the member's real viewer, so this
     // makes nothing newly visible — the same reasoning as setCompute and
     // addLink, applied once instead of per statement.
-    await runUnrestricted(() => tenantTx(this.pool, this.t, async (client) => {
+    await runUnrestricted(() => this.tx(async (client) => {
       // 1. Metadata rows. FIRST: this clears the cached summary of every
       //    session it writes, and step 3 puts the new summaries back.
       if (batch.items?.length) await this.writeItemRows(client, batch.items);
@@ -912,7 +979,7 @@ export class PgStore implements StorageDriver {
 
   async addChunksFTS(chunks: MemoryChunk[]): Promise<number> {
     if (chunks.length === 0) return 0;
-    return tenantTx(this.pool, this.t, (client) => this.writeChunkRows(client, chunks, 'replace'));
+    return this.tx((client) => this.writeChunkRows(client, chunks, 'replace'));
   }
   async listChunksByItem(sourceType: string, itemId: string): Promise<Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }>> {
     const rows = await this.qr(
@@ -928,7 +995,7 @@ export class PgStore implements StorageDriver {
 
   async appendChunksFTS(chunks: MemoryChunk[]): Promise<number> {
     if (chunks.length === 0) return 0;
-    return tenantTx(this.pool, this.t, (client) => this.writeChunkRows(client, chunks, 'append'));
+    return this.tx((client) => this.writeChunkRows(client, chunks, 'append'));
   }
   async maxSyncChunkIndex(itemId: string): Promise<number> {
     // PRIMARY, not replica: this is the tail-append chunk-id cursor. The caller
@@ -950,7 +1017,7 @@ export class PgStore implements StorageDriver {
 
   async touchSessionMtimeMany(rows: Array<{ sessionId: string; mtime: number }>): Promise<void> {
     if (rows.length === 0) return;
-    await tenantTx(this.pool, this.t, (client) => this.writeTouchMtime(client, rows));
+    await this.tx((client) => this.writeTouchMtime(client, rows));
   }
 
   async touchSessionMtime(sessionId: string, mtime: number): Promise<void> {
@@ -1059,7 +1126,7 @@ export class PgStore implements StorageDriver {
           if (projectIdFilter) { tp.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); tw += ` AND project_path ILIKE $${tp.length}`; }
           if (windowFloor !== undefined) { tp.push(windowFloor); tw += ` AND mtime >= $${tp.length}`; }
           tp.push(topK * 5);
-          rows = await tenantTx(this.pool, this.t, async (client: any) => {
+          rows = await this.tx(async (client: any) => {
             // Bound the trigram scan: a typo whose trigrams are common ("keyclock"
             // → key/loc/ock everywhere) can match a huge candidate set and take
             // 10s+. Cap at 2.5s — if it can't surface a close match fast, return
@@ -1177,7 +1244,7 @@ export class PgStore implements StorageDriver {
           if (nt !== r.chunk_type) changed.push([r.chunk_id, nt]);
         }
         if (changed.length) {
-          await tenantTx(this.pool, this.t, async (client) => {
+          await this.tx(async (client) => {
             for (const [id, nt] of changed) {
               await client.query(`UPDATE memory_chunks SET chunk_type=$3 WHERE tenant=$1 AND chunk_id=$2`, [this.t, id, nt]);
             }
@@ -1235,38 +1302,111 @@ export class PgStore implements StorageDriver {
     const rows = await this.q(`SELECT session_id, deleted_at FROM session_tombstones WHERE tenant=$1`, [this.t]);
     return rows.map((r: any) => ({ session_id: r.session_id, deleted_at: Number(r.deleted_at) }));
   }
+  /**
+   * Which of THESE sessions are tombstoned.
+   *
+   * The ingest asks one question of this table — "is anything in the payload
+   * already deleted?" — and answered it by reading every tombstone the tenant
+   * ever wrote, on every push. That read has no upper bound and grows for the
+   * life of the account, so a tenant who deletes a million sessions pays a
+   * million rows on every subsequent sync. Bounded by the batch instead.
+   */
+  async tombstonedAmong(sessionIds: string[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await this.q(
+      `SELECT session_id FROM session_tombstones WHERE tenant=$1 AND session_id = ANY($2)`,
+      [this.t, ids]);
+    for (const r of rows) out.add(r.session_id);
+    return out;
+  }
   async removeTombstone(sessionId: string): Promise<void> {
     await this.q(`DELETE FROM session_tombstones WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
   }
   async purgeSession(sessionId: string): Promise<void> {
-    const run = async (sql: string, params: unknown[]) => { try { await this.q(sql, params); } catch { /* absent */ } };
-    await run(`DELETE FROM memory_metadata WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
-    await run(`DELETE FROM memory_chunks WHERE tenant=$1 AND item_id=$2 AND source_type='session'`, [this.t, sessionId]);
-    // memory_vectors is written by the vector store but carries its own text
-    // column returned by semantic search — if we don't purge it here, a deleted
-    // session keeps surfacing in vector results. run() swallows the error when
-    // the table is absent (no embedder ever configured).
-    await run(`DELETE FROM memory_vectors WHERE tenant=$1 AND item_id=$2 AND source_type='session'`, [this.t, sessionId]);
-    await run(`DELETE FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
-    // The DELETE returns the key, so this costs ONE round trip. Reading it with
-    // a separate SELECT first cost two, and purgeSession runs once per session
-    // in the retention sweeps (retention.ts calls it in three places): the
-    // extra query per row timed out the idempotency test, which sweeps 200
-    // seeded sessions twice, at 15s on a Windows runner.
+    await this.purgeSessionsMany([sessionId]);
+  }
+  /**
+   * Purge a whole set of sessions in a fixed number of statements.
+   *
+   * The ingest handler receives the batch's tombstones together, and one call
+   * per session cost 12 statements each — 650 round trips on a 50-tombstone
+   * batch, inside the request that docs/SYNC-BATCH-WRITES.md holds to 15.
+   * Every DELETE takes the whole id set through `= ANY($2)`, so the count is
+   * 12 whatever the batch holds.
+   *
+   * Ids are sorted so two concurrent batches covering overlapping sessions
+   * take their row locks in the same order (§5).
+   */
+  async purgeSessionsMany(sessionIds: string[]): Promise<void> {
+    const ids = [...new Set(sessionIds.filter(Boolean))].sort();
+    if (ids.length === 0) return;
+    // ONE transaction for the whole purge. Each `this.q` opens its own — a
+    // connect, a BEGIN, the GUCs and a COMMIT per statement, so twelve DELETEs
+    // cost 55 round trips. It also decides the correctness: a purge that failed
+    // on statement seven left the session's metadata gone and its chunks in
+    // place, and orphaned chunks keep answering searches for a deleted session.
+    // Either every table loses the session or none does.
     //
-    // The row goes before the object. The row is what authorizes and what every
-    // read consults, so an object left behind serves nobody and is swept later;
-    // a row pointing at a deleted object would fail every read of that session.
-    const purged = await this.qr(
-      `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id=$2 RETURNING object_key`,
-      [this.t, sessionId]).catch(() => [] as any[]);
-    const purgedKey = purged?.[0]?.object_key;
-    if (purgedKey) await getObjectStore()?.delete(purgedKey).catch(() => { /* orphan; swept later */ });
-    await run(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    await run(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    await run(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    await run(`DELETE FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    await run(`DELETE FROM memory_links WHERE tenant=$1 AND ((source_type='session' AND source_id=$2) OR (target_type='session' AND target_id=$2))`, [this.t, sessionId]);
+    // A table absent from this deployment is skipped by the one existence
+    // lookup below. Catching the error per statement cannot work inside a
+    // transaction: the first failure aborts it and every later statement
+    // returns 25P02.
+    const statements: Array<[table: string, sql: string]> = [
+      ['memory_metadata', `DELETE FROM memory_metadata WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`],
+      ['memory_chunks', `DELETE FROM memory_chunks WHERE tenant=$1 AND item_id = ANY($2) AND source_type='session'`],
+      // memory_vectors is written by the vector store but carries its own text
+      // column returned by semantic search — without this a deleted session
+      // keeps surfacing in vector results. It is absent when no embedder was
+      // ever configured.
+      ['memory_vectors', `DELETE FROM memory_vectors WHERE tenant=$1 AND item_id = ANY($2) AND source_type='session'`],
+      ['content_cache', `DELETE FROM content_cache WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`],
+      ['secret_findings', `DELETE FROM secret_findings WHERE tenant=$1 AND session_id = ANY($2)`],
+      ['session_metadata', `DELETE FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`],
+      ['compute_cache', `DELETE FROM compute_cache WHERE tenant=$1 AND session_id = ANY($2)`],
+      ['session_outcome_cache', `DELETE FROM session_outcome_cache WHERE tenant=$1 AND session_id = ANY($2)`],
+      ['memory_links', `DELETE FROM memory_links WHERE tenant=$1 AND ((source_type='session' AND source_id = ANY($2)) OR (target_type='session' AND target_id = ANY($2)))`],
+    ];
+    const keys = await this.tx(async (client: any) => {
+      const present = new Set<string>();
+      const names = [...statements.map(([t]) => t), 'raw_sessions'];
+      const reg = await client.query(
+        `SELECT n FROM unnest($1::text[]) AS n WHERE to_regclass(n) IS NOT NULL`, [names]);
+      for (const r of reg.rows) present.add(r.n);
+      for (const [table, sql] of statements) {
+        if (present.has(table)) await client.query(sql, [this.t, ids]);
+      }
+      if (!present.has('raw_sessions')) return [] as string[];
+      // The DELETE returns the keys, so this costs ONE round trip. Reading them
+      // with a separate SELECT first cost two, and the retention sweeps
+      // (retention.ts calls this in three places) run it over large sets: the
+      // extra query per row timed out the idempotency test, which sweeps 200
+      // seeded sessions twice, at 15s on a Windows runner.
+      const purged = await client.query(
+        `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id = ANY($2) RETURNING object_key`,
+        [this.t, ids]);
+      return purged.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
+    });
+    // The rows go before the objects, and outside the transaction: a row is
+    // what authorizes and what every read consults, so an object left behind
+    // serves nobody and the sweep collects it, while a row pointing at a
+    // deleted object would fail every read of that session. One object failure
+    // must not abandon the rest.
+    const store = getObjectStore();
+    if (store && keys.length > 0) await Promise.allSettled(keys.map((k) => store.delete(k)));
+  }
+  /** Tombstone a whole set of sessions in one statement, whatever its size. */
+  async addTombstonesMany(sessionIds: string[]): Promise<void> {
+    const ids = [...new Set(sessionIds.filter(Boolean))].sort();
+    if (ids.length === 0) return;
+    // unnest() carries the ids as ONE array parameter, so the statement holds
+    // three bind parameters for any batch and never meets the 65535 limit.
+    await this.q(
+      `INSERT INTO session_tombstones (tenant, session_id, deleted_at)
+       SELECT $1, s, $3 FROM unnest($2::text[]) AS s
+       ON CONFLICT DO NOTHING`,
+      [this.t, ids, Date.now()]);
   }
 
   // ── raw session archive (shrink-protected — see memory-store.ts) ──
@@ -1370,6 +1510,82 @@ export class PgStore implements StorageDriver {
     const rows = await this.qr(`SELECT session_id, mtime, size FROM raw_sessions WHERE tenant=$1`, [this.t]);
     return rows.map((r: any) => ({ session_id: r.session_id, mtime: Number(r.mtime), size: Number(r.size) }));
   }
+  /**
+   * Item counts grouped by (source_type, tool), counted by the database.
+   *
+   * The memory-status panel built this with thirteen queries — one per source
+   * type, each fetching up to 50,000 whole rows — and parsed every row's
+   * extra_json in JavaScript to read one field. Measured at 3,125 ms average
+   * and 21 seconds at worst on a tenant with 15,395 items.
+   *
+   * `IS JSON OBJECT` stands in for the try/catch the loop had: a row whose
+   * extra_json is malformed counts under the historical default instead of
+   * failing the whole query.
+   */
+  async sourceToolCounts(): Promise<Record<string, Record<string, number>>> {
+    const rows = await this.qr(
+      `SELECT source_type,
+              COALESCE(NULLIF(CASE WHEN extra_json IS JSON OBJECT
+                                   THEN extra_json::jsonb->>'tool' END, ''), 'claude') AS tool,
+              count(*)::int AS n
+         FROM memory_metadata
+        WHERE tenant=$1
+        GROUP BY 1, 2`, [this.t]);
+    const out: Record<string, Record<string, number>> = {};
+    for (const r of rows) {
+      (out[r.source_type] ??= {})[r.tool] = Number(r.n);
+    }
+    return out;
+  }
+  /**
+   * Sessions per project path, counted by the database.
+   *
+   * The status endpoint built this by fetching every session row — up to
+   * 100,000 of them, every column including extra_json — and counting in
+   * JavaScript. On one tenant that is 11,024 rows out of a 36 MB table, behind
+   * a 30-second cache, on every pod, while the dashboard's event stream asks
+   * for it every 2 seconds. It returns one row per distinct project instead:
+   * about 298.
+   */
+  async sessionProjectCounts(): Promise<{ projects: Record<string, number>; total: number }> {
+    const rows = await this.qr(
+      `SELECT project_path, count(*)::int AS n
+         FROM memory_metadata
+        WHERE tenant=$1 AND source_type='session'
+        GROUP BY project_path`, [this.t]);
+    const projects: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) {
+      total += Number(r.n);
+      if (r.project_path) projects[r.project_path] = (projects[r.project_path] || 0) + Number(r.n);
+    }
+    return { projects, total };
+  }
+  /**
+   * How many archives this tenant holds.
+   *
+   * The sync-status panel showed this count by listing every row and taking
+   * `.length`. On one tenant that is 11,406 rows per poll, and the panel polls:
+   * 19,042 requests over seven days moved roughly 217 million rows to render a
+   * number.
+   */
+  async countRawSessions(): Promise<number> {
+    const r = await this.oneRo(`SELECT count(*)::int AS n FROM raw_sessions WHERE tenant=$1`, [this.t]);
+    return Number(r?.n ?? 0);
+  }
+  /**
+   * Project ids that still have an action nobody has dismissed.
+   *
+   * The tracked-tasks route asked this project by project, and asked it by
+   * fetching up to 100 whole action rows and testing them in JavaScript — one
+   * query per project to compute one boolean, 185 round trips on a tenant with
+   * 37 projects.
+   */
+  async projectsWithOpenCodeActions(): Promise<Set<string>> {
+    const rows = await this.qr(
+      `SELECT DISTINCT project_id FROM code_actions WHERE tenant=$1 AND status <> 'dismissed'`, [this.t]);
+    return new Set(rows.map((r: any) => String(r.project_id)));
+  }
   async listEnvelopesMissingRawArchive(sinceMs = 0, limit = 200): Promise<string[]> {
     const rows = await this.qr(
       `SELECT c.id FROM content_cache c
@@ -1467,7 +1683,7 @@ export class PgStore implements StorageDriver {
     return r.rowCount > 0;
   }
   async deleteCodeProject(projectId: string): Promise<boolean> {
-    return tenantTx(this.pool, this.tenant, async (c) => {
+    return this.tx(async (c) => {
       await c.query(`DELETE FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
       await c.query(`DELETE FROM code_hotspots WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
       await c.query(`DELETE FROM code_actions WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
@@ -1479,7 +1695,7 @@ export class PgStore implements StorageDriver {
   async replaceCodeFindings(projectId: string, findings: Args<'replaceCodeFindings'>[1]): Promise<number> {
     const now = Date.now();
     // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
-    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
+    return runUnrestricted(() => this.tx(async (c) => {
       // The previous rows' CONTENT, not only their ids. A finding's id is a hash
       // of its content, so when the hashing changes the same finding arrives
       // wearing a new id — and a carry-forward keyed on the stored id silently
@@ -1584,7 +1800,7 @@ export class PgStore implements StorageDriver {
   async replaceCodeHotspots(projectId: string, hotspots: Args<'replaceCodeHotspots'>[1]): Promise<number> {
     const now = Date.now();
     // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
-    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
+    return runUnrestricted(() => this.tx(async (c) => {
       await c.query(`DELETE FROM code_hotspots WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
       const rows = hotspots.map((h) => [this.t, codeHotspotId(projectId, h.file), projectId, h.file,
         h.churn | 0, h.complexity | 0, h.score, h.aiAuthored ? 1 : 0, h.lines | 0, h.suggestion ?? '', now]);
@@ -1605,7 +1821,7 @@ export class PgStore implements StorageDriver {
   async upsertCodeActions(projectId: string, actions: Args<'upsertCodeActions'>[1]): Promise<number> {
     const now = Date.now();
     // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
-    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
+    return runUnrestricted(() => this.tx(async (c) => {
       const rows = actions.map((a) => {
         const id = a.id ?? codeActionId(projectId, a);
         return [this.t, id, projectId, a.pri | 0, a.category, a.title, a.fix,
