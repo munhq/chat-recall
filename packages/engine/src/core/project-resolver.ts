@@ -355,8 +355,8 @@ function findGitToplevel(realPath: string): string | null {
  *
  * Cases 2 to 4 mint a DIFFERENT, permanent id for a repo that has a remote, so
  * the same project is filed twice and its sessions split between the two. It is
- * not hypothetical: `coolcode`, whose origin is a plain
- * https://github.com/…/coolcode.git, arrived on the board as
+ * not hypothetical: a repository whose origin is a plain
+ * https://github.com/owner/example-app.git arrived on the board as
  * `git-local:9c548119504c`.
  *
  * The failure was also CACHED, so one expired timeout poisoned every later
