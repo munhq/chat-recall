@@ -72,7 +72,11 @@ const FILES = [
   // because the writer had nothing to key them on — every project with no
   // opinion of its own was inheriting one repository's stack. Retires by
   // `valid_to`, so the history still shows they were asserted.
-  './migrations/0014_retire_unkeyed_account_decisions.sql',
+  // RENUMBERED FROM 0014, which ran and retired nothing: it set app.tenant and
+  // not app.viewer, so the RESTRICTIVE policy on kg_triples hid every row from
+  // its own UPDATE, and the ledger then recorded the no-op as applied. A new
+  // filename is the only way past a ledger entry — see 0012.
+  './migrations/0016_retire_unkeyed_account_decisions.sql',
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
   // Removes the children a purge left behind (a deleted session kept its chunks,
   // its envelope and its embeddings, so it could resurface) and copies
