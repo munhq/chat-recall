@@ -10,6 +10,8 @@
  */
 
 import { MemoryStore } from '../memory-store.js';
+import { isEmptyBatch, type IngestBatch, type IngestCounts, type IngestMetaWriter } from './ingest-batch.js';
+
 import type { StorageDriver } from './driver.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -65,6 +67,56 @@ export class SqliteStore implements StorageDriver {
   async getCachedContent(...a: Args<'getCachedContent'>) { return this.inner.getCachedContent(...a); }
   async getCachedContentStale(...a: Args<'getCachedContentStale'>) { return this.inner.getCachedContentStale(...a); }
   async setCachedContent(...a: Args<'setCachedContent'>) { return this.inner.setCachedContent(...a); }
+  /**
+   * One ingest request's writes, ROW BY ROW.
+   *
+   * The Postgres driver runs this as set-based statements in one transaction,
+   * because its cost is network round trips. This store is a local file used by
+   * the unit tests, where a loop costs microseconds — so the loop is the right
+   * shape here, and any test that measures statement counts must run against
+   * Postgres. The ORDER is the same in both, and it matters: writing items
+   * clears each session's cached summary, so the session-metadata rows go in
+   * after it. See docs/SYNC-BATCH-WRITES.md §4.
+   *
+   * `meta` is required here and ignored by the Postgres driver. session_metadata
+   * and compute_cache live in the metadata cache, which for SQLite is a SEPARATE
+   * FILE this store cannot reach; in Postgres they are tables in the same
+   * database, so that driver writes them inside its own transaction and needs no
+   * collaborator. Omitting it here silently skips those two tables.
+   */
+  async writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter): Promise<IngestCounts> {
+    const counts: IngestCounts = { chunks: 0, findings: 0, computeOffered: 0 };
+    if (isEmptyBatch(batch)) return counts;
+    if (batch.items?.length) this.inner.setItems(batch.items);
+    for (const t of batch.touchMtime ?? []) this.inner.touchSessionMtime(t.sessionId, t.mtime);
+    for (const m of batch.sessionMeta ?? []) await meta?.setMany([m]);
+    for (const c of batch.cachedContent ?? []) this.inner.setCachedContent(c.id, c.sourceType, c.mtime, c.content);
+    if (batch.chunks?.length) counts.chunks += this.inner.addChunksFTS(batch.chunks);
+    if (batch.appendChunks?.length) counts.chunks += this.inner.appendChunksFTS(batch.appendChunks);
+    for (const f of batch.findings ?? []) counts.findings += this.inner.replaceSecretFindings(f.sessionId, f.findings).written;
+    if (batch.compute?.length && meta) counts.computeOffered += await meta.setComputeMany(batch.compute);
+    if (batch.links?.length) this.inner.addLinks(batch.links);
+    return counts;
+  }
+
+  async getCachedContentStaleMany(sourceType: string, ids: string[]) {
+    const out = new Map<string, { content: string; mtime: number }>();
+    for (const id of ids) {
+      const r = this.inner.getCachedContentStale(id, sourceType);
+      if (r) out.set(id, r);
+    }
+    return out;
+  }
+  async maxSyncChunkIndexMany(itemIds: string[]) {
+    const out = new Map<string, number>();
+    for (const id of itemIds) out.set(id, this.inner.maxSyncChunkIndex(id));
+    return out;
+  }
+  async existingItemIds(sourceType: string, ids: string[]) {
+    const out = new Set<string>();
+    for (const id of ids) if (this.inner.getItem(id, sourceType as never)) out.add(id);
+    return out;
+  }
 
   // ── secret findings ──
   async secretFindingsSummary(...a: Args<'secretFindingsSummary'>) { return this.inner.secretFindingsSummary(...a); }

@@ -1,5 +1,7 @@
 import { randomBytes } from 'crypto';
 import { tenantQuery, tenantTx, bulkInsert, tenantQueryRo } from './pg-pool.js';
+import { writeSessionMetaRows, readStaleMarkers, writeComputeRows } from './caches.js';
+import { isEmptyBatch, type IngestBatch, type IngestCounts } from './ingest-batch.js';
 import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../../types/code-intel.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
@@ -130,33 +132,7 @@ export class PgStore implements StorageDriver {
 
   async setItems(items: MemoryItem[]): Promise<void> {
     if (items.length === 0) return;
-    // De-dupe on the conflict key (last wins) so one multi-row INSERT is valid.
-    const byKey = new Map<string, MemoryItem>();
-    for (const it of items) byKey.set(`${it.sourceType}\u0000${it.id}`, it);
-    const list = [...byKey.values()];
-    const now = Date.now();
-    await tenantTx(this.pool, this.t, async (client) => {
-      // Mirror setItem's session cleanup, batched.
-      const sessionIds = list.filter((it) => it.sourceType === 'session').map((it) => it.id);
-      if (sessionIds.length > 0) {
-        await client.query(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, sessionIds]);
-      }
-      const a = currentAuthor();
-      const rows = list.map((it) => {
-        const resolved = !it.projectId && it.projectPath ? resolveProjectId(it.projectPath) : null;
-        const projectId = it.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
-        return [this.t, it.id, it.sourceType, it.title, it.projectPath, projectId, it.contentPreview || '', it.filePath, intMs(it.mtime), now, JSON.stringify(it.extra || {}), a.sub, a.device];
-      });
-      await bulkInsert(client, 'memory_metadata',
-        ['tenant', 'id', 'source_type', 'title', 'project_path', 'project_id', 'content_preview', 'file_path', 'mtime', 'indexed_at', 'extra_json', 'author_sub', 'author_device'],
-        rows,
-        `ON CONFLICT (tenant,id,source_type) DO UPDATE SET
-           title=excluded.title, project_path=excluded.project_path, project_id=excluded.project_id,
-           content_preview=excluded.content_preview, file_path=excluded.file_path, mtime=excluded.mtime,
-           indexed_at=excluded.indexed_at, extra_json=excluded.extra_json,
-           author_sub=COALESCE(memory_metadata.author_sub, excluded.author_sub),
-           author_device=COALESCE(memory_metadata.author_device, excluded.author_device)`);
-    });
+    await tenantTx(this.pool, this.t, (client) => this.writeItemRows(client, items));
   }
 
   private static COLS = 'id, source_type, title, project_path, project_id, content_preview, file_path, mtime, indexed_at, extra_json';
@@ -438,18 +414,8 @@ export class PgStore implements StorageDriver {
   }
   async addLinks(links: MemoryLink[]): Promise<void> {
     if (links.length === 0) return;
-    // De-dupe by the conflict key, then one bulk INSERT in one transaction.
-    const byKey = new Map<string, MemoryLink>();
-    for (const l of links) byKey.set(`${l.sourceType}\u0000${l.sourceId}\u0000${l.targetType}\u0000${l.targetId}\u0000${l.linkType}`, l);
-    const now = Date.now();
-    const rows = [...byKey.values()].map((l) => [this.t, l.sourceType, l.sourceId, l.targetType, l.targetId, l.linkType, l.confidence ?? null, now]);
     // Unrestricted write — see addLink.
-    await runUnrestricted(() => tenantTx(this.pool, this.t, async (client) => {
-      await bulkInsert(client, 'memory_links',
-        ['tenant', 'source_type', 'source_id', 'target_type', 'target_id', 'link_type', 'confidence', 'created_at'],
-        rows,
-        'ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at');
-    }));
+    await runUnrestricted(() => tenantTx(this.pool, this.t, (client) => this.writeLinkRows(client, links)));
   }
   async getLinksFrom(sourceType: SourceType, sourceId: string): Promise<MemoryLinkRow[]> {
     return this.qr(`SELECT * FROM memory_links WHERE tenant=$1 AND source_type=$2 AND source_id=$3`, [this.t, sourceType, sourceId]);
@@ -473,6 +439,66 @@ export class PgStore implements StorageDriver {
     const row = await this.one(`SELECT content_json, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType]);
     return row ? { content: row.content_json, mtime: Number(row.mtime) } : null;
   }
+  /**
+   * Prior cached content for a whole batch, in one query.
+   *
+   * The ingest read this once per session, twice: once to decide append versus
+   * full and once to compare turn counts. See docs/SYNC-BATCH-WRITES.md §4.
+   */
+  /**
+   * Which of these ids already have a metadata row — one query for a batch.
+   * The ingest asks this for every session carrying a secret finding.
+   */
+  async existingItemIds(sourceType: string, ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.q(
+      `SELECT id FROM memory_metadata WHERE tenant=$1 AND source_type=$2 AND id = ANY($3)`,
+      [this.t, sourceType, ids]);
+    return new Set(rows.map((r: { id: string }) => r.id));
+  }
+
+  async getCachedContentStaleMany(sourceType: string, ids: string[]): Promise<Map<string, { content: string; mtime: number }>> {
+    const out = new Map<string, { content: string; mtime: number }>();
+    if (ids.length === 0) return out;
+    const rows = await this.q(
+      `SELECT id, content_json, mtime FROM content_cache WHERE tenant=$1 AND source_type=$2 AND id = ANY($3)`,
+      [this.t, sourceType, ids]);
+    for (const r of rows) out.set(r.id, { content: r.content_json, mtime: Number(r.mtime) });
+    return out;
+  }
+
+  /**
+   * The tail-append chunk cursor for a whole batch, in one query.
+   *
+   * PRIMARY, not replica, for the reason maxSyncChunkIndex gives: a stale read
+   * re-issues chunk ids that a prior tick already used and overwrites them.
+   */
+  async maxSyncChunkIndexMany(itemIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (itemIds.length === 0) return out;
+    const rows = await this.q(
+      `SELECT item_id, chunk_id FROM memory_chunks
+        WHERE tenant=$1 AND source_type='session' AND item_id = ANY($2) AND chunk_id LIKE '%:sync:%'`,
+      [this.t, itemIds]);
+    // The SAME pattern maxSyncChunkIndex uses, anchored at the end and digits
+    // only. A looser parse here would report a different cursor for the same
+    // rows, and the caller numbers new chunks from it — a wrong cursor re-issues
+    // ids that already exist and the upsert overwrites them.
+    for (const r of rows) {
+      const m = /:sync:(\d+)$/.exec(String(r.chunk_id));
+      if (!m) continue;
+      const n = Number(m[1]);
+      const prev = out.get(r.item_id);
+      if (prev === undefined || n > prev) out.set(r.item_id, n);
+    }
+    return out;
+  }
+
+  async setCachedContentMany(rows: Array<{ id: string; sourceType: string; mtime: number; content: string }>): Promise<void> {
+    if (rows.length === 0) return;
+    await tenantTx(this.pool, this.t, (client) => this.writeCachedContent(client, rows));
+  }
+
   async setCachedContent(id: string, sourceType: string, mtime: number, content: string): Promise<void> {
     await this.q(
       `INSERT INTO content_cache (tenant,id,source_type,content_json,mtime) VALUES ($1,$2,$3,$4,$5)
@@ -497,6 +523,14 @@ export class PgStore implements StorageDriver {
   /** Insert-only: used by the server re-scan, which must not retract anything. */
   async addSecretFindings(sessionId: string, findings: Args<'addSecretFindings'>[1]): Promise<{ written: number }> {
     return this.insertSecretFindings(sessionId, findings);
+  }
+
+  async replaceSecretFindingsMany(
+    bySession: Array<{ sessionId: string; findings: Args<'replaceSecretFindings'>[1] }>,
+  ): Promise<{ written: number }> {
+    if (bySession.length === 0) return { written: 0 };
+    const written = await tenantTx(this.pool, this.t, (client) => this.writeFindingRows(client, bySession as never));
+    return { written };
   }
 
   private async insertSecretFindings(sessionId: string, findings: Args<'replaceSecretFindings'>[1]): Promise<{ written: number }> {
@@ -664,42 +698,221 @@ export class PgStore implements StorageDriver {
   }
 
   // ── FTS (Postgres tsvector) ──
-  async addChunksFTS(chunks: MemoryChunk[]): Promise<number> {
-    const valid = chunks.filter(c => c.text && c.text.trim().length > 0);
+  /**
+   * One ingest request's writes, in ONE transaction on ONE connection.
+   *
+   * This replaces a set of per-table `*Many` methods. Each of those opened its
+   * own transaction, so a request took and released a connection once per
+   * table and a failure halfway left the tables disagreeing. It also put the
+   * ORDER between them in the caller, where it was incidental: `setItems`
+   * clears each session's cached summary, so the session-metadata rows have to
+   * be written after it, and that fact belongs next to the statements rather
+   * than in a route.
+   *
+   * Everything here is set-based and guarded — see docs/SYNC-BATCH-WRITES.md.
+   * Rows are sorted by their conflict key before each statement, so two
+   * concurrent batches lock in the same order and cannot deadlock (§5).
+   */
+  // ── Row writers, on an already-open client ──────────────────────────────
+  // Each is the ONE implementation of its statement: the single-table public
+  // methods below wrap these in a transaction of their own, and
+  // writeIngestBatch runs them all in a shared one.
+
+  private async writeItemRows(client: any, items: MemoryItem[]): Promise<void> {
+    const byKey = new Map<string, MemoryItem>();
+    for (const it of items) byKey.set(`${it.sourceType}\u0000${it.id}`, it);
+    const list = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+    const now = Date.now();
+    // A re-synced session's stored summary may no longer match its content.
+    const sessionIds = list.filter((it) => it.sourceType === 'session').map((it) => it.id);
+    if (sessionIds.length > 0) {
+      await client.query(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, sessionIds]);
+    }
+    const a = currentAuthor();
+    const rows = list.map((it) => {
+      const resolved = !it.projectId && it.projectPath ? resolveProjectId(it.projectPath) : null;
+      const projectId = it.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
+      return [this.t, it.id, it.sourceType, it.title, it.projectPath, projectId, it.contentPreview || '', it.filePath, intMs(it.mtime), now, JSON.stringify(it.extra || {}), a.sub, a.device];
+    });
+    await bulkInsert(client, 'memory_metadata',
+      ['tenant', 'id', 'source_type', 'title', 'project_path', 'project_id', 'content_preview', 'file_path', 'mtime', 'indexed_at', 'extra_json', 'author_sub', 'author_device'],
+      rows,
+      `ON CONFLICT (tenant,id,source_type) DO UPDATE SET
+         title=excluded.title, project_path=excluded.project_path, project_id=excluded.project_id,
+         content_preview=excluded.content_preview, file_path=excluded.file_path, mtime=excluded.mtime,
+         indexed_at=excluded.indexed_at, extra_json=excluded.extra_json,
+         author_sub=COALESCE(memory_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(memory_metadata.author_device, excluded.author_device)
+       WHERE memory_metadata.title           IS DISTINCT FROM excluded.title
+          OR memory_metadata.project_path    IS DISTINCT FROM excluded.project_path
+          OR memory_metadata.project_id      IS DISTINCT FROM excluded.project_id
+          OR memory_metadata.content_preview IS DISTINCT FROM excluded.content_preview
+          OR memory_metadata.file_path       IS DISTINCT FROM excluded.file_path
+          OR memory_metadata.mtime           IS DISTINCT FROM excluded.mtime
+          OR memory_metadata.extra_json      IS DISTINCT FROM excluded.extra_json`);
+  }
+
+  /**
+   * `replace` carries the COMPLETE chunk set for each item named, so anything
+   * stored under those items and not in it is deleted. `append` carries a tail
+   * only and deletes nothing.
+   */
+  private async writeChunkRows(client: any, chunks: MemoryChunk[], mode: 'replace' | 'append'): Promise<number> {
+    const valid = chunks.filter((c) => c.text && c.text.trim().length > 0);
     if (valid.length === 0) return 0;
-    // De-dupe by chunk_id: a single multi-row INSERT cannot hit the same
-    // ON CONFLICT key twice. Last write wins (matches the prior loop's upsert).
     const byId = new Map<string, MemoryChunk>();
     for (const c of valid) byId.set(c.chunkId, c);
-    const rows = [...byId.values()];
-    // Affected items, for the replace-on-resync DELETE.
-    const items = new Map<string, [string, string]>();
-    for (const c of rows) items.set(`${c.sourceType}\u0000${c.itemId}`, [c.sourceType, c.itemId]);
-
-    // ONE transaction: a single DELETE for all affected items, then bulk
-    // multi-row INSERTs — vs. the former (delete + insert) per row, each in its
-    // own BEGIN/SET/COMMIT. Same semantics, ~N× fewer round-trips.
-    await tenantTx(this.pool, this.t, async (client) => {
-      const its = [...items.values()];
-      const dParams: unknown[] = [this.t];
-      const dTuples = its.map((it) => { const b = dParams.length; dParams.push(it[0], it[1]); return `($${b + 1},$${b + 2})`; });
-      await client.query(
-        `DELETE FROM memory_chunks WHERE tenant=$1 AND (source_type,item_id) IN (${dTuples.join(',')})`,
-        dParams);
-      const a = currentAuthor();
-      const insertRows = rows.map((c) => {
+    const rows = [...byId.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+    const a = currentAuthor();
+    await bulkInsert(client, 'memory_chunks',
+      ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
+      rows.map((c) => {
         const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
         const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
         return [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime), a.sub, a.device];
-      });
-      await bulkInsert(client, 'memory_chunks',
-        ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
-        insertRows,
-        `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
-           author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
-           author_device=COALESCE(memory_chunks.author_device, excluded.author_device)`);
-    });
+      }),
+      `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
+         chunk_type=excluded.chunk_type, project_path=excluded.project_path,
+         project_id=excluded.project_id, file_path=excluded.file_path, mtime=excluded.mtime,
+         author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
+         author_device=COALESCE(memory_chunks.author_device, excluded.author_device)
+       WHERE memory_chunks.text         IS DISTINCT FROM excluded.text
+          OR memory_chunks.title        IS DISTINCT FROM excluded.title
+          OR memory_chunks.chunk_type   IS DISTINCT FROM excluded.chunk_type
+          OR memory_chunks.project_path IS DISTINCT FROM excluded.project_path
+          OR memory_chunks.project_id   IS DISTINCT FROM excluded.project_id
+          OR memory_chunks.file_path    IS DISTINCT FROM excluded.file_path`);
+
+    if (mode === 'replace') {
+      const items = new Map<string, [string, string]>();
+      for (const c of rows) items.set(`${c.sourceType}\u0000${c.itemId}`, [c.sourceType, c.itemId]);
+      const its = [...items.values()];
+      const dParams: unknown[] = [this.t];
+      const dTuples = its.map((it) => { const b = dParams.length; dParams.push(it[0], it[1]); return `($${b + 1},$${b + 2})`; });
+      dParams.push(rows.map((c) => c.chunkId));
+      await client.query(
+        `DELETE FROM memory_chunks
+          WHERE tenant=$1 AND (source_type,item_id) IN (${dTuples.join(',')})
+            AND chunk_id <> ALL($${dParams.length})`,
+        dParams);
+    }
     return rows.length;
+  }
+
+  private async writeCachedContent(client: any, rows: Array<{ id: string; sourceType: string; mtime: number; content: string }>): Promise<void> {
+    const byKey = new Map<string, typeof rows[number]>();
+    for (const r of rows) byKey.set(`${r.sourceType}\u0000${r.id}`, r);
+    const list = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+    await bulkInsert(client, 'content_cache',
+      ['tenant', 'id', 'source_type', 'content_json', 'mtime'],
+      list.map((r) => [this.t, r.id, r.sourceType, applyChunkPrivacy(r.content), intMs(r.mtime)]),
+      `ON CONFLICT (tenant,id,source_type) DO UPDATE
+          SET content_json=excluded.content_json, mtime=excluded.mtime
+        WHERE content_cache.content_json IS DISTINCT FROM excluded.content_json
+           OR content_cache.mtime        IS DISTINCT FROM excluded.mtime`);
+  }
+
+  private async writeTouchMtime(client: any, rows: Array<{ sessionId: string; mtime: number }>): Promise<void> {
+    const byId = new Map<string, number>();
+    for (const r of rows) byId.set(r.sessionId, intMs(r.mtime));
+    const list = [...byId.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    await client.query(
+      `UPDATE memory_metadata m SET mtime = v.mtime, indexed_at = $3
+         FROM (SELECT * FROM unnest($2::text[], $4::bigint[]) AS t(id, mtime)) v
+        WHERE m.tenant = $1 AND m.source_type = 'session' AND m.id = v.id
+          AND m.mtime IS DISTINCT FROM v.mtime`,
+      [this.t, list.map((x) => x[0]), Date.now(), list.map((x) => x[1])]);
+  }
+
+  private async writeFindingRows(client: any, bySession: IngestBatch['findings'] & object): Promise<number> {
+    const ids = bySession.map((b) => b.sessionId).sort();
+    const now = Date.now();
+    const a = currentAuthor();
+    const byKey = new Map<string, unknown[]>();
+    for (const { sessionId, findings } of bySession) {
+      for (const f of findings) {
+        byKey.set(`${sessionId}\u0000${f.detector}\u0000${f.rule}\u0000${f.line}`, [
+          this.t, sessionId, f.detector, f.rule, f.line, f.preview, now,
+          f.verified === true ? 1 : f.verified === false ? 0 : null, a.sub, a.device,
+        ]);
+      }
+    }
+    const rows = [...byKey.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([, v]) => v);
+    await client.query(
+      `DELETE FROM secret_findings WHERE tenant=$1 AND session_id = ANY($2) AND detector<>$3`,
+      [this.t, ids, SERVER_DETECTOR]);
+    if (rows.length === 0) return 0;
+    await bulkInsert(client, 'secret_findings',
+      ['tenant', 'session_id', 'detector', 'rule', 'line', 'preview', 'scanned_at', 'verified', 'author_sub', 'author_device'],
+      rows,
+      `ON CONFLICT (tenant,session_id,detector,rule,line) DO NOTHING`);
+    // Every row is new: the DELETE cleared this session's client-owned findings
+    // and the only rows left are the server's, whose detector differs.
+    return rows.length;
+  }
+
+  private async writeLinkRows(client: any, links: MemoryLink[]): Promise<void> {
+    const byKey = new Map<string, MemoryLink>();
+    for (const l of links) byKey.set(`${l.sourceType}\u0000${l.sourceId}\u0000${l.targetType}\u0000${l.targetId}\u0000${l.linkType}`, l);
+    const now = Date.now();
+    const rows = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([, l]) => [this.t, l.sourceType, l.sourceId, l.targetType, l.targetId, l.linkType, l.confidence ?? null, now]);
+    await bulkInsert(client, 'memory_links',
+      ['tenant', 'source_type', 'source_id', 'target_type', 'target_id', 'link_type', 'confidence', 'created_at'],
+      rows,
+      'ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at');
+  }
+
+  async writeIngestBatch(batch: IngestBatch, _meta?: unknown): Promise<IngestCounts> {
+    const counts: IngestCounts = { chunks: 0, findings: 0, computeOffered: 0 };
+    if (isEmptyBatch(batch)) return counts;
+
+    const markerSessions = [...new Set((batch.compute ?? []).filter((c) => c.kind === 'markers').map((c) => c.sessionId))];
+
+    // UNRESTRICTED for the whole batch: compute_cache and memory_links carry a
+    // SELECT policy that PostgreSQL applies as the WITH CHECK of an upsert, so
+    // a row for a session whose metadata is not visible to this viewer would
+    // fail with 42501 and take the entire request with it. Neither table has an
+    // author-write-guard, and reads keep the member's real viewer, so this
+    // makes nothing newly visible — the same reasoning as setCompute and
+    // addLink, applied once instead of per statement.
+    await runUnrestricted(() => tenantTx(this.pool, this.t, async (client) => {
+      // 1. Metadata rows. FIRST: this clears the cached summary of every
+      //    session it writes, and step 3 puts the new summaries back.
+      if (batch.items?.length) await this.writeItemRows(client, batch.items);
+
+      // 2. Appended sessions: mtime only. Title, preview and extra are
+      //    head-derived and must survive an append untouched.
+      if (batch.touchMtime?.length) await this.writeTouchMtime(client, batch.touchMtime);
+
+      // 3. Session metadata, after the clear in step 1.
+      if (batch.sessionMeta?.length) await writeSessionMetaRows(client, this.t, batch.sessionMeta);
+
+      // 4. Cached conversation envelopes.
+      if (batch.cachedContent?.length) await this.writeCachedContent(client, batch.cachedContent);
+
+      // 5. Chunks. The full set replaces an item's rows; the tail set appends.
+      if (batch.chunks?.length) counts.chunks += await this.writeChunkRows(client, batch.chunks, 'replace');
+      if (batch.appendChunks?.length) counts.chunks += await this.writeChunkRows(client, batch.appendChunks, 'append');
+
+      // 6. Secret findings: one delete for every session named, one insert.
+      if (batch.findings?.length) counts.findings += await this.writeFindingRows(client, batch.findings);
+
+      // 7. Derived computations, with the markers shrink guard read once.
+      if (batch.compute?.length) {
+        const stale = await readStaleMarkers(client, this.t, markerSessions);
+        counts.computeOffered += await writeComputeRows(client, this.t, batch.compute, stale);
+      }
+
+      // 8. Links between items.
+      if (batch.links?.length) await this.writeLinkRows(client, batch.links);
+    }));
+    return counts;
+  }
+
+  async addChunksFTS(chunks: MemoryChunk[]): Promise<number> {
+    if (chunks.length === 0) return 0;
+    return tenantTx(this.pool, this.t, (client) => this.writeChunkRows(client, chunks, 'replace'));
   }
   async listChunksByItem(sourceType: string, itemId: string): Promise<Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }>> {
     const rows = await this.qr(
@@ -714,28 +927,9 @@ export class PgStore implements StorageDriver {
   // See docs/SYNC-INCREMENTAL.md. append = INSERT without the per-item DELETE.
 
   async appendChunksFTS(chunks: MemoryChunk[]): Promise<number> {
-    const valid = chunks.filter(c => c.text && c.text.trim().length > 0);
-    if (valid.length === 0) return 0;
-    const byId = new Map<string, MemoryChunk>();
-    for (const c of valid) byId.set(c.chunkId, c);
-    const rows = [...byId.values()];
-    await tenantTx(this.pool, this.t, async (client) => {
-      const a = currentAuthor();
-      const insertRows = rows.map((c) => {
-        const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
-        const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
-        return [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime), a.sub, a.device];
-      });
-      await bulkInsert(client, 'memory_chunks',
-        ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
-        insertRows,
-        `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
-           author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
-           author_device=COALESCE(memory_chunks.author_device, excluded.author_device)`);
-    });
-    return rows.length;
+    if (chunks.length === 0) return 0;
+    return tenantTx(this.pool, this.t, (client) => this.writeChunkRows(client, chunks, 'append'));
   }
-
   async maxSyncChunkIndex(itemId: string): Promise<number> {
     // PRIMARY, not replica: this is the tail-append chunk-id cursor. The caller
     // numbers new chunks `:sync:<maxIdx+1+i>`, then appendChunksFTS upserts on
@@ -752,6 +946,11 @@ export class PgStore implements StorageDriver {
       if (m) { const n = Number(m[1]); if (n > max) max = n; }
     }
     return max;
+  }
+
+  async touchSessionMtimeMany(rows: Array<{ sessionId: string; mtime: number }>): Promise<void> {
+    if (rows.length === 0) return;
+    await tenantTx(this.pool, this.t, (client) => this.writeTouchMtime(client, rows));
   }
 
   async touchSessionMtime(sessionId: string, mtime: number): Promise<void> {

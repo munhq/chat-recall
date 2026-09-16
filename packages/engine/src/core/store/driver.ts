@@ -16,6 +16,7 @@
  *   - PgStore     (store/pg.ts)     — Postgres + pgvector. Team / cloud.
  */
 
+import type { IngestBatch, IngestCounts, IngestMetaWriter } from './ingest-batch.js';
 import type { MemoryStore } from '../memory-store.js';
 
 /** Any method → the same method returning a Promise of its (awaited) result. */
@@ -180,6 +181,32 @@ export interface StorageDriver {
   getCachedContent: AsyncMethod<MemoryStore['getCachedContent']>;
   getCachedContentStale: AsyncMethod<MemoryStore['getCachedContentStale']>;
   setCachedContent: AsyncMethod<MemoryStore['setCachedContent']>;
+  // ── Batch ingest ────────────────────────────────────────────────────────
+  //
+  // Three reads that answer for a whole batch, and ONE write that takes it.
+  //
+  // THE DRIVERS DIFFER HERE, deliberately. The Postgres driver runs the batch
+  // as set-based statements in a single transaction, because its cost is
+  // network round trips. The SQLite driver loops row by row: it is the unit-test
+  // driver, its store is a local file, and a loop there costs microseconds. Any
+  // caller measuring statement counts must run against Postgres — the SQLite
+  // numbers mean nothing. See docs/SYNC-BATCH-WRITES.md.
+
+  /** Prior cached content for a whole batch, in one query. */
+  getCachedContentStaleMany(sourceType: string, ids: string[]): Promise<Map<string, { content: string; mtime: number }>>;
+  /** The tail-append chunk cursor for a whole batch, in one query. */
+  maxSyncChunkIndexMany(itemIds: string[]): Promise<Map<string, number>>;
+  /** Which of these ids already have a metadata row — one query for a batch. */
+  existingItemIds(sourceType: string, ids: string[]): Promise<Set<string>>;
+  /**
+   * One ingest request's writes, in order, in one transaction.
+   *
+   * `meta` is used only by the SQLite driver, whose metadata cache is a separate
+   * FILE it cannot reach. Postgres keeps session_metadata and compute_cache in
+   * the same database and writes them inside its own transaction, so it ignores
+   * this argument. Omitting it on SQLite silently skips those two tables.
+   */
+  writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter): Promise<IngestCounts>;
 
   // ── secret findings (security dashboard) ──
   secretFindingsSummary: AsyncMethod<MemoryStore['secretFindingsSummary']>;
