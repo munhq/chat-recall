@@ -429,6 +429,9 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
   } catch { /* outcome-less rows are fine */ }
   try {
     const errors = await cache.getSummaryErrors(entries.map(e => e.sessionId));
+    // The page's cached rows in one statement. Outcomes and summary errors were
+    // already read this way; this one was still a call per row.
+    const cachedRows = await cache.getMany(entries.map(e => e.sessionId));
 
     const result: SessionInfo[] = [];
     // Sessions whose firstPrompt was extracted on this request — write
@@ -438,7 +441,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
     const toPersist: Array<{ sessionId: string; firstPrompt: string; mtime: number }> = [];
 
     for (const e of entries) {
-      const cached = await cache.get(e.sessionId);
+      const cached = cachedRows.get(e.sessionId) ?? null;
       let firstPrompt = e.preIndexedFirstPrompt || '';
       let summary: string | undefined;
       let needsPersist = false;
@@ -590,18 +593,30 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
   try {
     const store = await createStore();
     try {
-      // listItems pages — pass a generous cap that's larger than any
-      // realistic local session count.
-      const items = await store.listItems('session' as SourceType, 100_000, 0);
-      const serverMode = isServerMode();
-      for (const item of items) {
-        let extra: Record<string, unknown> = {};
-        try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-        const tool = extra.tool as SessionIndexEntry['tool'] | undefined;
-        if (!serverMode && (!tool || !STORE_BACKED_TOOLS.has(tool))) continue;
-        const p = item.project_path || '';
-        if (p) projects[p] = (projects[p] || 0) + 1;
-        total++;
+      if (isServerMode()) {
+        // Every session row is counted here, so the database can do it. The
+        // loop below fetched up to 100,000 rows with their extra_json and
+        // counted them in JavaScript — 11,024 rows out of a 36 MB table on one
+        // tenant, behind a 30-second cache, on every pod, while the dashboard's
+        // event stream asks every 2 seconds. The aggregate is ~298 rows.
+        const counted = await store.sessionProjectCounts();
+        for (const [p, n] of Object.entries(counted.projects)) projects[p] = (projects[p] || 0) + n;
+        total += counted.total;
+      } else {
+        // Local mode keeps the row loop: it filters on the tool recorded in
+        // extra_json (claude and codex were already counted from disk above,
+        // and counting their rows again would double them), and a local store
+        // is a file with a few hundred rows.
+        const items = await store.listItems('session' as SourceType, 100_000, 0);
+        for (const item of items) {
+          let extra: Record<string, unknown> = {};
+          try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+          const tool = extra.tool as SessionIndexEntry['tool'] | undefined;
+          if (!tool || !STORE_BACKED_TOOLS.has(tool)) continue;
+          const p = item.project_path || '';
+          if (p) projects[p] = (projects[p] || 0) + 1;
+          total++;
+        }
       }
     } finally {
       await store.close();

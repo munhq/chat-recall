@@ -484,7 +484,7 @@ router.get('/wake-up', async (req, res) => {
 /**
  * Presentation cleanup for wake-up facts. Raw top-importance chunks arrive
  * with three defects the chunker/classifier can't avoid, and this fixes all
- * three at the serving edge so every consumer (CLI, MCP, coolcode) benefits:
+ * three at the serving edge so every consumer (CLI, MCP, a desktop client) benefits:
  *
  * 1. Leading fragments — the chunker splits mid-word, so a chunk can open
  *    with "ed server hardware…". Detect a fragment start, advance to the
