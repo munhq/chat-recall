@@ -99,6 +99,14 @@ export class SqliteStore implements StorageDriver {
     return counts;
   }
 
+  async rawSessionMetaMany(sessionIds: string[]) {
+    const out = new Map<string, { size: number; mtime: number; project_id: string }>();
+    for (const id of sessionIds) {
+      const r = this.inner.getRawSession(id);
+      if (r) out.set(id, { size: Number(r.size), mtime: Number(r.mtime), project_id: '' });
+    }
+    return out;
+  }
   async getCachedContentStaleMany(sourceType: string, ids: string[]) {
     const out = new Map<string, { content: string; mtime: number }>();
     for (const id of ids) {
