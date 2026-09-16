@@ -67,6 +67,13 @@ const FILES = [
   // read as "legacy, visible to the whole tenant", which is the one thing a new
   // member can see on the day they join.
   './migrations/0011_backfill_author_sub.sql',
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Removes the children a purge left behind (a deleted session kept its chunks,
+  // its envelope and its embeddings, so it could resurface) and copies
+  // author/project from parent to chunk where they disagree. MUST RUN AFTER
+  // 0011: it takes the author from the parent row, and 0011 is what puts one
+  // there for rows that predate attribution.
+  './migrations/0015_chunk_author_from_parent.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
