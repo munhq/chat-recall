@@ -75,7 +75,8 @@ export interface RepairResult {
   status: 'repaired' | 'would-repair' | 'already-full' | 'no-archive' | 'error';
   fullestMessages: number;
   fullestSource: string;
-  pushed: Array<{ server: string; before: number; after: number }>;
+  /** One entry per server pushed to; `error` is set when that push did not land. */
+  pushed: Array<{ server: string; before: number; after: number; error?: string }>;
   note?: string;
 }
 
@@ -198,18 +199,29 @@ export async function repairSession(id: string, opts: { dryRun?: boolean; force?
       // Bounded (60s — a repair push carries a whole transcript): repair runs
       // inside the intent drain, and an unbounded upload wedges every later tick.
       const res = await fetchWithTimeout(`${ep.url}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ conversations: [built.conv] }) }, 60_000);
-      if (!res.ok) { pushed.push({ server: ep.url, before, after: before }); log(`push to ${ep.url} FAILED: HTTP ${res.status}`); continue; }
+      if (!res.ok) { pushed.push({ server: ep.url, before, after: before, error: `HTTP ${res.status}` }); log(`push to ${ep.url} FAILED: HTTP ${res.status}`); continue; }
       // Confirm the new count.
       const after = await fetchJson(`${ep.url}/api/conversations/${id}?limit=0`, ep.token);
       const afterN = after && Array.isArray(after.messages) ? after.messages.length : before;
       pushed.push({ server: ep.url, before, after: afterN });
       log(`pushed to ${ep.url}: ${before} → ${afterN} msg(s)`);
     } catch (e) {
-      pushed.push({ server: ep.url, before, after: before });
-      log(`push to ${ep.url} errored: ${e instanceof Error ? e.message : e}`);
+      const error = e instanceof Error ? e.message : String(e);
+      pushed.push({ server: ep.url, before, after: before, error });
+      log(`push to ${ep.url} errored: ${error}`);
     }
   }
 
+  // A recheck acks 'done' unless this is 'error'. On 2026-09-11, 17 rechecks
+  // acked 'done' as 'repaired' with every push at 0 → 0 and no reason kept.
+  // The server asks about each transcript version once, so that ack was the
+  // only record that the session never reached it.
+  if (pushed.every((p) => p.error)) {
+    return {
+      sessionId: id, status: 'error', fullestMessages: builtCount, fullestSource: fullest.source, pushed,
+      note: `every push failed: ${pushed.map((p) => `${p.server}: ${p.error}`).join('; ')}`,
+    };
+  }
   return { sessionId: id, status: 'repaired', fullestMessages: builtCount, fullestSource: fullest.source, pushed };
 }
 
