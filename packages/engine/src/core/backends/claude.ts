@@ -36,7 +36,7 @@ import {
 import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
-import { readTailFromOffset } from './tail-read.js';
+import { readTailFromOffset, type TailRead } from './tail-read.js';
 import { resolveProjectDirName } from '../project-dir-name.js';
 import {
   extractTurnsFromEvents,
@@ -593,7 +593,7 @@ export class ClaudeBackend implements ToolBackend {
     return findSessionFiles(this.toRawId(prefixedId)).length > 1;
   }
 
-  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+  async readFromOffset(prefixedId: string, offset: number, maxBytes?: number): Promise<TailRead> {
     const rawId = this.toRawId(prefixedId);
     const copies = findSessionFiles(rawId);
     if (copies.length === 0) return { text: '', newOffset: offset };
@@ -601,7 +601,7 @@ export class ClaudeBackend implements ToolBackend {
     // Returning the primary's tail here would ship bytes that do not correspond
     // to the offset the ledger recorded.
     if (copies.length > 1) return { text: '', newOffset: offset };
-    return readTailFromOffset(copies[0].path, offset);
+    return readTailFromOffset(copies[0].path, offset, maxBytes);
   }
 }
 

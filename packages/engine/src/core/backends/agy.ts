@@ -11,7 +11,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { agyHomeDir, agyBrainDirs, geminiHomeDir } from '../tool-paths.js';
-import { readTailFromOffset } from './tail-read.js';
+import { readTailFromOffset, type TailRead } from './tail-read.js';
 
 import type {
   ToolBackend,
@@ -490,10 +490,10 @@ export class AgyBackend implements ToolBackend {
     try { return statSync(loc.path).size; } catch { return 0; }
   }
 
-  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+  async readFromOffset(prefixedId: string, offset: number, maxBytes?: number): Promise<TailRead> {
     const loc = this.findSession(prefixedId);
     if (!loc) return { text: '', newOffset: offset };
-    return readTailFromOffset(loc.path, offset);
+    return readTailFromOffset(loc.path, offset, maxBytes);
   }
 }
 

@@ -66,4 +66,30 @@ describe('readTailFromOffset', () => {
     expect(r.text).toBe('');
     expect(r.newOffset).toBe(0);
   });
+
+  test('maxBytes bounds one read, so a large file ships as a sequence of chunks', () => {
+    writeFileSync(file(), '{"a":1}\n{"b":2}\n{"c":3}\n');
+    const first = readTailFromOffset(file(), 0, 12);
+    expect(first).toEqual({ text: '{"a":1}\n', newOffset: 8 });
+    const second = readTailFromOffset(file(), first.newOffset, 12);
+    expect(second).toEqual({ text: '{"b":2}\n', newOffset: 16 });
+    const third = readTailFromOffset(file(), second.newOffset, 12);
+    expect(third).toEqual({ text: '{"c":3}\n', newOffset: 24 });
+    expect(readTailFromOffset(file(), third.newOffset, 12)).toEqual({ text: '', newOffset: 24 });
+  });
+
+  test('a line longer than maxBytes is skipped, so the cursor never stops there', () => {
+    const giant = `{"img":"${'x'.repeat(40)}"}`;           // 50 bytes, no newline inside
+    writeFileSync(file(), `${giant}\n{"b":2}\n`);
+    const r = readTailFromOffset(file(), 0, 16);
+    expect(r.text).toBe('');
+    expect(r.newOffset).toBe(giant.length + 1);
+    expect(r.skippedBytes).toBe(giant.length + 1);
+    expect(readTailFromOffset(file(), r.newOffset, 16)).toEqual({ text: '{"b":2}\n', newOffset: giant.length + 9 });
+  });
+
+  test('a long line still being written at the end of the file is not skipped', () => {
+    writeFileSync(file(), `{"a":1}\n{"img":"${'x'.repeat(40)}`);
+    expect(readTailFromOffset(file(), 8, 16)).toEqual({ text: '', newOffset: 8 });
+  });
 });

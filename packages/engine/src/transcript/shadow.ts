@@ -32,7 +32,7 @@
 
 import { gzipSync, gunzipSync } from 'zlib';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { dirname, join } from 'path';
 
 import { getDataDir } from '../core/paths.js';
@@ -411,6 +411,33 @@ export function seedShadow(sessionId: string, container: RawContainer): RawConta
   const fullest = prior ? mergeContainer(prior, container).container : container;
   try { writeShadowContainer(tool, sessionId, fullest); } catch { /* best-effort */ }
   return fullest;
+}
+
+/**
+ * Uncompressed bytes of a session's shadow container, 0 if none.
+ *
+ * The shadow holds the fullest container known on this machine: the main
+ * transcript, its subagent transcripts, and any history an upstream rewrite
+ * dropped. That is what a FULL build loads, and it can be far larger than the
+ * main file: a 19 MB transcript had a 42 MB shadow. The size is the gzip ISIZE
+ * trailer (the last 4 bytes, the input length mod 2^32), so nothing is
+ * decompressed to learn it.
+ */
+export function shadowUncompressedBytes(tool: AiTool, rawId: string): number {
+  const path = shadowFileFor(tool, rawId);
+  let fd: number | null = null;
+  try {
+    const size = statSync(path).size;
+    if (size < 18) return 0;                     // smaller than a gzip header + trailer
+    fd = openSync(path, 'r');
+    const tail = Buffer.alloc(4);
+    if (readSync(fd, tail, 0, 4, size - 4) !== 4) return 0;
+    return tail.readUInt32LE(0);
+  } catch {
+    return 0;
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* best-effort */ } }
+  }
 }
 
 /** Bytes the shadow occupies on disk for a session (0 if none). Diagnostics. */

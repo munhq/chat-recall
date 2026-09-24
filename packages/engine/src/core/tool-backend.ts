@@ -19,6 +19,7 @@ import type { ExtractedTurns } from './session-turns.js';
 import type { SessionDiffResult } from './session-replay.js';
 import type { SessionOutcome } from './session-outcome.js';
 import type { SessionCommitsResult } from './session-git.js';
+import type { TailRead } from './backends/tail-read.js';
 
 export type { AiTool };
 
@@ -308,8 +309,10 @@ export interface ToolBackend {
    *  last newline means the partial trailing line is re-read (and completed)
    *  next tick. If the window contains no newline (offset already past the
    *  last complete line), return `text: ''` and `newOffset: offset` — nothing
-   *  to ship this tick. Only append-only backends implement this. */
-  readFromOffset?(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }>;
+   *  to ship this tick. `maxBytes` bounds one read, so a large transcript
+   *  ships as a sequence of chunks; a single line longer than it is skipped
+   *  and reported as `skippedBytes`. Only append-only backends implement this. */
+  readFromOffset?(prefixedId: string, offset: number, maxBytes?: number): Promise<TailRead>;
 }
 
 /** A raw capture: named parts so multi-file sessions (main + subagents)
