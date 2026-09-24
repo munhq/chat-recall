@@ -2490,7 +2490,8 @@ toolkit
   .description('Install artifacts this device is missing, from the server (cross-device setup)')
   .option('--types <list>', 'comma-separated subset: mcp')
   .option('--dry-run', 'report what would change, write nothing')
-  .action(async (options: { types?: string; dryRun?: boolean }) => {
+  .option('--mcp <names>', 'comma-separated MCP servers to install even if only another platform registered them')
+  .action(async (options: { types?: string; dryRun?: boolean; mcp?: string }) => {
     const { loadAllCredentials } = await import('./sync-client.js');
     const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
     const { hostname } = await import('node:os');
@@ -2526,7 +2527,8 @@ toolkit
     const types = options.types
       ? options.types.split(',').map(x => x.trim()).filter(Boolean) as Array<'skill' | 'mcp' | 'command' | 'agent' | 'instructions'>
       : undefined;
-    const report = executePull(rows, { thisDeviceId: hostname(), types, dryRun: options.dryRun });
+    const explicit = options.mcp ? options.mcp.split(',').map((x) => x.trim()).filter(Boolean) : undefined;
+    const report = executePull(rows, { thisDeviceId: hostname(), types, dryRun: options.dryRun, explicit });
 
     const written = report.outcomes.filter(o => o.status === 'written');
     const present = report.outcomes.filter(o => o.status === 'present');

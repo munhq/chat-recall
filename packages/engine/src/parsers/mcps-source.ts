@@ -222,6 +222,11 @@ export class McpsSource implements MemorySource {
           // 8 for the preview — rebuilding from either produces a broken or
           // half-permissioned server, silently.
           spec,
+          // Where this registration runs. A server that starts through npx
+          // passes the command check on any machine, so this is what tells a
+          // pull that it came from another platform (see toolkit-pull.ts).
+          platform: process.platform,
+          arch: process.arch,
         },
       };
     }

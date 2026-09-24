@@ -188,7 +188,9 @@ export function planPull(
   rows: RemoteArtifactRow[],
   opts: { thisDeviceId?: string; types?: SyncType[] } = {},
 ): {
-  mcps: Array<{ name: string; spec: McpSpec; tools: TargetTool[] }>;
+  /** `platforms`: every platform a row of this name was uploaded from; empty
+   *  when no row recorded one (a client before the platform field). */
+  mcps: Array<{ name: string; spec: McpSpec; tools: TargetTool[]; platforms: string[] }>;
   skills: Array<{ name: string; body: string; truncated: boolean; redacted: boolean; tools: TargetTool[] }>;
   codecs: Array<{ type: 'agent' | 'command'; name: string; body: string; format: Encoding; redacted: boolean; tools: TargetTool[] }>;
   unsupported: PullReport['unsupported'];
@@ -199,6 +201,7 @@ export function planPull(
   // the rows collide by name — the richest spec wins, because an older client
   // may have uploaded a row without one.
   const byName = new Map<string, McpSpec>();
+  const platformsByName = new Map<string, Set<string>>();
   const skillsByName = new Map<string, { body: string; rank: number; truncated: boolean; redacted: boolean }>();
   type CodecEntry = { body: string; rank: number; format: Encoding; redacted: boolean };
   const agentsByName = new Map<string, CodecEntry>();
@@ -266,6 +269,9 @@ export function planPull(
     const extra = parseExtra(row);
     const name = (extra.mcpName as string) || row.title;
     if (!name) continue;
+    if (typeof extra.platform === 'string' && extra.platform) {
+      (platformsByName.get(name) ?? platformsByName.set(name, new Set()).get(name)!).add(extra.platform);
+    }
     const spec = (extra.spec as McpSpec) || null;
     if (!spec) continue;
     const prev = byName.get(name);
@@ -276,7 +282,9 @@ export function planPull(
   }
 
   const targets = SUPPORTED_TARGETS.mcp;
-  const mcps = [...byName.entries()].map(([name, spec]) => ({ name, spec, tools: targets }));
+  const mcps = [...byName.entries()].map(([name, spec]) => ({
+    name, spec, tools: targets, platforms: [...(platformsByName.get(name) ?? [])].sort(),
+  }));
   const skills = [...skillsByName.entries()].map(([name, v]) => ({
     name, body: v.body, truncated: v.truncated, redacted: v.redacted, tools: SUPPORTED_TARGETS.skill,
   }));
@@ -293,11 +301,39 @@ export function planPull(
   return { mcps, skills, codecs, unsupported };
 }
 
-/** Execute a pull. `dryRun` reports what would change and writes nothing. */
+/**
+ * Why an MCP server may not be installed on this platform, or null when it may.
+ *
+ * The command check (portableCommand) cannot answer this: a server started
+ * through npx, uvx or docker resolves on every machine. xcodebuildmcp, an Xcode
+ * tool registered on a Mac, was installed into five tools on a Linux PC this
+ * way, and 58 copies of it held 2.3 GB of swap there. So a server installs by
+ * itself only where a device of the same platform registered it. A name the
+ * user asked for explicitly installs anyway.
+ */
+export function platformRefusal(
+  name: string,
+  platforms: string[],
+  here: string,
+  explicit: ReadonlySet<string>,
+): string | null {
+  if (explicit.has(name) || platforms.includes(here)) return null;
+  const hint = `install it by name if it works on ${here}: chat-recall toolkit pull --mcp ${name}`;
+  if (platforms.length === 0) {
+    return `no device recorded its platform — re-sync from the device that has it, or ${hint}`;
+  }
+  return `registered only on ${platforms.join(', ')} — ${hint}`;
+}
+
+/** Execute a pull. `dryRun` reports what would change and writes nothing.
+ *  `explicit` names MCP servers the user chose, which install whatever the
+ *  platform of the device that registered them. */
 export function executePull(
   rows: RemoteArtifactRow[],
-  opts: { thisDeviceId?: string; types?: SyncType[]; dryRun?: boolean } = {},
+  opts: { thisDeviceId?: string; types?: SyncType[]; dryRun?: boolean; explicit?: string[]; platform?: string } = {},
 ): PullReport {
+  const here = opts.platform ?? process.platform;
+  const explicit = new Set(opts.explicit ?? []);
   const { mcps, skills, codecs, unsupported } = planPull(rows, opts);
   const outcomes: PullOutcome[] = [];
 
@@ -367,8 +403,9 @@ export function executePull(
     }
   }
 
-  for (const { name, spec, tools } of mcps) {
+  for (const { name, spec, tools, platforms } of mcps) {
     const built = entryFromSpec(spec);
+    const refusal = platformRefusal(name, platforms, here, explicit);
     for (const tool of tools) {
       if (!built) {
         outcomes.push({ type: 'mcp', name, tool, status: 'skipped', reason: 'stored row has no rebuildable spec (re-index on the source device)' });
@@ -378,6 +415,10 @@ export function executePull(
       // real env values that this rebuild cannot supply.
       if (readMcpEntry(tool, name)) {
         outcomes.push({ type: 'mcp', name, tool, status: 'present' });
+        continue;
+      }
+      if (refusal) {
+        outcomes.push({ type: 'mcp', name, tool, status: 'skipped', reason: refusal });
         continue;
       }
 
