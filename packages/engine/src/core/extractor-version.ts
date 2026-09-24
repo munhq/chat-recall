@@ -92,11 +92,27 @@ const ITEM_SOURCE_BUMP: Record<string, number> = {
 };
 
 /**
+ * Bumps for ONE tool's items of one source type, keyed `<tool>:<sourceType>`,
+ * for a fix that changes what one tool's source reads.
+ *
+ * History:
+ *   codex:skill, codex:plugin +1 — the sources read installed plugins, not the
+ *                Codex catalog. The installed ones were never in the catalog
+ *                walk's uploads, and their files are older than the last sync,
+ *                so without this they would never be uploaded.
+ */
+const ITEM_TOOL_SOURCE_BUMP: Record<string, number> = {
+  'codex:skill': 1,
+  'codex:plugin': 1,
+};
+
+/**
  * Effective version for one toolkit ITEM. Tool bump plus the source-type bump,
  * so a payload change re-ships that source alone.
  */
 export function extractorVersionForItem(id: string, sourceType: string): number {
-  return extractorVersionForTool(toolOfId(id)) + (ITEM_SOURCE_BUMP[sourceType] ?? 0);
+  const tool = toolOfId(id);
+  return extractorVersionForTool(tool) + (ITEM_SOURCE_BUMP[sourceType] ?? 0) + (ITEM_TOOL_SOURCE_BUMP[`${tool}:${sourceType}`] ?? 0);
 }
 
 /** Per-tool bumps ON TOP of the base. Key by AiTool id (the id prefix's tool). */
