@@ -65,9 +65,17 @@ export function objectStoreFromEnv(): ObjectStoreConfig | null {
  * `tenant` is the value the store was opened with, which comes from the request
  * context and never from the request body. session_id is percent-encoded so a
  * value carrying a slash cannot reach outside its tenant's prefix.
+ *
+ * `version` names one stored copy. putRawSession gives every write its own
+ * version, so a write never replaces the bytes that the committed row names:
+ * the ingest writes the archive inside its transaction, and with one key per
+ * session a rolled-back request left the new bytes under the old row's size
+ * and mtime. Rows written before versions existed carry the unversioned key,
+ * and every reader takes the key from the row, so both shapes read.
  */
-export function rawObjectKey(tenant: string, sessionId: string): string {
-  return `raw/${encodeURIComponent(tenant)}/${encodeURIComponent(sessionId)}.gz`;
+export function rawObjectKey(tenant: string, sessionId: string, version?: string): string {
+  const v = version ? `.${encodeURIComponent(version)}` : '';
+  return `raw/${encodeURIComponent(tenant)}/${encodeURIComponent(sessionId)}${v}.gz`;
 }
 
 /** Every character S3 leaves unreserved in a path segment. */

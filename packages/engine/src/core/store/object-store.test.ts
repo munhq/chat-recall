@@ -32,6 +32,11 @@ describe('rawObjectKey', () => {
   test('a tenant carrying a slash cannot open a second level', () => {
     expect(rawObjectKey('a/b', 'x').split('/')).toHaveLength(3);
   });
+
+  test('a version names its own object inside the session\'s prefix', () => {
+    expect(rawObjectKey('acme', 'abc-123', '0f1e2d3c4b5a6978')).toBe('raw/acme/abc-123.0f1e2d3c4b5a6978.gz');
+    expect(rawObjectKey('acme', 'abc-123', 'a/b').split('/')).toHaveLength(3);
+  });
 });
 
 describe('signRequest', () => {

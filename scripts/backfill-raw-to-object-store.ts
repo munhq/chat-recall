@@ -78,8 +78,12 @@ for (;;) {
     await objects.put(key, gz);
     const back = await objects.get(key);
     if (Buffer.compare(back, gz) !== 0) throw new Error(`read-back differs (${back.length} vs ${gz.length} bytes)`);
+    // `object_key = ''` again: an ingest that stored a newer copy between the
+    // SELECT and here has already moved the row to its own object, and this
+    // key holds the older bytes.
     await pool.query(
-      `UPDATE raw_sessions SET object_key = $3, gz = NULL WHERE tenant = $1 AND session_id = $2`,
+      `UPDATE raw_sessions SET object_key = $3, gz = NULL
+        WHERE tenant = $1 AND session_id = $2 AND object_key = ''`,
       [tenant, sessionId, key]);
     moved++; bytes += gz.length;
     if (moved % 50 === 0) console.log(`  ${moved}/${todo.n} moved (${(bytes / 1024 / 1024).toFixed(1)} MB)`);
