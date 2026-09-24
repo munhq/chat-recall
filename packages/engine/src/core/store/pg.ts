@@ -1694,6 +1694,12 @@ export class PgStore implements StorageDriver {
       ORDER BY created_at ASC LIMIT $2`, [this.t, limit]);
     return rows.map(normalizeIntentRow) as any;
   }
+  async expireStaleSyncIntents(olderThanMs: number): Promise<number> {
+    const r = await tenantQuery(this.pool, this.tenant,
+      `UPDATE sync_intents SET status='expired', updated_at=$3 WHERE tenant=$1 AND status='pending' AND created_at < $2`,
+      [this.t, Math.floor(olderThanMs), Date.now()]);
+    return r.rowCount ?? 0;
+  }
   async ackSyncIntent(id: string, status: 'done' | 'error', result?: string | null): Promise<boolean> {
     const r = await tenantQuery(this.pool, this.tenant,
       `UPDATE sync_intents SET status=$2, result=$3, updated_at=$4 WHERE tenant=$1 AND id=$5`,

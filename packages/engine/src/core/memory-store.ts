@@ -1926,6 +1926,14 @@ export class MemoryStore {
   }
 
   /** Mark an intent done/error with a JSON result/error string. */
+  /** Mark pending intents created before `olderThanMs` as 'expired'. An intent
+   *  addressed to a device that never drains it stays pending forever: 147
+   *  copy intents for a retired device were still pending two months on. */
+  expireStaleSyncIntents(olderThanMs: number): number {
+    return this.db.prepare(`UPDATE sync_intents SET status = 'expired', updated_at = ? WHERE status = 'pending' AND created_at < ?`)
+      .run(Date.now(), Math.floor(olderThanMs)).changes;
+  }
+
   ackSyncIntent(id: string, status: 'done' | 'error', result?: string | null): boolean {
     const r = this.db.prepare(`UPDATE sync_intents SET status = ?, result = ?, updated_at = ? WHERE id = ?`)
       .run(status, result ?? null, Date.now(), id);

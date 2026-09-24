@@ -168,6 +168,22 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  test('a pending intent older than the TTL expires; a fresh one stays pending', async () => {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    const old = await store.enqueueSyncIntent({ kind: 'copy', artifact_type: 'skill', name: 'old-one', from_tool: 'claude', to_tool: 'codex' });
+    const cutoff = Date.now() + 1;
+    await new Promise((r) => setTimeout(r, 5));
+    const fresh = await store.enqueueSyncIntent({ kind: 'copy', artifact_type: 'skill', name: 'fresh-one', from_tool: 'claude', to_tool: 'codex' });
+    // Earlier tests in this file leave their own pending intents behind.
+    expect(await store.expireStaleSyncIntents(cutoff)).toBeGreaterThanOrEqual(1);
+    const pending = (await store.listPendingSyncIntents(undefined, 100)).map((p) => p.id);
+    expect(pending).toContain(fresh);
+    expect(pending).not.toContain(old);
+    expect(await store.expireStaleSyncIntents(cutoff)).toBe(0);
+    await store.close();
+  });
+
   // The HTTP route has a gateway deadline; the background sweep does not. An
   // unbounded pass costs ~150ms per session, so the route's own default —
   // "scan everything" — took 125s on a real tenant and returned 524 every

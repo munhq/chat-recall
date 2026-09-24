@@ -190,6 +190,11 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
   }
 }
 
+/** A pending intent older than this is expired by the sweep. The UI waits about
+ *  a minute for an intent to apply, and a device that is on drains within one
+ *  poll, so an intent this old is addressed to a device that is gone. */
+export const SYNC_INTENT_TTL_MS = 14 * 24 * 3600 * 1000;
+
 export interface SweepResult { scanned: number; healed: number; damaged: number; recheckEnqueued: number; tenants: number }
 
 /** Heal every session in ONE (already tenant-scoped) store whose archive is
@@ -279,6 +284,12 @@ export async function selfHealSweepAllTenants(opts: { sinceMs?: number; dryRun?:
       const store = await createStore();
       try {
         const r = await selfHealTenant(store, { sinceMs, dryRun: opts.dryRun });
+        if (!opts.dryRun) {
+          try {
+            const expired = await store.expireStaleSyncIntents(Date.now() - SYNC_INTENT_TTL_MS);
+            if (expired > 0) log.info({ tenant, expired }, 'sync intents expired');
+          } catch (err) { log.error({ err, tenant }, 'sync intent expiry failed'); }
+        }
         scanned += r.scanned; healed += r.healed; damaged += r.damaged; recheckEnqueued += r.recheckEnqueued;
         if (r.healed > 0 || r.recheckEnqueued > 0) {
           log.info({ tenant, ...r }, opts.dryRun ? 'self-heal audit (tenant)' : 'self-heal sweep (tenant)');
