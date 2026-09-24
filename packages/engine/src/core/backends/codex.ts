@@ -56,7 +56,33 @@ export class CodexBackend implements ToolBackend {
   // ── Subpath helpers ────────────────────────────────────────────
   sessionsDir(): string { return join(this.homeDir(), 'sessions'); }
   configToml(): string { return join(this.homeDir(), 'config.toml'); }
-  pluginsDir(): string { return join(this.homeDir(), '.tmp', 'plugins', 'plugins'); }
+  /**
+   * Plugins that are INSTALLED, one folder each:
+   * `plugins/cache/<marketplace>/<plugin>/<version>/`, newest version.
+   *
+   * `.tmp/plugins/plugins/` is Codex's copy of the plugin catalog (62 plugins
+   * and a README on one machine), not what is installed. Reading it reported
+   * every catalog plugin's skills and MCP servers as the user's own, and a
+   * pull then installed them into every tool: build-ios-apps' xcodebuildmcp
+   * reached a Linux PC that never installed the plugin.
+   */
+  installedPluginDirs(): Array<{ name: string; dir: string }> {
+    const cache = join(this.homeDir(), 'plugins', 'cache');
+    const out: Array<{ name: string; dir: string }> = [];
+    const dirs = (p: string) => {
+      try { return readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name); }
+      catch { return []; }
+    };
+    for (const market of dirs(cache)) {
+      for (const plugin of dirs(join(cache, market))) {
+        const versions = dirs(join(cache, market, plugin))
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const newest = versions[versions.length - 1];
+        if (newest) out.push({ name: plugin, dir: join(cache, market, plugin, newest) });
+      }
+    }
+    return out;
+  }
   /** OpenAI-bundled, read-only system skills (imagegen, skill-creator, …). */
   skillsSystemDir(): string { return join(this.homeDir(), 'skills', '.system'); }
   /** User skills root. Direct children (excluding `.system`) are user-authored. */

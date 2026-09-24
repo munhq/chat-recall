@@ -62,8 +62,17 @@ description: Create plugins
     expect(items.find(i => i.extra.tool === 'codex')).toBeDefined();
   });
 
+  test('a skill of a plugin that is only in the Codex catalog is not reported', async () => {
+    writeSkill('.codex/.tmp/plugins/plugins/catalog-only/skills', 'catalog-skill', `---
+name: catalog-skill
+description: From the catalog
+---`);
+    const items = await collect();
+    expect(items.find(i => i.title === 'catalog-skill')).toBeUndefined();
+  });
+
   test('discovers Codex plugin-bundled skills', async () => {
-    writeSkill('.codex/.tmp/plugins/plugins/myplugin/skills', 'react-helper', `---
+    writeSkill('.codex/plugins/cache/acme-market/myplugin/1.0.0/skills', 'react-helper', `---
 name: react-helper
 description: React tips
 ---`);
