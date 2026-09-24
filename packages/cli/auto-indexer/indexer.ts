@@ -826,7 +826,7 @@ function discoverWorkspaces(): string[] {
   // stale and omitted Antigravity, so its workspaces were never code-indexed.
   for (const b of listAvailableBackends()) {
     let refs: Array<{ projectPath: string; mtime: number }> = [];
-    try { refs = b.listSessions({ sinceMs }); } catch { /* unreadable */ }
+    try { refs = b.listSessions({ sinceMs, previews: false }); } catch { /* unreadable */ }
     for (const r of refs) {
       if (!r.projectPath) continue;
       const prev = newest.get(r.projectPath);

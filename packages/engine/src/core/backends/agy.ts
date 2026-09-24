@@ -163,7 +163,7 @@ export class AgyBackend implements ToolBackend {
       // Read first prompt and message count from events in a fast manner
       let firstPrompt = '';
       let messageCount = 0;
-      try {
+      if (opts.previews !== false) try {
         const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
         messageCount = lines.length;
         for (const line of lines) {

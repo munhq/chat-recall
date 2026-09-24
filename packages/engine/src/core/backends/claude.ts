@@ -158,7 +158,7 @@ export class ClaudeBackend implements ToolBackend {
     // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
     // same set the indexer scans, so index and sync stay consistent.
     for (const root of claudeProjectDirs()) {
-      this.collectSessionsFromRoot(root, cutoff, filter, seen, out);
+      this.collectSessionsFromRoot(root, cutoff, filter, seen, out, opts.previews !== false);
     }
 
     out.sort((a, b) => b.mtime - a.mtime);
@@ -171,6 +171,7 @@ export class ClaudeBackend implements ToolBackend {
     filter: string | undefined,
     seen: Set<string>,
     out: SessionRef[],
+    previews: boolean,
   ): void {
     if (!existsSync(root)) return;
 
@@ -230,7 +231,7 @@ export class ClaudeBackend implements ToolBackend {
         let stat;
         try { stat = statSync(fullPath); } catch { continue; }
         if (stat.mtimeMs < cutoff) continue;
-        const firstPrompt = extractFirstUserPromptSync(fullPath, { maxLength: 200 });
+        const firstPrompt = previews ? extractFirstUserPromptSync(fullPath, { maxLength: 200 }) : '';
 
         out.push({
           toolId: 'claude',
