@@ -17,7 +17,7 @@ describe('service-installer renders', () => {
     expect(unit).toContain('StandardOutput=journal');
     expect(unit).toContain('StandardError=journal');
     expect(unit).not.toContain('append:');
-    expect(unit).toContain('Restart=on-failure');
+    expect(unit).toContain('Restart=always');
     expect(unit).toContain('WantedBy=default.target');
     // The bug we fixed: no un-interpolated template vars should leak.
     expect(unit).not.toContain('${');

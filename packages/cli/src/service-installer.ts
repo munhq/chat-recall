@@ -164,7 +164,12 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // sawtooth. 1536MB keeps GC honest (768 OOMed on the largest subagent-fanout session) with plenty of headroom for the
     // largest transcripts.
     `ExecStart=${node} --max-old-space-size=1536 ${watchJs}`,
-    'Restart=on-failure', 'RestartSec=10', 'Nice=10',
+    // ALWAYS: the collector never ends its own work, so any exit systemd did
+    // not ask for is a fault. Under on-failure a clean exit left it dead: on
+    // 2026-09-16 the unit went "inactive (dead) … status=0/SUCCESS" and stayed
+    // down for 8 days, so nothing synced and the auto-update tick, which runs
+    // inside the daemon, never ran. `systemctl stop` still stops it.
+    'Restart=always', 'RestartSec=10', 'Nice=10',
     // NEVER STOP RETRYING. systemd's default start limiter gives up after a
     // burst of restarts and leaves the unit dead until a human notices. On a
     // developer machine here that was 53 restarts, then
