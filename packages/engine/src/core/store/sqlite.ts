@@ -10,7 +10,7 @@
  */
 
 import { MemoryStore } from '../memory-store.js';
-import { isEmptyBatch, type IngestBatch, type IngestCounts, type IngestMetaWriter } from './ingest-batch.js';
+import { isEmptyBatch, emptyCounts, type IngestBatch, type IngestCounts, type IngestMetaWriter, type IngestSideWriters } from './ingest-batch.js';
 
 import type { StorageDriver } from './driver.js';
 
@@ -82,20 +82,34 @@ export class SqliteStore implements StorageDriver {
    * and compute_cache live in the metadata cache, which for SQLite is a SEPARATE
    * FILE this store cannot reach; in Postgres they are tables in the same
    * database, so that driver writes them inside its own transaction and needs no
-   * collaborator. Omitting it here silently skips those two tables.
+   * collaborator. Omitting it here silently skips those two tables and the
+   * tool titles. `side` does the same for the outcome cache and the knowledge
+   * graph; omitting it skips those.
    */
-  async writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter): Promise<IngestCounts> {
-    const counts: IngestCounts = { chunks: 0, findings: 0, computeOffered: 0 };
+  async writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter, side?: IngestSideWriters): Promise<IngestCounts> {
+    const counts: IngestCounts = emptyCounts();
     if (isEmptyBatch(batch)) return counts;
     if (batch.items?.length) this.inner.setItems(batch.items);
     for (const t of batch.touchMtime ?? []) this.inner.touchSessionMtime(t.sessionId, t.mtime);
     for (const m of batch.sessionMeta ?? []) await meta?.setMany([m]);
+    for (const t of batch.toolTitles ?? []) await meta?.setToolTitle(t.sessionId, t.title);
     for (const c of batch.cachedContent ?? []) this.inner.setCachedContent(c.id, c.sourceType, c.mtime, c.content);
     if (batch.chunks?.length) counts.chunks += this.inner.addChunksFTS(batch.chunks);
     if (batch.appendChunks?.length) counts.chunks += this.inner.appendChunksFTS(batch.appendChunks);
     for (const f of batch.findings ?? []) counts.findings += this.inner.replaceSecretFindings(f.sessionId, f.findings).written;
     if (batch.compute?.length && meta) counts.computeOffered += await meta.setComputeMany(batch.compute);
     if (batch.links?.length) this.inner.addLinks(batch.links);
+    if (batch.outcomes?.length && side?.outcomes) {
+      const outcomes = await side.outcomes();
+      try { await outcomes.putMany(batch.outcomes); } finally { await outcomes.close(); }
+    }
+    if ((batch.kgEntities?.length || batch.kgTriples?.length) && side?.knowledgeGraph) {
+      const kg = await side.knowledgeGraph();
+      try {
+        for (const e of batch.kgEntities ?? []) await kg.addEntity(e.name, e.type, e.properties);
+        if (batch.kgTriples?.length) counts.kgTriplesInserted += (await kg.importTriples(batch.kgTriples)).inserted;
+      } finally { await kg.close(); }
+    }
     return counts;
   }
 

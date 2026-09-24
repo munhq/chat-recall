@@ -147,6 +147,83 @@ export async function writeSessionMetaRows(
 }
 
 /**
+ * Set `tool_title` for many sessions in one statement, on an open client.
+ *
+ * A row is inserted only for a session whose memory_metadata row exists. A
+ * blind upsert here created `session_metadata` rows for sessions with no
+ * `memory_metadata` parent. The `author_visibility` SELECT policy hides
+ * parentless rows unless app.viewer='*' (the sync path sets the author's sub),
+ * and ON CONFLICT DO UPDATE must READ the conflicting row — so once such a row
+ * existed, every later field sync failed with "new row violates row-level
+ * security policy author_visibility" and returned 500. 4 rows sat stuck from
+ * 2026-07-22, and ordinary conversation pushes kept succeeding, so nothing
+ * looked wrong.
+ *
+ * author_sub/device are stamped on INSERT and claimed on conflict (reverse
+ * COALESCE): updating a legacy NULL-author row must claim it, or the
+ * write-guard's UPDATE WITH CHECK (author_sub = app.viewer) rejects the sync.
+ *
+ * Shared by setToolTitle and the ingest batch writer, which runs it inside the
+ * ingest transaction.
+ */
+export async function writeToolTitleRows(
+  client: any, tenant: string, rows: Array<{ sessionId: string; title: string | null }>,
+): Promise<void> {
+  if (rows.length === 0) return;
+  const byId = new Map<string, string | null>();
+  for (const r of rows) byId.set(r.sessionId, r.title);
+  // Sorted by the conflict key, so two concurrent batches lock in the same order.
+  const list = [...byId.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const au = currentAuthor();
+  await client.query(
+    `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
+     SELECT $1, v.id, '', '', 'original', 0, $2, v.title, $3, $4
+       FROM unnest($5::text[], $6::text[]) AS v(id, title)
+      WHERE EXISTS (SELECT 1 FROM memory_metadata m
+                    WHERE m.tenant=$1 AND m.id=v.id AND m.source_type='session')
+     ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title,
+       author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+       author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
+    [tenant, Date.now(), au.sub, au.device, list.map((x) => x[0]), list.map((x) => x[1])]);
+}
+
+/**
+ * Upsert many outcome rows, on an open client.
+ *
+ * The caller elevates: session_outcome_cache carries the RESTRICTIVE
+ * `author_visibility` SELECT policy, which PostgreSQL applies as the WITH CHECK
+ * of an `INSERT … ON CONFLICT DO UPDATE`, so a row for a session whose metadata
+ * row is not visible fails with 42501. The table has no author-write-guard.
+ *
+ * Two rows for one session collapse to the later one, keeping `is_full` if
+ * either had it — the result of writing them one after the other.
+ */
+export async function writeOutcomeRows(
+  client: any, tenant: string, recs: Array<Parameters<OutcomeCache['put']>[0]>,
+): Promise<void> {
+  if (recs.length === 0) return;
+  const byId = new Map<string, Parameters<OutcomeCache['put']>[0]>();
+  for (const r of recs) {
+    const prior = byId.get(r.sessionId);
+    byId.set(r.sessionId, prior?.isFull && !r.isFull ? { ...r, isFull: true } : r);
+  }
+  const list = [...byId.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  const now = Date.now();
+  await bulkInsert(client, 'session_outcome_cache',
+    ['tenant', 'session_id', 'tool', 'status', 'reason', 'file_mtime', 'file_size', 'content_hash', 'file_count',
+     'lines_added', 'lines_removed', 'commits', 'is_full', 'classified_at', 'last_scanned_offset'],
+    list.map((rec) => [tenant, rec.sessionId, rec.tool, rec.status, rec.reason, intMs(rec.fileMtime), rec.fileSize,
+      rec.contentHash, rec.fileCount, rec.linesAdded, rec.linesRemoved, rec.commits, rec.isFull ? 1 : 0,
+      rec.classifiedAt ?? now, rec.lastScannedOffset]),
+    `ON CONFLICT (tenant,session_id) DO UPDATE SET
+       tool=excluded.tool, status=excluded.status, reason=excluded.reason, file_mtime=excluded.file_mtime, file_size=excluded.file_size,
+       content_hash=excluded.content_hash, file_count=excluded.file_count, lines_added=excluded.lines_added, lines_removed=excluded.lines_removed,
+       commits=excluded.commits,
+       is_full=CASE WHEN excluded.is_full=1 THEN 1 ELSE session_outcome_cache.is_full END,
+       classified_at=excluded.classified_at, last_scanned_offset=excluded.last_scanned_offset`);
+}
+
+/**
  * The stored marker payloads the shrink guard needs, for a whole batch.
  *
  * Only `markers` is guarded (see computeShrinkRefused), so only those sessions
@@ -376,33 +453,8 @@ export class PgMetadataCache implements MetadataCacheDriver {
       [this.t, sessionId, Date.now(), title, au.sub, au.device]);
   }
   async setToolTitle(sessionId: string, title: string | null) {
-    // Native tool title (synced); touches only tool_title. Same author
-    // stamp-on-insert + claim-on-conflict rationale as setUserTitle — updating a
-    // legacy NULL-author row (the pre-attribution backlog) must claim it or the
-    // write-guard's UPDATE WITH CHECK rejects the sync.
-    const au = currentAuthor();
-    // INSERT ONLY IF THE CONVERSATION EXISTS.
-    //
-    // A blind upsert here created `session_metadata` rows for sessions with no
-    // `memory_metadata` parent. The `author_visibility` SELECT policy hides
-    // parentless rows unless app.viewer='*' (the sync path sets the author's sub,
-    // deliberately), and ON CONFLICT DO UPDATE must READ the conflicting row — so
-    // once such a row existed, every later field sync failed with
-    // "new row violates row-level security policy author_visibility" and returned
-    // 500. Self-perpetuating and silent: 4 rows sat stuck from 2026-07-22, and
-    // ordinary conversation pushes kept succeeding so nothing looked wrong.
-    //
-    // Guarding the insert on the parent keeps first-write working for real
-    // sessions while making the orphan state unreachable.
-    await this.q(
-      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
-       SELECT $1,$2,'','','original',0,$3,$4,$5,$6
-       WHERE EXISTS (SELECT 1 FROM memory_metadata m
-                     WHERE m.tenant=$1 AND m.id=$2 AND m.source_type='session')
-       ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title,
-         author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
-         author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
-      [this.t, sessionId, Date.now(), title, au.sub, au.device]);
+    // Native tool title (synced); touches only tool_title. See writeToolTitleRows.
+    await tenantTx(this.pool, this.t, (client: any) => writeToolTitleRows(client, this.t, [{ sessionId, title }]));
   }
   async get(...a: MArgs<'get'>) {
     const r = (await this.q(`SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
@@ -532,34 +584,19 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
     })) as any;
   }
   async put(...a: OArgs<'put'>) {
-    const rec = a[0];
-    const classifiedAt = rec.classifiedAt ?? Date.now();
-    // UNRESTRICTED — the THIRD of the five session-keyed child tables to need
-    // this, and the one I missed when fixing raw_sessions and compute_cache.
-    // pg-schema.ts attaches the same RESTRICTIVE `author_visibility` policy to
-    // all five (secret_findings, session_metadata, session_outcome_cache,
-    // compute_cache, raw_sessions), and PostgreSQL applies a SELECT policy's
-    // USING as the WITH CHECK of an `INSERT … ON CONFLICT DO UPDATE`. So a
-    // derived outcome row for a session whose metadata row is not visible fails
-    // with 42501 and 500s the whole ingest batch — which is exactly what a user
-    // hit after the first two were fixed. session_outcome_cache carries NO
-    // author-write-guard, so elevating the write is safe by the same argument;
-    // rls-child-writes.test.ts now walks every one of the five so a fourth
-    // cannot be missed.
-    await runUnrestricted(() => this.q(
-      `INSERT INTO session_outcome_cache (tenant,session_id,tool,status,reason,file_mtime,file_size,content_hash,file_count,lines_added,lines_removed,commits,is_full,classified_at,last_scanned_offset)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       ON CONFLICT (tenant,session_id) DO UPDATE SET
-         tool=excluded.tool, status=excluded.status, reason=excluded.reason, file_mtime=excluded.file_mtime, file_size=excluded.file_size,
-         content_hash=excluded.content_hash, file_count=excluded.file_count, lines_added=excluded.lines_added, lines_removed=excluded.lines_removed,
-         commits=excluded.commits,
-         is_full=CASE WHEN excluded.is_full=1 THEN 1 ELSE session_outcome_cache.is_full END,
-         classified_at=excluded.classified_at, last_scanned_offset=excluded.last_scanned_offset`,
-      [this.t, rec.sessionId, rec.tool, rec.status, rec.reason, intMs(rec.fileMtime), rec.fileSize, rec.contentHash,
-       rec.fileCount, rec.linesAdded, rec.linesRemoved, rec.commits, rec.isFull ? 1 : 0, classifiedAt, rec.lastScannedOffset]));
+    await this.putMany([a[0]]);
   }
   async putMany(...a: OArgs<'putMany'>) {
-    for (const rec of a[0]) await this.put(rec);
+    // UNRESTRICTED — the THIRD of the five session-keyed child tables to need
+    // this, and the one missed when raw_sessions and compute_cache were fixed.
+    // pg-schema.ts attaches the same RESTRICTIVE `author_visibility` policy to
+    // all five (secret_findings, session_metadata, session_outcome_cache,
+    // compute_cache, raw_sessions). A derived outcome row for a session whose
+    // metadata row is not visible failed with 42501 and 500'd the whole ingest
+    // batch. rls-child-writes.test.ts walks every one of the five. See
+    // writeOutcomeRows.
+    if (a[0].length === 0) return;
+    await runUnrestricted(() => tenantTx(this.pool, this.t, (client: any) => writeOutcomeRows(client, this.t, a[0])));
   }
   async invalidate(...a: OArgs<'invalidate'>) {
     await this.q(`DELETE FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]);

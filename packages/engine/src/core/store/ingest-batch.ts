@@ -19,6 +19,8 @@
  */
 import type { MemoryItem, MemoryChunk, MemoryLink } from '../../types/memory.js';
 import type { MetadataCache } from '../metadata-cache.js';
+import type { OutcomeCache } from '../outcome-cache.js';
+import type { KnowledgeGraph } from '../knowledge-graph.js';
 
 /**
  * A session-metadata row, as the metadata cache defines it.
@@ -34,6 +36,19 @@ export interface IngestCompute {
   kind: string;
   mtime: number;
   data: unknown;
+}
+
+/** One outcome-badge row, as the outcome cache defines it. */
+export type IngestOutcome = Parameters<OutcomeCache['put']>[0];
+
+/** One knowledge-graph triple, as importTriple defines it. */
+export type IngestKgTriple = Parameters<KnowledgeGraph['importTriple']>[0];
+
+/** One knowledge-graph entity. A later entry with the same id replaces an earlier one. */
+export interface IngestKgEntity {
+  name: string;
+  type: string;
+  properties: Record<string, unknown>;
 }
 
 /** The client-owned secret findings for one session, replacing what is stored. */
@@ -56,6 +71,13 @@ export interface IngestBatch {
   compute?: IngestCompute[];
   findings?: IngestFindings[];
   links?: MemoryLink[];
+  /** The tool's own title for a session. Written only for a session that has a
+   *  metadata row, which includes one this batch writes. `null` clears it. */
+  toolTitles?: Array<{ sessionId: string; title: string | null }>;
+  outcomes?: IngestOutcome[];
+  kgEntities?: IngestKgEntity[];
+  /** Imported idempotently: a triple already stored under the same key is kept. */
+  kgTriples?: IngestKgTriple[];
 }
 
 /**
@@ -70,6 +92,13 @@ export interface IngestCounts {
   chunks: number;
   findings: number;
   computeOffered: number;
+  /** Triples the batch stored for the first time. */
+  kgTriplesInserted: number;
+}
+
+/** Counts for a batch that wrote nothing. */
+export function emptyCounts(): IngestCounts {
+  return { chunks: 0, findings: 0, computeOffered: 0, kgTriplesInserted: 0 };
 }
 
 /**
@@ -83,11 +112,29 @@ export interface IngestCounts {
 export interface IngestMetaWriter {
   setMany(rows: IngestSessionMeta[]): Promise<void>;
   setComputeMany(rows: IngestCompute[]): Promise<number>;
+  setToolTitle(sessionId: string, title: string | null): Promise<void>;
+}
+
+/**
+ * The outcome cache and the knowledge graph, for the SQLite driver.
+ *
+ * Both are separate SQLite files, for the reason IngestMetaWriter exists. Each
+ * is opened only when the batch carries rows for it. The Postgres driver writes
+ * both tables inside its own transaction and never calls these.
+ */
+export interface IngestSideWriters {
+  outcomes?: () => Promise<{ putMany(rows: IngestOutcome[]): Promise<void>; close(): Promise<void> }>;
+  knowledgeGraph?: () => Promise<{
+    addEntity(name: string, type: string, properties: Record<string, unknown>): Promise<unknown>;
+    importTriples(ts: IngestKgTriple[]): Promise<{ inserted: number }>;
+    close(): Promise<void>;
+  }>;
 }
 
 /** Nothing to write — used to skip opening a transaction at all. */
 export function isEmptyBatch(b: IngestBatch): boolean {
   return !b.items?.length && !b.chunks?.length && !b.appendChunks?.length
     && !b.cachedContent?.length && !b.sessionMeta?.length && !b.touchMtime?.length
-    && !b.compute?.length && !b.findings?.length && !b.links?.length;
+    && !b.compute?.length && !b.findings?.length && !b.links?.length
+    && !b.toolTitles?.length && !b.outcomes?.length && !b.kgEntities?.length && !b.kgTriples?.length;
 }

@@ -1,7 +1,8 @@
 import { randomBytes } from 'crypto';
 import { tenantQuery, tenantTx, bulkInsert, tenantQueryRo, withViewerOn } from './pg-pool.js';
-import { writeSessionMetaRows, readStaleMarkers, writeComputeRows } from './caches.js';
-import { isEmptyBatch, type IngestBatch, type IngestCounts } from './ingest-batch.js';
+import { writeSessionMetaRows, readStaleMarkers, writeComputeRows, writeToolTitleRows, writeOutcomeRows } from './caches.js';
+import { upsertKgEntities, importKgTriples } from './knowledge-graph.js';
+import { isEmptyBatch, emptyCounts, type IngestBatch, type IngestCounts } from './ingest-batch.js';
 import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../../types/code-intel.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
@@ -1023,8 +1024,8 @@ export class PgStore implements StorageDriver {
       'ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at');
   }
 
-  async writeIngestBatch(batch: IngestBatch, _meta?: unknown): Promise<IngestCounts> {
-    const counts: IngestCounts = { chunks: 0, findings: 0, computeOffered: 0 };
+  async writeIngestBatch(batch: IngestBatch, _meta?: unknown, _side?: unknown): Promise<IngestCounts> {
+    const counts: IngestCounts = emptyCounts();
     if (isEmptyBatch(batch)) return counts;
 
     const markerSessions = [...new Set((batch.compute ?? []).filter((c) => c.kind === 'markers').map((c) => c.sessionId))];
@@ -1034,11 +1035,11 @@ export class PgStore implements StorageDriver {
     // (author_sub = app.viewer), so under the '*' context they were stamped NULL
     // and failed author_write_insert inside the ingest transaction.
     //
-    // Steps 7 and 8 alone run unrestricted: compute_cache and memory_links carry
-    // a SELECT policy that PostgreSQL applies as the WITH CHECK of an upsert, so
-    // a row for a session whose metadata is not visible to this viewer would
-    // fail with 42501 and take the entire request with it. Neither table has an
-    // author-write-guard, and reads keep the member's real viewer, so this
+    // Steps 7, 8 and 9 alone run unrestricted: compute_cache, memory_links and
+    // session_outcome_cache carry a SELECT policy that PostgreSQL applies as the
+    // WITH CHECK of an upsert, so a row for a session whose metadata is not
+    // visible to this viewer would fail with 42501 and take the entire request
+    // with it. None of the three has an author-write-guard, and reads keep the member's real viewer, so this
     // makes nothing newly visible — the same reasoning as setCompute and addLink.
     await this.tx(async (client) => {
       // 1. Metadata rows. FIRST: this clears the cached summary of every
@@ -1051,6 +1052,12 @@ export class PgStore implements StorageDriver {
 
       // 3. Session metadata, after the clear in step 1.
       if (batch.sessionMeta?.length) await writeSessionMetaRows(client, this.t, batch.sessionMeta);
+
+      // 3b. Tool titles, after step 3 and on this client. They went through
+      //     the metadata cache, on a connection of its own: a rolled-back
+      //     ingest kept them, and a title for a session this batch writes
+      //     waited on the row lock that this transaction holds until COMMIT.
+      if (batch.toolTitles?.length) await writeToolTitleRows(client, this.t, batch.toolTitles);
 
       // 4. Cached conversation envelopes.
       if (batch.cachedContent?.length) await this.writeCachedContent(client, batch.cachedContent);
@@ -1075,6 +1082,20 @@ export class PgStore implements StorageDriver {
           // 8. Links between items.
           if (links.length) await this.writeLinkRows(client, links);
         }));
+      }
+
+      // 9. Outcome badges, unrestricted for the reason in writeOutcomeRows.
+      if (batch.outcomes?.length) {
+        const outcomes = batch.outcomes;
+        await runUnrestricted(() => withViewerOn(client, () => writeOutcomeRows(client, this.t, outcomes)));
+      }
+
+      // 10. Knowledge graph, as the member. The lookup of existing triples
+      //     runs on this transaction, so it sees the rows this batch wrote.
+      const exec = async (sql: string, params: unknown[]) => (await client.query(sql, params)).rows;
+      if (batch.kgEntities?.length) await upsertKgEntities(exec, this.t, batch.kgEntities);
+      if (batch.kgTriples?.length) {
+        counts.kgTriplesInserted += (await importKgTriples(exec, exec, this.t, batch.kgTriples)).inserted;
       }
     });
     return counts;

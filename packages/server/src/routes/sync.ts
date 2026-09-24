@@ -498,12 +498,11 @@ const COMPUTE_KINDS = new Set(['diff', 'outcome', 'commits', 'markers']);
 const DISMISSAL_STATUSES = new Set(['rotated', 'false_positive', 'dismissed']);
 const RULE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
 
-/** Derived-field router: field name → how its value lands server-side. The
- *  client scans these locally (engine core/sync-fields.ts) and ships them via
- *  the fields[] batch, conversation-free. Add a field in BOTH places. */
-type MetaCache = Awaited<ReturnType<typeof createMetadataCache>>;
-const FIELD_SETTERS: Record<string, (cache: MetaCache, sessionId: string, value: string | null) => Promise<void>> = {
-  tool_title: (cache, id, v) => cache.setToolTitle(id, v),
+/** Derived-field router: field name → the ingest-batch rows its value becomes.
+ *  The client scans these locally (engine core/sync-fields.ts) and ships them
+ *  via the fields[] batch, conversation-free. Add a field in BOTH places. */
+const FIELD_SETTERS: Record<string, (batch: IngestBatch, sessionId: string, value: string | null) => void> = {
+  tool_title: (batch, sessionId, title) => { (batch.toolTitles ??= []).push({ sessionId, title }); },
 };
 
 // chunksFromTurns + subagentChunks now live in services/session-chunks.ts —
@@ -686,6 +685,13 @@ router.post('/', async (req, res) => {
       const sessionMetaBatch: Parameters<typeof metaCache.set>[0][] = [];
       const touchBatch: Array<{ sessionId: string; mtime: number }> = [];
       const computeBatch: Array<{ sessionId: string; kind: string; mtime: number; data: unknown }> = [];
+      // Rows for the tables outside the memory store: outcome badges, tool
+      // titles and the knowledge graph. They go into the same write as the rest.
+      // Each was written through its own driver, on a connection of its own
+      // that committed at once, so a request that failed after them kept them.
+      const sideBatch: IngestBatch = {};
+      // Verified secrets to alert on once the ingest has committed.
+      const verifiedHits: VerifiedHit[] = [];
       try {
         // ONE transaction for the whole ingest. Tenant scoping is a
         // transaction-local GUC that RLS reads, so every store call outside a
@@ -802,7 +808,6 @@ router.post('/', async (req, res) => {
             if (!f.session_id || !f.detector || !f.rule) continue;
             (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
           }
-          const verifiedHits: VerifiedHit[] = [];
           // One existence query for every session carrying a finding, and one
           // write for all of them — it was two round trips per session.
           // See docs/SYNC-BATCH-WRITES.md §4.
@@ -854,60 +859,71 @@ router.post('/', async (req, res) => {
             }
           }
 
-          // Fire customer alerts for newly-seen verified-live secrets. Paid +
-          // deduped + non-blocking — a webhook hiccup must never fail a sync.
-          if (verifiedHits.length > 0) {
-            try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
-            catch (e) { log.error({ err: e }, 'secret alert failed'); }
-          }
-
           // Derived data: compute_cache rows (what the diff/outcome/commits/
           // markers routes serve via the heavy cache) + outcome-badge rows.
           // The server never recomputes these — it has no FS/git; the CLI is
           // the only producer.
-          if (derived.length > 0) {
-            const outcomeCache = await createOutcomeCache();
-
-            try {
-              for (const d of derived) {
-                if (!d.session_id) continue;
-                for (const c of d.compute ?? []) {
-                  if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
-                  // Collected — one statement for the whole batch below.
-                  computeBatch.push({ sessionId: d.session_id, kind: c.kind, mtime: Math.floor(Number(c.mtime) || 0), data: c.data });
-                }
-                const row = d.outcome_row;
-                if (row && typeof row === 'object' && typeof row.status === 'string') {
-                  await outcomeCache.put({
-                    sessionId: d.session_id,
-                    tool: String(row.tool ?? 'claude'),
-                    status: row.status as any,
-                    reason: String(row.reason ?? ''),
-                    fileMtime: Math.floor(Number(row.fileMtime) || 0),
-                    fileSize: Number(row.fileSize) || 0,
-                    contentHash: String(row.contentHash ?? ''),
-                    fileCount: Number(row.fileCount) || 0,
-                    linesAdded: Number(row.linesAdded) || 0,
-                    linesRemoved: Number(row.linesRemoved) || 0,
-                    commits: Number(row.commits) || 0,
-                    isFull: !!row.isFull,
-                    classifiedAt: Number(row.classifiedAt) || Date.now(),
-                    lastScannedOffset: Number(row.lastScannedOffset) || 0,
-                  });
-                  der++;
-                }
-              }
-            } finally {
-              await outcomeCache.close();
+          for (const d of derived) {
+            if (!d.session_id) continue;
+            for (const c of d.compute ?? []) {
+              if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
+              // Collected — one statement for the whole batch below.
+              computeBatch.push({ sessionId: d.session_id, kind: c.kind, mtime: Math.floor(Number(c.mtime) || 0), data: c.data });
+            }
+            const row = d.outcome_row;
+            if (row && typeof row === 'object' && typeof row.status === 'string') {
+              (sideBatch.outcomes ??= []).push({
+                sessionId: d.session_id,
+                tool: String(row.tool ?? 'claude'),
+                status: row.status as any,
+                reason: String(row.reason ?? ''),
+                fileMtime: Math.floor(Number(row.fileMtime) || 0),
+                fileSize: Number(row.fileSize) || 0,
+                contentHash: String(row.contentHash ?? ''),
+                fileCount: Number(row.fileCount) || 0,
+                linesAdded: Number(row.linesAdded) || 0,
+                linesRemoved: Number(row.linesRemoved) || 0,
+                commits: Number(row.commits) || 0,
+                isFull: !!row.isFull,
+                classifiedAt: Number(row.classifiedAt) || Date.now(),
+                lastScannedOffset: Number(row.lastScannedOffset) || 0,
+              });
+              der++;
             }
           }
 
           // Knowledge graph: idempotent imports (importTriple matches expired
-          // facts too, so re-syncs never duplicate).
+          // facts too, so re-syncs never duplicate). One import for the whole
+          // set: each importTriple is four sequential round trips, so a sync
+          // carrying 5905 triples issued ~23600 queries in a row while holding a
+          // pooled connection — long enough for the pooler to time the request
+          // out at its 120s ceiling.
+          for (const e of kgEntities) {
+            if (!e.name) continue;
+            (sideBatch.kgEntities ??= []).push({ name: e.name, type: e.type ?? 'unknown', properties: e.properties ?? {} });
+            kgE++;
+          }
+          const usableTriples = kgTriples.filter((t) => t.subject && t.predicate && t.object);
+          if (usableTriples.length) sideBatch.kgTriples = usableTriples;
+
+          // Derived-field backfill: set ONE column per row (no conversation
+          // re-push). Idempotent; routed by field name. Unknown fields are
+          // ignored (forward-compat: a newer client may send a field this server
+          // doesn't know yet). value:null clears.
+          for (const fr of fields) {
+            if (!fr.session_id || !fr.field) continue;
+            const setter = FIELD_SETTERS[fr.field];
+            if (!setter) continue;
+            const v = typeof fr.value === 'string' ? fr.value.trim().slice(0, 200) : '';
+            setter(sideBatch, fr.session_id, v || null);
+            fielded++;
+          }
+
           // ── THE WRITE ───────────────────────────────────────────────────────
           // Everything above collected; nothing above touched the database except
           // the tombstone purge and three batch reads. One call, one transaction,
-          // one connection, eight statements — whatever the batch size.
+          // one connection, a fixed number of statements — whatever the batch
+          // size.
           // docs/SYNC-BATCH-WRITES.md §4.
           const written = await store.writeIngestBatch({
             items: itemBatch,
@@ -919,29 +935,12 @@ router.post('/', async (req, res) => {
             compute: computeBatch,
             findings: findingBatch,
             links: linkBatch,
-          }, metaCache);
+            ...sideBatch,
+          }, metaCache, { outcomes: () => createOutcomeCache(), knowledgeGraph: () => createKnowledgeGraph() });
           chunks += written.chunks;
           find += written.findings;
           der += written.computeOffered;
-
-          if (kgEntities.length > 0 || kgTriples.length > 0) {
-            const kg = await createKnowledgeGraph();
-            try {
-              for (const e of kgEntities) {
-                if (!e.name) continue;
-                await kg.addEntity(e.name, e.type ?? 'unknown', e.properties ?? {});
-                kgE++;
-              }
-              // ONE call, not one per triple. Each importTriple is four sequential
-              // round trips, so a sync carrying 5905 triples issued ~23600 queries
-              // in a row while holding a pooled connection — long enough for the
-              // pooler to time the request out at its 120s ceiling.
-              const usable = kgTriples.filter((t) => t.subject && t.predicate && t.object);
-              if (usable.length) kgT += (await kg.importTriples(usable)).inserted;
-            } finally {
-              await kg.close();
-            }
-          }
+          kgT += written.kgTriplesInserted;
 
           // Secret dismissals + custom rules — small tables, upserted whole.
           for (const d of dismissals) {
@@ -958,22 +957,20 @@ router.post('/', async (req, res) => {
               enabled: r.enabled !== false,
             });
           }
-          // Derived-field backfill: set ONE column per row (no conversation
-          // re-push). Idempotent; routed by field name. Unknown fields are
-          // ignored (forward-compat: a newer client may send a field this server
-          // doesn't know yet). value:null clears.
-          for (const fr of fields) {
-            if (!fr.session_id || !fr.field) continue;
-            const setter = FIELD_SETTERS[fr.field];
-            if (!setter) continue;
-            const v = typeof fr.value === 'string' ? fr.value.trim().slice(0, 200) : '';
-            await setter(metaCache, fr.session_id, v || null);
-            fielded++;
-          }
         });
       } finally {
         await metaCache.close();
         await store.close();
+      }
+      // Customer alerts for newly-seen verified-live secrets, once the findings
+      // they name are committed. The alert posts a webhook and marks the secret
+      // alerted on a connection of its own. Inside the transaction it alerted on
+      // findings that a failed request then rolled back, and it held the
+      // transaction open for the length of the webhook call. Paid and deduped;
+      // a webhook failure never fails the sync.
+      if (verifiedHits.length > 0) {
+        try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
+        catch (e) { log.error({ err: e }, 'secret alert failed'); }
       }
       // Maintenance: drop unopenable ghost session rows (no envelope, no
       // chunks) — e.g. rows seeded from a stale local copy. Opt-in per POST.

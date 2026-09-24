@@ -211,3 +211,83 @@ const LATER_STEP_FAILED = 'a later step of the ingest failed';
     expect(Buffer.compare(back!.gz, gz('grown'))).toBe(0);
   });
 });
+
+(PG_URL ? describe : describe.skip)('the ingest batch writes the other stores on its own transaction', () => {
+  let admin: any;
+  let store: any;
+  const tenant = `ingest_side_${process.pid}`;
+  const item = (id: string) => ({
+    id, sourceType: 'session' as const, title: id, projectPath: '/home/user/code/example',
+    projectId: 'example-app', filePath: '', mtime: 1, contentPreview: 'first prompt',
+  });
+  const outcome = (sessionId: string, isFull: boolean, status = 'completed') => ({
+    sessionId, tool: 'claude', status: status as any, reason: 'test', fileMtime: 1, fileSize: 1,
+    contentHash: 'h', fileCount: 1, linesAdded: 1, linesRemoved: 0, commits: 0, isFull,
+    classifiedAt: 1, lastScannedOffset: 0,
+  });
+  const count = async (table: string) =>
+    (await admin.query(`SELECT count(*)::int AS n FROM ${table} WHERE tenant=$1`, [tenant])).rows[0].n;
+
+  beforeAll(async () => {
+    const pg = (await import('pg')).default;
+    admin = new pg.Pool({ connectionString: pgAdminUrl(), max: 2 });
+    store = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant } as any);
+  }, 60000);
+  afterAll(async () => {
+    await store?.close();
+    await admin?.end();
+  });
+
+  test('outcomes, tool titles and the knowledge graph commit with the batch, under RLS', async () => {
+    const written = await runWithAuthor(AUTHOR, () => store.withTransaction(() => store.writeIngestBatch({
+      items: [item('s-side')],
+      sessionMeta: [{ sessionId: 's-side', firstPrompt: 'first prompt', summary: '', summarySource: 'original', mtime: 1, indexedAt: 1 } as any],
+      // No metadata row exists or is written for s-no-parent, so no title row either.
+      toolTitles: [{ sessionId: 's-side', title: 'first' }, { sessionId: 's-side', title: 'native title' }, { sessionId: 's-no-parent', title: 'x' }],
+      // The outcome's session is not visible to the writer: it must still land.
+      outcomes: [outcome('s-side', true), outcome('s-side', false, 'shipped'), outcome('s-elsewhere', false)],
+      kgEntities: [{ name: 'Example-App', type: 'project', properties: {} }, { name: 'example-app', type: 'tool', properties: { a: 1 } }],
+      kgTriples: [{ subject: 'example-app', predicate: 'uses', object: 'postgres' }, { subject: 'example-app', predicate: 'uses', object: 'postgres' }],
+    })));
+    // The repeated triple is stored once.
+    expect(written.kgTriplesInserted).toBe(1);
+
+    const titles = (await admin.query(`SELECT session_id, tool_title, author_sub FROM session_metadata WHERE tenant=$1 ORDER BY 1`, [tenant])).rows;
+    expect(titles).toEqual([{ session_id: 's-side', tool_title: 'native title', author_sub: AUTHOR.sub }]);
+    const outcomes = (await admin.query(`SELECT session_id, status, is_full FROM session_outcome_cache WHERE tenant=$1 ORDER BY 1`, [tenant])).rows;
+    // The later row wins, and is_full stays once either row set it.
+    expect(outcomes).toEqual([
+      { session_id: 's-elsewhere', status: 'completed', is_full: 0 },
+      { session_id: 's-side', status: 'shipped', is_full: 1 },
+    ]);
+    const ents = (await admin.query(`SELECT id, type FROM kg_entities WHERE tenant=$1 ORDER BY 1`, [tenant])).rows;
+    expect(ents).toEqual([{ id: 'example-app', type: 'tool' }, { id: 'postgres', type: 'unknown' }]);
+
+    // Re-importing the same triple inserts nothing.
+    const again = await runWithAuthor(AUTHOR, () => store.withTransaction(() => store.writeIngestBatch({
+      kgTriples: [{ subject: 'example-app', predicate: 'uses', object: 'postgres' }],
+    })));
+    expect(again.kgTriplesInserted).toBe(0);
+  });
+
+  test('a batch that rolls back leaves none of those rows', async () => {
+    const before = {
+      outcomes: await count('session_outcome_cache'), triples: await count('kg_triples'),
+      entities: await count('kg_entities'), meta: await count('session_metadata'),
+    };
+    await expect(runWithAuthor(AUTHOR, () => store.withTransaction(async () => {
+      await store.writeIngestBatch({
+        items: [item('s-rolled-back')],
+        toolTitles: [{ sessionId: 's-rolled-back', title: 'never' }],
+        outcomes: [outcome('s-rolled-back', true)],
+        kgEntities: [{ name: 'rolled-back-entity', type: 'tool', properties: {} }],
+        kgTriples: [{ subject: 'rolled-back-entity', predicate: 'uses', object: 'nothing' }],
+      });
+      throw new Error(LATER_STEP_FAILED);
+    }))).rejects.toThrow(LATER_STEP_FAILED);
+    expect({
+      outcomes: await count('session_outcome_cache'), triples: await count('kg_triples'),
+      entities: await count('kg_entities'), meta: await count('session_metadata'),
+    }).toEqual(before);
+  });
+});
