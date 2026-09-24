@@ -18,6 +18,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { MemoryChunk } from '../../types/memory.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const T = 'chunk_upsert_team';
@@ -60,7 +61,7 @@ const chunk = (i: number, text: string): MemoryChunk => ({
   }
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
     store = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: T } as any);
     await sudo.query(`DELETE FROM memory_chunks WHERE tenant=$1`, [T]);

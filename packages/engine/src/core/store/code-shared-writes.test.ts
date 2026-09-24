@@ -7,11 +7,12 @@
  * runUnrestricted()'s async-context propagation end to end (authorAls.exit must
  * still be in effect when the pool sets app.viewer inside the awaited query).
  * A superuser would bypass RLS and hide the bug, so a restricted role is required.
- * Gated on DATABASE_URL (a superuser DSN, used to mint the role + seed).
+ * Gated on DATABASE_URL; the admin URL mints the role and seeds.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { runWithAuthor } from './tenant-context.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const RLS_ROLE = 'cr_codeshare_test';
@@ -31,17 +32,18 @@ const PROJ = 'git:h/o/shared-repo';
   };
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
-    // Build schema once (as the superuser DSN), then close.
+    // Build schema once, then close.
     const seed = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'seed' } as any);
     await seed.close();
     await sudo.query(`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${RLS_ROLE}') THEN CREATE ROLE ${RLS_ROLE} LOGIN PASSWORD '${RLS_PASS}' NOBYPASSRLS; END IF; END $$;`);
     // Member of the owner role so the store's idempotent ensurePgSchema (ALTER
     // TABLE ...) is permitted; membership does NOT transfer the owner's BYPASSRLS
     // attribute, so RLS still applies (the gated-read test below is the guard).
-    const owner = (await sudo.query('SELECT current_user AS u')).rows[0].u;
-    await sudo.query(`GRANT ${owner} TO ${RLS_ROLE}`);
+    // The role in DATABASE_URL owns the schema; vitest.global-setup.ts made it so.
+    const owner = decodeURIComponent(new URL(PG_URL!).username);
+    await sudo.query(`GRANT "${owner}" TO ${RLS_ROLE}`);
     await sudo.query(`GRANT USAGE ON SCHEMA public TO ${RLS_ROLE}`);
     await sudo.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${RLS_ROLE}`);
     await sudo.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${RLS_ROLE}`);

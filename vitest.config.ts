@@ -26,6 +26,8 @@ export default defineConfig({
     // which the first misses — its sources live at packages/server/client/src.
     // Component files stay untested here; this is for the logic underneath them.
     include: ['packages/*/src/**/*.test.ts', 'packages/*/client/src/**/*.test.ts'],
+    // Postgres runs connect as a role that RLS applies to; see the file.
+    globalSetup: ['./vitest.global-setup.ts'],
     setupFiles: ['./vitest.setup.ts'],
     environment: 'node',
     isolate: true,

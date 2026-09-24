@@ -18,6 +18,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createKnowledgeGraph } from './knowledge-graph.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const T = 'kg_batch_team';
@@ -31,7 +32,7 @@ const triple = (n: number) => ({
   let sudo: any; let kg: any;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
     const s = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: T } as any);
     await s.close();
