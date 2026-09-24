@@ -4,6 +4,31 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-09-24
+
+### Fixed (server)
+- **A failed sync could leave a session unreadable.** The ingest deleted a
+  deleted session's archive from object storage while its transaction was
+  still open. If a later step failed, the rollback restored the row and the
+  object was already gone, so every read of that session returned
+  `ObjectNotFound`. Objects are now deleted after the transaction commits.
+- **A failed rewrite of an archive left new bytes under the old row.** Every
+  version of a session's archive used one object key, so the upload replaced
+  the stored bytes before the row was committed. Each version now gets its own
+  key (`raw/<tenant>/<session>.<16 hex>.gz`), and the key it replaces is
+  deleted after commit. Archives stored before this release keep their key and
+  still read.
+- **Outcome badges, knowledge-graph facts and tool titles survived a failed
+  sync.** They were written on separate connections that committed at once.
+  They now go in the sync's own transaction. A sync that set the tool title of
+  a session it was also rewriting waited on its own lock and failed with
+  `55P03 canceling statement due to lock timeout`; that request now returns
+  200.
+- **A triple repeated inside one sync failed the whole knowledge-graph
+  insert.** It is now written once.
+- **The secret alert fired for findings that a failed sync rolled back.** It
+  now runs after the sync commits.
+
 ## [0.7.2] — 2026-09-24
 
 ### Fixed
