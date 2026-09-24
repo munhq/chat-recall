@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SOCKET_FLAG, daemonEnabled, ensureSocketDir, logPath, socketPath } from './mcp-socket.js';
+import { bridge } from './relay-lifecycle.js';
 
 declare const __CLI_VERSION__: string;
 const VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
@@ -101,25 +102,13 @@ function startDaemon(dir: string, sock: string): ChildProcess | null {
   }
 }
 
-/** Move bytes both ways until either side closes. */
+/**
+ * Move bytes both ways until the session is over, then exit. `bridge` decides
+ * when that is: the daemon closed the socket, the client closed stdin, or the
+ * process that spawned this relay is gone.
+ */
 function relay(sock: Socket): void {
-  process.stdin.pipe(sock);
-  sock.pipe(process.stdout);
-
-  const done = (code: number) => {
-    try {
-      sock.destroy();
-    } catch {
-      /* already gone */
-    }
-    process.exit(code);
-  };
-
-  // The client closed our stdin: the session is over. Tell the daemon so it can
-  // retire this connection rather than hold it open for a client that has gone.
-  process.stdin.on('end', () => sock.end());
-  sock.on('close', () => done(0));
-  sock.on('error', () => done(0));
+  bridge(process.stdin, process.stdout, sock, (code) => process.exit(code));
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
