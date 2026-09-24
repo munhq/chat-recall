@@ -210,6 +210,15 @@ const SYNC_TICK_MS = 3 * 60_000;
 function startBackgroundSync(): void {
   const tick = async (scope: 'full' | 'changed') => {
     try {
+      // A newer CLI on disk syncs in its place; see sync-delegate.ts.
+      const { installedVersion } = await import('./auto-update.js');
+      const { installedIsNewer, runInstalledSync } = await import('./sync-delegate.js');
+      const installed = installedVersion();
+      if (installedIsNewer(RELAY_VERSION, installed)) {
+        const code = await runInstalledSync(fileURLToPath(new URL('./cli.js', import.meta.url)));
+        if (code !== 0) console.error(`[mcp] sync by the installed CLI ${installed} ended with ${code ?? 'no exit code'}`);
+        return;
+      }
       // syncIncremental() takes the single sync lock itself (see docs/SYNC.md)
       // and no-ops if another writer holds it — so concurrent sessions' MCP
       // ticks (and any other caller) serialize on ONE writer. No outer lock
