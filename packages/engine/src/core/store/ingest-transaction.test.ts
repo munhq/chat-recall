@@ -19,7 +19,7 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createStore } from './index.js';
 import { createOutcomeCache } from './caches.js';
-import { ObjectNotFound, resetObjectStore, setObjectStoreForTests, type RawObjectStore } from './object-store.js';
+import { ObjectNotFound, rawObjectKey, resetObjectStore, setObjectStoreForTests, type RawObjectStore } from './object-store.js';
 import { runWithAuthor } from './tenant-context.js';
 import { pgAdminUrl, pgTestUrl } from '../../test-support/pg-urls.js';
 
@@ -141,5 +141,73 @@ const LATER_STEP_FAILED = 'a later step of the ingest failed';
     await asAuthor(() => store.withTransaction(() => store.purgeSessionsMany(['s-member-purge'])));
     expect(await left()).toEqual({ raw: 0, compute: 0, outcome: 0, meta: 0 });
     expect(objects.keysFor('s-member-purge')).toEqual([]);
+  });
+
+  test('a rewrite that rolls back leaves the committed row and its bytes in agreement', async () => {
+    useObjects();
+    await session('s-rewrite-rollback');
+    await asAuthor(() => store.putRawSession('s-rewrite-rollback', 'claude', 1000, gz('v1'), 100));
+
+    await expect(asAuthor(() => store.withTransaction(async () => {
+      expect(await store.putRawSession('s-rewrite-rollback', 'claude', 2000, gz('v2-longer'), 200)).toBe('stored');
+      throw new Error(LATER_STEP_FAILED);
+    }))).rejects.toThrow(LATER_STEP_FAILED);
+
+    const back = await store.getRawSession('s-rewrite-rollback');
+    expect(back!.size).toBe(100);
+    expect(back!.mtime).toBe(1000);
+    expect(Buffer.compare(back!.gz, gz('v1'))).toBe(0);
+  });
+
+  test('a rewrite that commits goes to a new key and deletes the old object after the COMMIT', async () => {
+    useObjects();
+    await session('s-rewrite-commit');
+    await asAuthor(() => store.putRawSession('s-rewrite-commit', 'claude', 1000, gz('v1'), 100));
+    const oldKey = await rowKey('s-rewrite-commit');
+    let oldPresentBeforeCommit: boolean | undefined;
+    await asAuthor(() => store.withTransaction(async () => {
+      await store.putRawSession('s-rewrite-commit', 'claude', 2000, gz('v2-longer'), 200);
+      oldPresentBeforeCommit = objects.objects.has(oldKey);
+    }));
+    const newKey = await rowKey('s-rewrite-commit');
+    expect(newKey).not.toBe(oldKey);
+    expect(oldPresentBeforeCommit).toBe(true);
+    expect(objects.keysFor('s-rewrite-commit')).toEqual([newKey]);
+    const back = await store.getRawSession('s-rewrite-commit');
+    expect(back!.size).toBe(200);
+    expect(Buffer.compare(back!.gz, gz('v2-longer'))).toBe(0);
+  });
+
+  test('two rewrites of one session in one transaction keep only the last object', async () => {
+    useObjects();
+    await session('s-rewrite-twice');
+    await asAuthor(() => store.putRawSession('s-rewrite-twice', 'claude', 1000, gz('v1'), 100));
+    await asAuthor(() => store.withTransaction(async () => {
+      await store.putRawSession('s-rewrite-twice', 'claude', 2000, gz('v2'), 200);
+      await store.putRawSession('s-rewrite-twice', 'claude', 3000, gz('v3'), 300);
+    }));
+    expect(objects.keysFor('s-rewrite-twice')).toEqual([await rowKey('s-rewrite-twice')]);
+    const back = await store.getRawSession('s-rewrite-twice');
+    expect(Buffer.compare(back!.gz, gz('v3'))).toBe(0);
+  });
+
+  test('a row that names the unversioned key reads, and its object goes when a rewrite supersedes it', async () => {
+    useObjects();
+    const legacyKey = rawObjectKey(tenant, 's-legacy-key');
+    await objects.put(legacyKey, gz('legacy'));
+    // Exactly the shape every row written before versioned keys has. The
+    // metadata row makes it visible to its author under author_visibility.
+    await session('s-legacy-key');
+    await admin.query(
+      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, object_key, captured_at)
+       VALUES ($1,$2,'claude',1000,64,NULL,$3,1)`, [tenant, 's-legacy-key', legacyKey]);
+    const legacy = await store.getRawSession('s-legacy-key');
+    expect(Buffer.compare(legacy!.gz, gz('legacy'))).toBe(0);
+
+    await asAuthor(() => store.withTransaction(() =>
+      store.putRawSession('s-legacy-key', 'claude', 2000, gz('grown'), 128)));
+    expect(objects.objects.has(legacyKey)).toBe(false);
+    const back = await store.getRawSession('s-legacy-key');
+    expect(Buffer.compare(back!.gz, gz('grown'))).toBe(0);
   });
 });

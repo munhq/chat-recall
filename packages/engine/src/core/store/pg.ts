@@ -1626,25 +1626,43 @@ export class PgStore implements StorageDriver {
     // The bytes go to object storage when one is configured, and the row keeps
     // the key. The object is written FIRST: a row that names an object which
     // was never stored breaks every later read, and an object with no row
-    // costs storage until the orphan sweep and breaks nothing.
+    // costs storage and breaks nothing.
+    //
+    // Every write goes to a NEW key. The ingest calls this inside its one
+    // transaction, and with one key per session the PUT replaced the bytes the
+    // committed row named before the row itself was committed: a request that
+    // then rolled back kept the old row's size and mtime over the new bytes.
+    // With a key of its own, a rollback leaves the committed row and its object
+    // exactly as they were, and the new object is an orphan. The object the row
+    // named before is deleted only after this row is committed.
     //
     // The key is derived from this.t, the tenant this store was opened with.
     // Nothing a request supplies reaches it.
     const objects = getObjectStore();
     let objectKey = '';
     if (objects) {
-      objectKey = rawObjectKey(this.t, sessionId);
+      objectKey = rawObjectKey(this.t, sessionId, randomBytes(8).toString('hex'));
       await objects.put(objectKey, gz);
     }
-    await runUnrestricted(() => this.q(
-      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, object_key, captured_at, project_id, project_path)
+    // `prev` reads the key this write supersedes, in the same statement and so
+    // from the statement's snapshot. A writer that committed a newer key after
+    // that snapshot leaves its object orphaned, never deleted: every write has a
+    // key of its own, so a key that this row no longer names is named by no row.
+    const written = await runUnrestricted(() => this.q(
+      `WITH prev AS (
+         SELECT object_key FROM raw_sessions WHERE tenant=$1 AND session_id=$2
+       )
+       INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, object_key, captured_at, project_id, project_path)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (tenant, session_id) DO UPDATE SET
          tool=excluded.tool, mtime=excluded.mtime, size=excluded.size,
          gz=excluded.gz, object_key=excluded.object_key, captured_at=excluded.captured_at,
          project_id=CASE WHEN excluded.project_id <> '' THEN excluded.project_id ELSE raw_sessions.project_id END,
-         project_path=CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END`,
+         project_path=CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END
+       RETURNING (SELECT object_key FROM prev) AS prev_key`,
       [this.t, sessionId, tool, intMs(mtime), uncompressedSize, objectKey ? null : gz, objectKey, Date.now(), projectId, projectPath]));
+    const prevKey: string = written[0]?.prev_key ?? '';
+    if (prevKey && prevKey !== objectKey) await this.deleteObjectsAfterCommit([prevKey]);
     return 'stored';
   }
   // Primary: fetching a raw archived session is re-processing-adjacent (and may

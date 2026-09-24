@@ -17,7 +17,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createStore } from './index.js';
-import { resetObjectStore, objectStoreFromEnv, ObjectStore, rawObjectKey } from './object-store.js';
+import { resetObjectStore, objectStoreFromEnv, ObjectStore } from './object-store.js';
 import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
@@ -86,7 +86,8 @@ const TENANT = 'raw-archive-test';
       `SELECT gz IS NULL AS gz_null, object_key FROM raw_sessions WHERE tenant=$1 AND session_id=$2`,
       [TENANT, 's-in-object']);
     expect(rows[0].gz_null).toBe(true);
-    expect(rows[0].object_key).toBe(rawObjectKey(TENANT, 's-in-object'));
+    // Every write has a version of its own. See putRawSession.
+    expect(rows[0].object_key).toMatch(/^raw\/raw-archive-test\/s-in-object\.[0-9a-f]{16}\.gz$/);
   });
 
   (HAS_OBJECTS ? test : test.skip)('a row written before the move still reads from Postgres', async () => {
@@ -101,7 +102,8 @@ const TENANT = 'raw-archive-test';
 
   (HAS_OBJECTS ? test : test.skip)('purge deletes the object, not only the row', async () => {
     await store.putRawSession('s-obj-purge', 'claude', 1000, gz, 99);
-    const key = rawObjectKey(TENANT, 's-obj-purge');
+    const key = (await sql.query(
+      `SELECT object_key FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [TENANT, 's-obj-purge'])).rows[0].object_key;
     const objects = new ObjectStore(objectStoreFromEnv()!);
     expect(Buffer.compare(await objects.get(key), gz)).toBe(0);
     await store.purgeSession('s-obj-purge');
