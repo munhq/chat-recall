@@ -47,7 +47,7 @@ export interface HealResult {
   healed: boolean;   // we actually rebuilt (damaged && !dryRun && wrote)
   from: number;      // message count before
   to: number;        // message count after / would-be (archive count)
-  reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'error';
+  reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'deleted' | 'error';
 }
 
 /**
@@ -62,6 +62,11 @@ export interface HealResult {
  */
 export async function healSessionFromArchive(store: Store, sessionId: string, opts: { dryRun?: boolean; metaCache?: MetaCache } = {}): Promise<HealResult> {
   try {
+    // A deleted session is not damaged. Rebuilding it from an archive the purge
+    // left behind brought 392 deleted sessions back on one tenant.
+    if ((await store.tombstonedAmong([sessionId])).has(sessionId)) {
+      return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'deleted' };
+    }
     const raw = await store.getRawSession(sessionId);
     if (!raw) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'no-archive' };
     const container = gunzipContainer(raw.gz);
@@ -201,11 +206,35 @@ export interface SweepResult { scanned: number; healed: number; damaged: number;
  *  fuller than its view; then enqueue client-recheck intents for sessions the
  *  server CANNOT heal (an envelope but no raw archive — the client may hold the
  *  fuller copy in its shadow). Returns per-tenant counts. */
-export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean; limit?: number } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[]; eligible: number; truncated: boolean }> {
+export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean; limit?: number } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[]; eligible: number; truncated: boolean; deletedPurged: number }> {
   const sinceMs = opts.sinceMs ?? 0;
   let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
   let eligible = 0, truncated = false;
   const damagedIds: string[] = [];
+
+  // 0. Finish every delete that left rows behind. Before the purge deleted its
+  //    parent row last, a delete kept the session's archive, derived data and
+  //    outcome, and step 1 then rebuilt the session from that archive. The
+  //    purge also deletes the archive's object.
+  let deletedPurged = 0;
+  if (!opts.dryRun) {
+    const PURGE_BATCH = 200;
+    let previousFirst: string | null = null;
+    for (;;) {
+      const ids = await store.tombstonedWithRemains(PURGE_BATCH);
+      if (ids.length === 0) break;
+      // The list is ordered, so a first id seen twice is a purge that left rows.
+      // Without this stop, that batch would repeat forever.
+      if (ids[0] === previousFirst) {
+        log.error({ sessionId: ids[0] }, 'purge of a deleted session left rows; stopping this pass');
+        break;
+      }
+      previousFirst = ids[0];
+      await store.purgeSessionsMany(ids);
+      deletedPurged += ids.length;
+    }
+    if (deletedPurged > 0) log.info({ deletedPurged }, 'self-heal: purged the remains of deleted sessions');
+  }
 
   // The diff heal lives in the metadata cache (compute_cache), not the store.
   const metaCache = await createMetadataCache();
@@ -259,7 +288,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     }
   }
 
-  return { scanned, healed, damaged, recheckEnqueued, damagedIds, eligible, truncated };
+  return { scanned, healed, damaged, recheckEnqueued, damagedIds, eligible, truncated, deletedPurged };
 }
 
 /**
@@ -291,7 +320,7 @@ export async function selfHealSweepAllTenants(opts: { sinceMs?: number; dryRun?:
           } catch (err) { log.error({ err, tenant }, 'sync intent expiry failed'); }
         }
         scanned += r.scanned; healed += r.healed; damaged += r.damaged; recheckEnqueued += r.recheckEnqueued;
-        if (r.healed > 0 || r.recheckEnqueued > 0) {
+        if (r.healed > 0 || r.recheckEnqueued > 0 || r.deletedPurged > 0) {
           log.info({ tenant, ...r }, opts.dryRun ? 'self-heal audit (tenant)' : 'self-heal sweep (tenant)');
         }
       } finally {

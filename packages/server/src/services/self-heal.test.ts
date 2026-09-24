@@ -134,6 +134,30 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  test('a deleted session is never rebuilt, and the sweep purges what its delete left', async () => {
+    const { createStore, buildRawContainer, gzipContainer } = await import('../imports.js');
+    const { healSessionFromArchive, selfHealTenant } = await import('./self-heal.js');
+    const store = await createStore();
+    const id = 'heal-deleted-1';
+    const mtime = 1760000350000;
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(jsonl(20), 'utf-8') }] });
+    const { gz, size } = gzipContainer(container);
+    // The user deleted the session, and its archive survived the purge.
+    await store.putRawSession(id, 'claude', mtime, gz, size, 'git:github.com/o/repo', '/home/user/code/example');
+    await store.addTombstone(id);
+
+    const r = await healSessionFromArchive(store, id);
+    expect(r).toMatchObject({ healed: false, damaged: false, reason: 'deleted' });
+    expect(await store.getItem(id, 'session')).toBeNull();
+
+    const sweep = await selfHealTenant(store);
+    expect(sweep.deletedPurged).toBe(1);
+    expect(await store.getItem(id, 'session')).toBeNull();
+    expect(await store.getRawSession(id)).toBeNull();
+    expect(await store.tombstonedWithRemains(10)).toEqual([]);
+    await store.close();
+  });
+
   test('recheck: a session with an envelope but no archive is enqueued for client recheck', async () => {
     const { createStore, TRANSCRIPT_VERSION } = await import('../imports.js');
     const { selfHealTenant } = await import('./self-heal.js');
