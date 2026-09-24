@@ -178,6 +178,16 @@ function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
   if (indexCache) return indexCache;
   const byId = new Map<string, LocatedSessionFile[]>();
   const seenRoots = new Set<string>();
+  // resolveProjectDirName lists real directories at every level of the path it
+  // decodes. The answer depends on the directory name alone, so it is computed
+  // once per name for this build. Per file it was ~10,000 probes of the same
+  // few directories: 7 s for each lookup of a session id that is not on disk.
+  const projectPaths = new Map<string, string>();
+  const projectPathOf = (dirName: string): string => {
+    let p = projectPaths.get(dirName);
+    if (p === undefined) { p = resolveProjectDirName(dirName); projectPaths.set(dirName, p); }
+    return p;
+  };
   // Home order is preserved so the FIRST entry stays the primary home's copy —
   // findSessionFile()'s original contract, and what project grouping and
   // titles rely on.
@@ -197,7 +207,7 @@ function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
         const located: LocatedSessionFile = {
           path: join(dir, name),
           projectDir: entry.name,
-          projectPath: resolveProjectDirName(entry.name),
+          projectPath: projectPathOf(entry.name),
         };
         const prior = byId.get(id);
         if (prior) prior.push(located); else byId.set(id, [located]);
