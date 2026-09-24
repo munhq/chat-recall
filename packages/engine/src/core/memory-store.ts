@@ -1451,13 +1451,22 @@ export class MemoryStore {
   /** Session ids that HAVE a rendered envelope but NO raw archive — the server
    *  has no fallback to self-heal them, so the client (disk + shadow) is the
    *  only fuller source. The self-heal sweep enqueues a client recheck for
-   *  these. `sinceMs` bounds to recent envelopes; `limit` caps one pass. */
+   *  these. `sinceMs` bounds to recent envelopes; `limit` caps one pass.
+   *
+   *  A session already asked about at or after its current mtime is left out.
+   *  The client omits the raw archive of a large session, so that session
+   *  never gains one, and the hourly sweep asked about the same sessions
+   *  again every hour: 15,234 rechecks for one tenant, each a full rebuild
+   *  that peaked at 1 GB in the collector. A session asks again once its
+   *  transcript changes. */
   listEnvelopesMissingRawArchive(sinceMs = 0, limit = 200): string[] {
     this.ensureRawSessionsTable();
     const rows = this.db.prepare(`
       SELECT c.id FROM content_cache c
       WHERE c.source_type = 'session' AND c.mtime >= ?
         AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.session_id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM sync_intents i
+                        WHERE i.kind = 'recheck_session' AND i.name = c.id AND i.created_at >= c.mtime)
       ORDER BY c.mtime DESC LIMIT ?
     `).all(Math.floor(sinceMs) || 0, limit) as Array<{ id: string }>;
     return rows.map((r) => r.id);

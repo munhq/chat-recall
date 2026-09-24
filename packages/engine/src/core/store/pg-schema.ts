@@ -106,6 +106,8 @@ CREATE TABLE IF NOT EXISTS sync_intents (
   PRIMARY KEY (tenant, id)
 );
 CREATE INDEX IF NOT EXISTS idx_sync_intents_pending ON sync_intents (tenant, status, created_at);
+-- The self-heal sweep looks up the last recheck of each session.
+CREATE INDEX IF NOT EXISTS idx_sync_intents_kind_name ON sync_intents (tenant, kind, name, created_at);
 
 -- ── Per-device idempotency ledgers ──────────────────────────────────────────
 -- Both were better-sqlite3 files under ~/.chat-recall (team-installs.db,
