@@ -27,6 +27,7 @@ import { createServer, connect, type Socket, type Server } from 'node:net';
 import { unlinkSync } from 'node:fs';
 import { ensureSocketDir, restrictSocket, socketPath, socketPathFromArgv } from './mcp-socket.js';
 import { onInputFinished, watchParent } from './relay-lifecycle.js';
+import { createSyncSupervisor } from './sync-supervisor.js';
 import { fileURLToPath } from 'node:url';
 import {
   createMcpServer, setIndexRunner, setEventReporter, setUpdateNotice, setServerVersion,
@@ -201,6 +202,11 @@ function runIndexChild(force: boolean): Promise<string> {
 }
 
 const SYNC_TICK_MS = 3 * 60_000;
+/**
+ * Background sync, whenever the watch service is not the one doing it.
+ * `createSyncSupervisor` asks that question on every interval, so this process
+ * takes over when the service stops and stands by again when it returns.
+ */
 function startBackgroundSync(): void {
   const tick = async (scope: 'full' | 'changed') => {
     try {
@@ -214,15 +220,6 @@ function startBackgroundSync(): void {
       console.error('[mcp] background sync tick failed:', err instanceof Error ? err.message : err);
     }
   };
-  // Startup tick: FULL ledger walk — flushes whatever the previous session
-  // left behind, including sessions whose earlier sync failed. Interval
-  // ticks: 'changed' — bounded recent-mtime walk. A full walk lists ALL
-  // ~30k+ sessions; doing that every 3 minutes in EVERY session's MCP
-  // process was a main driver of multi-hundred-MB MCP RSS. Old failed
-  // sessions still converge via each new session's startup tick and the
-  // watch daemon's 15-min heartbeat.
-  setInterval(() => { void tick('changed'); }, SYNC_TICK_MS).unref();
-  setTimeout(() => { void tick('full'); }, 15_000).unref();
 
   // Keep the update probe warm and SAY it once per process. updateNotice()
   // reads a cached file, so without something refreshing it an MCP-only user's
@@ -236,8 +233,30 @@ function startBackgroundSync(): void {
       if (notice) console.error(`[mcp] ${notice}`);
     } catch { /* never block or fail the server over a version check */ }
   };
-  setTimeout(() => { void updateTick(); }, 20_000).unref();
-  setInterval(() => { void updateTick(); }, 6 * 60 * 60 * 1000).unref();
+  const startUpdateProbe = () => {
+    setTimeout(() => { void updateTick(); }, 5_000).unref();
+    setInterval(() => { void updateTick(); }, 6 * 60 * 60 * 1000).unref();
+  };
+
+  let isServiceRunning: (() => boolean) | null = null;
+  // The first pass after taking over is a FULL ledger walk: it flushes whatever
+  // piled up while nobody synced, including sessions whose earlier sync failed.
+  // Later passes are 'changed' — a bounded recent-mtime walk. A full walk lists
+  // ALL ~30k+ sessions; doing that every 3 minutes in every MCP process was a
+  // main driver of multi-hundred-MB MCP RSS.
+  createSyncSupervisor({
+    serviceRunning: () => isServiceRunning?.() ?? false,
+    tick,
+    intervalMs: SYNC_TICK_MS,
+    firstCheckMs: 15_000,
+    onFirstTakeover: startUpdateProbe,
+    log: (msg) => console.error(`[mcp] ${msg}`),
+  });
+  // Loaded after the supervisor exists so a failed import leaves detection at
+  // "not running", which makes this process sync.
+  void import('./service-installer.js')
+    .then((m) => { isServiceRunning = m.isServiceRunning; })
+    .catch(() => { /* detection best-effort; the supervisor then syncs */ });
 }
 
 // ── Crash guards ────────────────────────────────────────────────────────
@@ -450,12 +469,6 @@ async function main() {
     } catch { /* best-effort — never break the tool server over skills */ }
   })();
 
-  // The watch daemon owns continuous sync. When it's running, the MCP must NOT
-  // also run the heavy sync in its tool-serving event loop: a full-ledger walk
-  // over a large history (30k+ sessions — transcript parse + base64 + KG
-  // extraction) spikes memory and can OOM/kill THIS process, which drops the
-  // JSON-RPC stdio connection (client sees -32000) and deregisters every recall
-  // tool mid-session. Decoupling keeps the tool server lightweight and alive.
   // A machine with NO credentials at all is a fresh install, and its first tool
   // call is going to need a sign-in link. Fetching the device code takes a few
   // hundred ms against the server, and requireRemote() is synchronous (51 call
@@ -474,16 +487,15 @@ async function main() {
     }
   } catch { /* best-effort — the lazy path still works */ }
 
-  let daemonRunning = false;
-  try {
-    const { isServiceRunning } = await import('./service-installer.js');
-    daemonRunning = isServiceRunning();
-  } catch { /* detection best-effort; fall through to running sync */ }
-  if (daemonRunning) {
-    console.error('[mcp] watch daemon active — MCP will not run background sync (keeps the tool server lightweight; the daemon syncs).');
-  } else {
-    startBackgroundSync();
-  }
+  // The watch daemon owns continuous sync. While it runs, the MCP must NOT
+  // also run the heavy sync in its tool-serving event loop: a full-ledger walk
+  // over a large history (30k+ sessions — transcript parse + base64 + KG
+  // extraction) spikes memory and can OOM/kill THIS process, which drops the
+  // JSON-RPC stdio connection (client sees -32000) and deregisters every recall
+  // tool mid-session. Decoupling keeps the tool server lightweight and alive.
+  // When it is not running, this process syncs; the supervisor re-checks on
+  // every interval.
+  startBackgroundSync();
 }
 
 main().catch(console.error);
