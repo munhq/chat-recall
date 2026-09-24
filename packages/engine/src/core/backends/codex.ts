@@ -126,7 +126,7 @@ export class CodexBackend implements ToolBackend {
       // First user prompt + message count
       let firstPrompt = '';
       let messageCount = 0;
-      try {
+      if (opts.previews !== false) try {
         const lines = readFileSync(filePath, 'utf-8').split('\n');
         for (const line of lines) {
           if (!line.trim()) continue;

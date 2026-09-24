@@ -201,24 +201,10 @@ export class OpencodeBackend implements ToolBackend {
         const projectPath = row.project_path || row.directory || '';
         if (filter && !projectPath.toLowerCase().includes(filter)) continue;
 
-        // First user prompt — cheap subquery
-        const firstUser = db.prepare(`
-          SELECT p.data
-          FROM part p JOIN message m ON m.id = p.message_id
-          WHERE p.session_id = ?
-            AND p.data LIKE '%"type":"text"%'
-            AND m.data LIKE '%"role":"user"%'
-          ORDER BY p.time_created ASC LIMIT 1
-        `).get(row.id) as { data: string } | undefined;
-        let firstPrompt = '';
-        if (firstUser) {
-          try {
-            const parsed = JSON.parse(firstUser.data);
-            firstPrompt = flatString(String(parsed?.text || '').slice(0, 200));
-          } catch { /* ignore */ }
-        }
-
-        const messageCount = (db.prepare('SELECT COUNT(*) as c FROM message WHERE session_id = ?').get(row.id) as { c: number } | undefined)?.c ?? 0;
+        const firstPrompt = opts.previews === false ? '' : this.firstUserPrompt(db, row.id);
+        const messageCount = opts.previews === false
+          ? 0
+          : (db.prepare('SELECT COUNT(*) as c FROM message WHERE session_id = ?').get(row.id) as { c: number } | undefined)?.c ?? 0;
 
         const created = new Date(row.time_created || row.time_updated).toISOString();
         const modified = new Date(row.time_updated).toISOString();
@@ -240,6 +226,50 @@ export class OpencodeBackend implements ToolBackend {
       }
       return out;
     } finally { db.close(); }
+  }
+
+  /**
+   * The first user text part of a session.
+   *
+   * Walks the session's user messages oldest first through the
+   * (session_id, time_created, id) index and stops at the first one with a
+   * text part. The role and the text are read by SQLite: a first message can
+   * carry whole diffs in `summary` (107 MB on one row), and parsing that in JS
+   * to read one field took the process to 510 MB. The earlier query filtered
+   * every part and message with LIKE and then sorted, so it read all of a
+   * session's data: 423 MB for a 236-session listing.
+   */
+  private firstUserPrompt(db: DatabaseSync, sessionId: string): string {
+    try {
+      // Older OpenCode schemas have no time_created column. Insertion order
+      // (rowid) is the order there.
+      const has = (table: string, col: string) =>
+        !!db.prepare(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`).get(table, col);
+      const msgOrder = has('message', 'time_created') ? 'time_created, id' : 'rowid';
+      const partOrder = has('part', 'time_created') ? 'time_created, id' : 'rowid';
+      const nextUser = db.prepare(
+        `SELECT id, ${msgOrder === 'rowid' ? 'rowid AS k1, 0 AS k2' : 'time_created AS k1, id AS k2'} FROM message
+          WHERE session_id = ? AND (${msgOrder === 'rowid' ? 'rowid, 0' : 'time_created, id'}) > (?, ?)
+            AND json_extract(data, '$.role') = 'user'
+          ORDER BY ${msgOrder} LIMIT 1`,
+      );
+      const firstText = db.prepare(
+        `SELECT substr(json_extract(data, '$.text'), 1, 400) AS text FROM part
+          WHERE message_id = ? AND json_extract(data, '$.type') = 'text'
+            AND length(trim(json_extract(data, '$.text'))) > 0
+          ORDER BY ${partOrder} LIMIT 1`,
+      );
+      let k1: number | string = Number.MIN_SAFE_INTEGER, k2: number | string = msgOrder === 'rowid' ? 0 : '';
+      for (;;) {
+        const m = nextUser.get(sessionId, k1, k2) as { id: string; k1: number | string; k2: number | string } | undefined;
+        if (!m) return '';
+        k1 = m.k1; k2 = m.k2;
+        const t = firstText.get(m.id) as { text: string | null } | undefined;
+        if (t?.text) return flatString(t.text.slice(0, 200));
+      }
+    } catch {
+      return '';   // a preview must never fail a listing
+    }
   }
 
   /** OpenCode auto-generates a session title (model-written, distinct from the

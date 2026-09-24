@@ -139,6 +139,11 @@ export interface ListSessionsOpts {
   limit?: number;
   /** Only include sessions whose mtime >= this (epoch ms). */
   sinceMs?: number;
+  /** false: leave firstPrompt '' and messageCount 0, and read no transcript
+   *  content to fill them. The sync walk decides from id, path and mtime, and
+   *  a full listing with previews read about 1 GB on one machine. A backend
+   *  that needs content to tell whether a session exists still reads it. */
+  previews?: boolean;
 }
 
 export interface ExtractTurnsOpts {

@@ -833,7 +833,7 @@ export async function reconcileFields(opts: { force?: boolean } = {}): Promise<R
   const targets = loadAllCredentials();
   if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
   let cached: SessionRef[] | null = null;
-  const fullRefs = () => (cached ??= listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }));
+  const fullRefs = () => (cached ??= listAvailableBackends().flatMap((b) => { try { return b.listSessions({ previews: false }); } catch { return []; } }));
 
   let pushed = 0, absent = 0, scanned = 0;
   const perTarget: Record<string, { pushed: number; absent: number }> = {};
@@ -1154,7 +1154,7 @@ const listSinceMs = changedWalk
   ? Math.max(0, (opts.sinceMs ?? 0) - CHANGED_WALK_OVERLAP_MS)
   : (opts.useLedger ? undefined : opts.sinceMs);
 const refs = listAvailableBackends().flatMap((b) => {
-    try { return b.listSessions({ sinceMs: listSinceMs }); } catch { return []; }
+    try { return b.listSessions({ sinceMs: listSinceMs, previews: false }); } catch { return []; }
   });
 
   // ── Upload plumbing, created up-front so the walks below can stream.
@@ -1713,7 +1713,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     try {
       await reconcileFieldsForTarget(
         cred,
-        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }),
+        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({ previews: false }); } catch { return []; } }),
         { convRefs: slice },
       );
     } catch (e) {

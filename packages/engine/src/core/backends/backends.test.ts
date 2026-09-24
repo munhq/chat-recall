@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { ClaudeBackend, claudeBackend } from './claude.js';
 import { OpencodeBackend, opencodeBackend } from './opencode.js';
@@ -96,6 +97,20 @@ describe('ClaudeBackend', () => {
     expect(sessions[0].firstPrompt).toContain('hello world');
   });
 
+  it('listSessions with previews false lists the same session and reads no prompt', () => {
+    const b = new ClaudeBackend();
+    const proj = join(b.projectsDir(), '-home-user-code-test');
+    mkdirSync(proj, { recursive: true });
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    writeFileSync(join(proj, `${sessionId}.jsonl`), JSON.stringify({
+      type: 'user', message: { content: [{ type: 'text', text: 'hello world' }] },
+    }) + '\n');
+    const [ref] = b.listSessions({ previews: false });
+    expect(ref.rawId).toBe(sessionId);
+    expect(ref.projectPath).toBe('/home/user/code/test');
+    expect(ref.firstPrompt).toBe('');
+  });
+
   it('listSessions respects projectFilter, limit, sinceMs', () => {
     const b = new ClaudeBackend();
     const projA = join(b.projectsDir(), '-home-a-foo');
@@ -147,6 +162,51 @@ describe('OpencodeBackend', () => {
     expect(opencodeBackend.matchesId('ses_x')).toBe(false);
     expect(opencodeBackend.toRawId('opencode_ses_x')).toBe('ses_x');
     expect(opencodeBackend.toPrefixedId('ses_x')).toBe('opencode_ses_x');
+  });
+
+  /** The tables and columns listSessions reads, with one session. */
+  function seedDb(): void {
+    const db = new DatabaseSync(join(dbDir, 'opencode.db'));
+    db.exec(`
+      CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+      CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+      CREATE INDEX part_message_id_id_idx ON part (message_id, id);
+    `);
+    db.prepare(`INSERT INTO project VALUES ('p1', '/home/user/code/example')`).run();
+    db.prepare(`INSERT INTO session VALUES ('ses_1', 'p1', '/home/user/code/example', 't', 1000, 5000)`).run();
+    const msg = db.prepare(`INSERT INTO message VALUES (?, 'ses_1', ?, ?, ?)`);
+    const part = db.prepare(`INSERT INTO part VALUES (?, ?, 'ses_1', ?, ?, ?)`);
+    // The first user message carries a large summary, as real ones do.
+    msg.run('msg_a', 1000, 1000, JSON.stringify({ role: 'user', summary: { diffs: 'x'.repeat(200_000) } }));
+    msg.run('msg_b', 2000, 2000, JSON.stringify({ role: 'assistant' }));
+    msg.run('msg_c', 3000, 3000, JSON.stringify({ role: 'user' }));
+    // Every part has the same time, as in a migrated database: only the
+    // message order says which prompt came first.
+    part.run('prt_1', 'msg_a', 7, 7, JSON.stringify({ type: 'text', text: 'the first prompt' }));
+    part.run('prt_2', 'msg_b', 7, 7, JSON.stringify({ type: 'text', text: 'an answer' }));
+    part.run('prt_3', 'msg_c', 7, 7, JSON.stringify({ type: 'text', text: 'a later prompt' }));
+    db.close();
+  }
+
+  it('the first prompt is the first user message, whatever the part times say', () => {
+    seedDb();
+    const [ref] = new OpencodeBackend().listSessions();
+    expect(ref.rawId).toBe('ses_1');
+    expect(ref.projectPath).toBe('/home/user/code/example');
+    expect(ref.firstPrompt).toBe('the first prompt');
+    expect(ref.messageCount).toBe(3);
+  });
+
+  it('listSessions with previews false reads no prompt and no count', () => {
+    seedDb();
+    const [ref] = new OpencodeBackend().listSessions({ previews: false });
+    expect(ref.rawId).toBe('ses_1');
+    expect(ref.mtime).toBe(5000);
+    expect(ref.firstPrompt).toBe('');
+    expect(ref.messageCount).toBe(0);
   });
 });
 
