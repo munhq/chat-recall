@@ -1491,6 +1491,54 @@ export class PgStore implements StorageDriver {
       [this.t, limit]);
     return rows.map((r: any) => r.session_id);
   }
+  /**
+   * Replace what one device has of each toolkit source type, and delete the
+   * item rows that no device has any more.
+   *
+   * An item row stands for every device that has it (ids carry no device), so
+   * one device's inventory cannot delete a row by itself. It removes that
+   * device's presence, and a row goes only when it had presence and now has
+   * none. Rows are deleted child-first and parent last: a member cannot see a
+   * child row once its parent is gone.
+   */
+  async reconcileToolkitInventory(device: string, entries: Array<{ sourceType: string; ids: string[] }>): Promise<{ removed: number }> {
+    if (!device || entries.length === 0) return { removed: 0 };
+    return this.tx(async (client: any) => {
+      const now = Date.now();
+      let removed = 0;
+      for (const { sourceType, ids } of entries) {
+        const want = [...new Set(ids.filter(Boolean))].sort();
+        const gone = (await client.query(
+          `DELETE FROM toolkit_presence
+            WHERE tenant=$1 AND device=$2 AND source_type=$3 AND NOT (id = ANY($4::text[]))
+            RETURNING id`, [this.t, device, sourceType, want])).rows.map((r: any) => r.id as string);
+        if (want.length > 0) {
+          await client.query(
+            `INSERT INTO toolkit_presence (tenant, source_type, id, device, seen_at)
+             SELECT $1, $3, x, $2, $5 FROM unnest($4::text[]) AS x
+             ON CONFLICT (tenant, source_type, id, device) DO UPDATE SET seen_at = excluded.seen_at`,
+            [this.t, device, sourceType, want, now]);
+        }
+        if (gone.length === 0) continue;
+        const orphans = (await client.query(
+          `SELECT x AS id FROM unnest($3::text[]) AS x
+            WHERE NOT EXISTS (SELECT 1 FROM toolkit_presence p WHERE p.tenant=$1 AND p.source_type=$2 AND p.id=x)`,
+          [this.t, sourceType, gone])).rows.map((r: any) => r.id as string);
+        if (orphans.length === 0) continue;
+        await client.query(`DELETE FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id = ANY($3::text[])`, [this.t, sourceType, orphans]);
+        const vectors = await client.query(`SELECT to_regclass('memory_vectors') IS NOT NULL AS present`);
+        if (vectors.rows[0]?.present) {
+          await client.query(`DELETE FROM memory_vectors WHERE tenant=$1 AND source_type=$2 AND item_id = ANY($3::text[])`, [this.t, sourceType, orphans]);
+        }
+        await client.query(
+          `DELETE FROM memory_links WHERE tenant=$1 AND ((source_type=$2 AND source_id = ANY($3::text[])) OR (target_type=$2 AND target_id = ANY($3::text[])))`,
+          [this.t, sourceType, orphans]);
+        const r = await client.query(`DELETE FROM memory_metadata WHERE tenant=$1 AND source_type=$2 AND id = ANY($3::text[])`, [this.t, sourceType, orphans]);
+        removed += r.rowCount ?? 0;
+      }
+      return { removed };
+    });
+  }
   async purgeSession(sessionId: string): Promise<void> {
     await this.purgeSessionsMany([sessionId]);
   }

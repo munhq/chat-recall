@@ -238,6 +238,7 @@ export class SqliteStore implements StorageDriver {
     return out;
   }
   async tombstonedWithRemains(limit: number) { return this.inner.tombstonedWithRemains(limit); }
+  async reconcileToolkitInventory(device: string, entries: Array<{ sourceType: string; ids: string[] }>) { return this.inner.reconcileToolkitInventory(device, entries); }
   async tombstonedAmong(sessionIds: string[]) {
     const want = new Set(sessionIds.filter(Boolean));
     const out = new Set<string>();

@@ -71,7 +71,7 @@ import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
-  syncMode, markFullResync, loadItemVersions, saveItemVersions, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
+  syncMode, markFullResync, loadItemVersions, saveItemVersions, loadInventoryHashes, saveInventoryHashes, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
 import { extractorVersionForTool, extractorVersionForId, extractorVersionForItem, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
@@ -2074,13 +2074,22 @@ const refs = listAvailableBackends().flatMap((b) => {
   const seenTools = new Set<string>();
   const seenItemKeys = new Map<string, number>();
   const registry = buildSourceRegistry();
+  // Every toolkit id this device has, per source type, for the inventory sent
+  // after the walk. A type with a source that failed is not reported, so a
+  // read error can never delete the account's rows.
+  const inventory = new Map<string, Set<string>>();
+  const inventoryFailed = new Set<string>();
   for (const sourceType of registry.getRegisteredTypes()) {
     if (sourceType === 'session') continue;
+    if (TOOLKIT_INVENTORY_TYPES.has(sourceType)) inventory.set(sourceType, new Set());
     for (const source of registry.getAll(sourceType)) {
       let discovered: AsyncGenerator<any>;
-      try { discovered = source.discover(); } catch { continue; }
+      try { discovered = source.discover(); } catch { inventoryFailed.add(sourceType); continue; }
       try {
         for await (const item of discovered) {
+          if (inventory.has(item.sourceType) && !excluded(item.projectPath || '') && includedProject(item.projectPath || '')) {
+            inventory.get(item.sourceType)!.add(item.id);
+          }
           const itemTool = toolOfId(item.id);
           seenTools.add(itemTool);
           // Keyed by tool AND source type: a payload change to skills must not
@@ -2139,6 +2148,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           redactions += count.redactions;
         }
       } catch (err) {
+        inventoryFailed.add(sourceType);
         // One broken source must not kill the sync — but a SYSTEMATICALLY failing
         // source (bad discover/parse) would otherwise silently ship zero items
         // for its type forever, with no signal. Log it (once per source per run).
@@ -2186,6 +2196,32 @@ const refs = listAvailableBackends().flatMap((b) => {
   // Barrier: wait for every pooled upload to land (and surface any fatal
   // error) before tombstones/prune, which must run strictly after all data.
   await drainInflight();
+
+  // ── Toolkit inventory. Sent after the barrier, so every item row it names
+  // has landed. The server records which device has each item and deletes a
+  // row only when no device has it any more (see reconcileToolkitInventory).
+  // An unchanged inventory is not sent again.
+  {
+    const sentHashes = loadInventoryHashes(base);
+    const entries: Array<{ source_type: string; ids: string[] }> = [];
+    const hashes: Record<string, string> = {};
+    for (const [sourceType, ids] of inventory) {
+      if (inventoryFailed.has(sourceType)) continue;
+      const sorted = [...ids].sort();
+      const hash = createHash('sha256').update(sorted.join('\n')).digest('hex').slice(0, 32);
+      if (sentHashes[sourceType] === hash) continue;
+      entries.push({ source_type: sourceType, ids: sorted });
+      hashes[sourceType] = hash;
+    }
+    if (entries.length > 0) {
+      try {
+        await post({ inventory: entries });
+        saveInventoryHashes(base, hashes);
+      } catch (err) {
+        console.error(`[sync] toolkit inventory not sent (it is retried next sync): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
 
   // Items shipped successfully → record each seen tool's current item-extractor
   // version, so a version-triggered re-ship (e.g. the agy attribution fix)
@@ -2339,6 +2375,11 @@ export async function scanTranscriptFindingsChunked(
  *  most this many bytes of cleartext (the incident stranded 3.4GB), and the
  *  window in which they exist is proportionally short. Raising it buys fewer
  *  detector spawns; lowering it buys a smaller blast radius. */
+/** The toolkit types a device reports its full inventory of. A removed skill or
+ *  MCP server stayed on the account for good, and a pull installed it again on
+ *  every other device. Plans, tasks and history are not inventories. */
+export const TOOLKIT_INVENTORY_TYPES: ReadonlySet<string> = new Set(['skill', 'mcp', 'command', 'agent', 'plugin']);
+
 export const BATCH_SCAN_MAX_BYTES =
   Math.max(1, parseInt(process.env.CHAT_RECALL_BATCHSCAN_MAX_MB || '64', 10)) * 1024 * 1024;
 

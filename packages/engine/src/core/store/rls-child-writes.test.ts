@@ -386,6 +386,58 @@ describe('a session-keyed child row written before its parent', () => {
     }
   });
 
+  pgTest('a toolkit row goes only when the last device that had it stops reporting it', async () => {
+    // One item id stands for every device that has the item, so one device's
+    // inventory must not delete it while another device still has it.
+    const tenant = `rls_inventory_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    const member = { sub: 'inventory-author', device: 'laptop' };
+    const mcp = (id: string) => ({ id, sourceType: 'mcp' as const, title: id, projectPath: '', projectId: '', filePath: '', mtime: 1, contentPreview: 'x' });
+    try {
+      await runWithAuthor(member, async () => {
+        await store.setItems([mcp('claude_mcp_shared'), mcp('claude_mcp_laptop_only'), mcp('claude_mcp_kept')]);
+        await store.addChunksFTS([{ chunkId: 'claude_mcp_laptop_only:0', itemId: 'claude_mcp_laptop_only', sourceType: 'mcp', title: 't', text: 'laptop only server', chunkType: 'mcp', projectPath: '', filePath: '', mtime: 1 } as any]);
+        await store.withTransaction(async () => {
+          await store.reconcileToolkitInventory('laptop', [{ sourceType: 'mcp', ids: ['claude_mcp_shared', 'claude_mcp_laptop_only', 'claude_mcp_kept'] }]);
+          await store.reconcileToolkitInventory('desktop', [{ sourceType: 'mcp', ids: ['claude_mcp_shared'] }]);
+        });
+        // The laptop removed two servers. The shared one is still on the desktop.
+        const r = await store.withTransaction(() =>
+          store.reconcileToolkitInventory('laptop', [{ sourceType: 'mcp', ids: ['claude_mcp_kept'] }]));
+        expect(r.removed).toBe(1);
+      });
+      const ids = (await admin.query(`SELECT id FROM memory_metadata WHERE tenant=$1 ORDER BY id`, [tenant])).rows.map((x: any) => x.id);
+      expect(ids).toEqual(['claude_mcp_kept', 'claude_mcp_shared']);
+      const chunks = await admin.query(`SELECT count(*)::int AS n FROM memory_chunks WHERE tenant=$1 AND item_id='claude_mcp_laptop_only'`, [tenant]);
+      expect(chunks.rows[0].n).toBe(0);
+
+      // The desktop removes the shared one too: now no device has it.
+      await runWithAuthor(member, () => store.withTransaction(() =>
+        store.reconcileToolkitInventory('desktop', [{ sourceType: 'mcp', ids: [] }])));
+      const left = (await admin.query(`SELECT id FROM memory_metadata WHERE tenant=$1 ORDER BY id`, [tenant])).rows.map((x: any) => x.id);
+      expect(left).toEqual(['claude_mcp_kept']);
+    } finally {
+      await store.close();
+    }
+  });
+
+  pgTest('a row with no presence at all is never deleted by an inventory', async () => {
+    // A device that has not sent an inventory yet has no presence rows for its
+    // items. Another device's inventory must leave those items alone.
+    const tenant = `rls_inventory_legacy_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'legacy-author', device: 'old-mac' }, async () => {
+        await store.setItems([{ id: 'claude_skill_legacy', sourceType: 'skill', title: 'legacy', projectPath: '', projectId: '', filePath: '', mtime: 1, contentPreview: 'x' }]);
+        await store.withTransaction(() => store.reconcileToolkitInventory('new-pc', [{ sourceType: 'skill', ids: [] }]));
+      });
+      const n = await admin.query(`SELECT count(*)::int AS n FROM memory_metadata WHERE tenant=$1`, [tenant]);
+      expect(n.rows[0].n).toBe(1);
+    } finally {
+      await store.close();
+    }
+  });
+
   pgTest('runUnrestricted raises the viewer inside an open transaction, and puts it back', async () => {
     // addLinks() elevates with runUnrestricted(). Inside withTransaction() no new
     // transaction opens, so the elevation must reach the pinned client's GUC.
