@@ -223,6 +223,7 @@ export class SqliteStore implements StorageDriver {
     }
     return out;
   }
+  async tombstonedWithRemains(limit: number) { return this.inner.tombstonedWithRemains(limit); }
   async tombstonedAmong(sessionIds: string[]) {
     const want = new Set(sessionIds.filter(Boolean));
     const out = new Set<string>();
