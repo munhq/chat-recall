@@ -1,5 +1,5 @@
 /**
- * The bootstrap seeds toolkit_presence ONCE, in the boot that creates it.
+ * The bootstrap seeds toolkit_presence for each tenant that has no presence yet.
  *
  * Every existing toolkit row gets presence for the devices recorded on it, so a
  * device that has not sent an inventory yet keeps its items. A seed on every
@@ -60,22 +60,29 @@ afterAll(async () => {
 const pgTest = PG_URL ? test : test.skip;
 
 describe('toolkit_presence seed', () => {
-  pgTest('the boot that creates the table seeds it, and a later boot does not', async () => {
+  pgTest('an empty table is seeded from the devices each row records, and a seeded one is not', async () => {
     await boot();
-    // Back to the state before this release: the item rows exist, the table not.
-    await scratch.query(`DROP TABLE toolkit_presence`);
-    await scratch.query(`INSERT INTO tenants (tenant, created_at) VALUES ('acme', 1) ON CONFLICT DO NOTHING`);
-    await scratch.query(`INSERT INTO memory_metadata (tenant, id, source_type, title, indexed_at, author_device, extra_json) VALUES
-      ('acme', 'claude_mcp_a', 'mcp', 'a', 1, 'laptop', '{"syncedDeviceId":"desktop"}'),
-      ('acme', 'claude_skill_b', 'skill', 'b', 1, 'laptop', 'not json at all'),
-      ('acme', 'plan_c', 'plan', 'c', 1, 'laptop', '{}')`);
+    // Back to the state before this release: the item rows exist, presence not.
+    // The rows have an author, as every production row does: author_visibility
+    // hides those from a boot that sets no viewer, and the first production
+    // seed read 0 rows that way.
+    await scratch.query(`DELETE FROM toolkit_presence`);
+    await scratch.query(`INSERT INTO tenants (tenant, created_at) VALUES ('acme', 1), ('globex', 1) ON CONFLICT DO NOTHING`);
+    await scratch.query(`INSERT INTO memory_metadata (tenant, id, source_type, title, indexed_at, author_sub, author_device, extra_json) VALUES
+      ('acme', 'claude_mcp_a', 'mcp', 'a', 1, 'user-1', 'laptop', '{"syncedDeviceId":"desktop"}'),
+      ('acme', 'claude_skill_b', 'skill', 'b', 1, 'user-1', 'laptop', 'not json at all'),
+      ('acme', 'plan_c', 'plan', 'c', 1, 'user-1', 'laptop', '{}'),
+      ('globex', 'claude_mcp_g', 'mcp', 'g', 1, 'user-2', 'tablet', '{}')`);
+    // globex is past its seed: it already has presence, for another device.
+    await scratch.query(`INSERT INTO toolkit_presence (tenant, source_type, id, device, seen_at) VALUES ('globex', 'mcp', 'claude_mcp_g', 'phone', 1)`);
 
     await boot();
     // Both recorded devices for the MCP row, the first uploader for the skill
-    // row whose extra is not JSON, and nothing for a plan.
+    // row whose extra is not JSON, nothing for a plan, and globex untouched.
     expect(await presence()).toEqual([
       { source_type: 'mcp', id: 'claude_mcp_a', device: 'desktop' },
       { source_type: 'mcp', id: 'claude_mcp_a', device: 'laptop' },
+      { source_type: 'mcp', id: 'claude_mcp_g', device: 'phone' },
       { source_type: 'skill', id: 'claude_skill_b', device: 'laptop' },
     ]);
 
@@ -84,6 +91,7 @@ describe('toolkit_presence seed', () => {
     await boot();
     expect(await presence()).toEqual([
       { source_type: 'mcp', id: 'claude_mcp_a', device: 'laptop' },
+      { source_type: 'mcp', id: 'claude_mcp_g', device: 'phone' },
       { source_type: 'skill', id: 'claude_skill_b', device: 'laptop' },
     ]);
 
