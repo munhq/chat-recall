@@ -53,7 +53,14 @@ export function isAutoUpdateEnabled(_edition: string | undefined, flag: string |
   return true;
 }
 
-export const tarballUrl = (base: string) => `${base.replace(/\/+$/, '')}/install/chat-recall.tgz`;
+/**
+ * Where the CLI tarball is served. With a version, the URL names it: a server
+ * answers it only while that is the version it holds. The unversioned URL is
+ * served by whichever pod answers, so during a rollout a client told 0.7.3 by
+ * a new pod downloaded 0.7.2 from an old one and failed its checksum.
+ */
+export const tarballUrl = (base: string, version?: string) =>
+  `${base.replace(/\/+$/, '')}/install/${version ? `chat-recall-${version}.tgz` : 'chat-recall.tgz'}`;
 
 /** The higher of two versions, treating an unparseable one as older. */
 export function newerOf(a: string, b: string | null): string {
@@ -86,6 +93,8 @@ export interface UpdatePlan {
   update: boolean;
   reason: string;
   url?: string;
+  /** The unversioned URL, for a server that predates the versioned one. */
+  fallbackUrl?: string;
   sha256?: string;
   from?: string;
   to?: string;
@@ -97,7 +106,7 @@ export function planAutoUpdate(base: string, caps: Caps, ownVersion: string, fla
   if (!rel || !rel.version || !rel.sha256) return { update: false, reason: 'server advertises no CLI release' };
   if (!isAutoUpdateEnabled(caps.edition, flag)) return { update: false, reason: `auto-update disabled (edition ${caps.edition ?? '?'})` };
   if (compareVersions(rel.version, ownVersion) <= 0) return { update: false, reason: `already current (own ${ownVersion} >= server ${rel.version})` };
-  return { update: true, reason: `server ${rel.version} > own ${ownVersion}`, url: tarballUrl(base), sha256: rel.sha256, from: ownVersion, to: rel.version };
+  return { update: true, reason: `server ${rel.version} > own ${ownVersion}`, url: tarballUrl(base, rel.version), fallbackUrl: tarballUrl(base), sha256: rel.sha256, from: ownVersion, to: rel.version };
 }
 
 /**
@@ -166,7 +175,15 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
   if (!plan.update || !plan.url || !plan.sha256) return { updated: false, reason: plan.reason };
   let buf: Buffer;
   try { buf = await deps.download(plan.url); }
-  catch (e) { return { updated: false, reason: `download failed: ${e instanceof Error ? e.message : e}` }; }
+  catch (e) {
+    // A server older than the versioned route answers it 404, so the
+    // unversioned URL is tried; the checksum below still decides. A pod that
+    // holds another version answers 409, and the next sync tries again.
+    const notFound = e instanceof Error && e.message === 'HTTP 404';
+    if (!notFound || !plan.fallbackUrl) return { updated: false, reason: `download failed: ${e instanceof Error ? e.message : e}` };
+    try { buf = await deps.download(plan.fallbackUrl); }
+    catch (e2) { return { updated: false, reason: `download failed: ${e2 instanceof Error ? e2.message : e2}` }; }
+  }
   const got = createHash('sha256').update(buf).digest('hex');
   if (got !== plan.sha256) return { updated: false, reason: `checksum mismatch (expected ${plan.sha256.slice(0, 12)}…, got ${got.slice(0, 12)}…) — NOT installing` };
   // DELETE THE STAGING DIR ON EVERY EXIT PATH. This leaked: the tarball was

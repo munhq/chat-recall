@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { isAutoUpdateEnabled, planAutoUpdate, executeAutoUpdate, sweepStaleStaging } from './auto-update.js';
@@ -35,36 +35,39 @@ describe('auto-update default', () => {
 // 5,889 directories and 5.1 GB of tarballs in /tmp before anyone noticed. A
 // leak that only shows up as disk pressure weeks later needs a test.
 describe('staging directory is not leaked', () => {
-  const stagingDirs = () => readdirSync(tmpdir()).filter((d) => d.startsWith('cr-update-'));
-
+  // Checks the one directory THIS update staged. Counting cr-update-* in the
+  // shared tmpdir failed about 1 run in 4, because other test files create
+  // and remove directories of that shape in parallel.
   const plan = { update: true, url: 'https://x/pkg.tgz', sha256: '', from: '1.0.0', to: '2.0.0' };
   const bytes = Buffer.from('tarball');
   const sha = createHash('sha256').update(bytes).digest('hex');
 
   test('removes it after a successful install', async () => {
-    const before = stagingDirs().length;
+    let staged = '';
     const r = await executeAutoUpdate({ ...plan, sha256: sha } as never, {
       download: async () => bytes,
-      install: () => {},
+      install: (tgz: string) => { staged = tgz; expect(existsSync(tgz)).toBe(true); },
       restart: () => {},
       verify: () => '2.0.0',
       platform: 'linux',
     } as never);
     expect(r.updated).toBe(true);
-    expect(stagingDirs().length).toBe(before);
+    expect(staged).not.toBe('');
+    expect(existsSync(dirname(staged))).toBe(false);
   });
 
   test('removes it when the install throws', async () => {
-    const before = stagingDirs().length;
+    let staged = '';
     const r = await executeAutoUpdate({ ...plan, sha256: sha } as never, {
       download: async () => bytes,
-      install: () => { throw new Error('npm exploded'); },
+      install: (tgz: string) => { staged = tgz; throw new Error('npm exploded'); },
       restart: () => {},
       verify: () => '1.0.0',
       platform: 'linux',
     } as never);
     expect(r.updated).toBe(false);
-    expect(stagingDirs().length).toBe(before);
+    expect(staged).not.toBe('');
+    expect(existsSync(dirname(staged))).toBe(false);
   });
 });
 
@@ -133,4 +136,48 @@ test('sweeps whatever root mkdtemp actually uses, not a hardcoded /tmp', () => {
   expect(basename(staging)).toMatch(/^cr-update-.{6}$/);
   expect(sweepStaleStaging()).toBeGreaterThanOrEqual(1);
   expect(existsSync(staging)).toBe(false);
+});
+
+// ── the versioned tarball URL ─────────────────────────────────────
+// A rollout served one pod's tarball against another pod's checksum. The
+// update asks for the version it was told about; only a server without that
+// route falls back to the unversioned URL.
+describe('versioned tarball download', () => {
+  const bytes = Buffer.from('tarball');
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  const planFor = () => planAutoUpdate('https://srv.example.com/', { cli: { version: '2.0.0', sha256: sha } } as never, '1.0.0', undefined);
+
+  test('the plan names the version, with the unversioned URL as the fallback', () => {
+    const p = planFor();
+    expect(p.url).toBe('https://srv.example.com/install/chat-recall-2.0.0.tgz');
+    expect(p.fallbackUrl).toBe('https://srv.example.com/install/chat-recall.tgz');
+  });
+
+  const deps = (answers: Record<string, Buffer | string>, seen: string[]) => ({
+    download: async (url: string) => {
+      seen.push(url);
+      const a = answers[url];
+      if (typeof a === 'string') throw new Error(a);
+      return a;
+    },
+    install: () => {},
+    restart: () => {},
+    verify: () => '2.0.0',
+    platform: 'linux',
+  }) as never;
+
+  test('a server without the versioned route (404) gets the unversioned URL', async () => {
+    const p = planFor(); const seen: string[] = [];
+    const r = await executeAutoUpdate(p, deps({ [p.url!]: 'HTTP 404', [p.fallbackUrl!]: bytes }, seen));
+    expect(r.updated).toBe(true);
+    expect(seen).toEqual([p.url, p.fallbackUrl]);
+  });
+
+  test('a pod that holds another version (409) is not asked again this sync', async () => {
+    const p = planFor(); const seen: string[] = [];
+    const r = await executeAutoUpdate(p, deps({ [p.url!]: 'HTTP 409', [p.fallbackUrl!]: bytes }, seen));
+    expect(r.updated).toBe(false);
+    expect(r.reason).toContain('HTTP 409');
+    expect(seen).toEqual([p.url]);
+  });
 });
