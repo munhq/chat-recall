@@ -8,7 +8,7 @@
  * a session a previous sweep stamped 'too_short' that no longer satisfies
  * the rule is re-claimed and gets a real summary — no backfill scripts.
  *
- * Postgres-gated, exactly like conversations.expand.test.ts: skipped when
+ * Postgres-gated, exactly like conversations.expand.pg.test.ts: skipped when
  * DATABASE_URL isn't set.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';

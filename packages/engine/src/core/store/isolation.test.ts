@@ -1,14 +1,15 @@
 /**
  * Proves Postgres Row-Level-Security actually isolates tenants — the security
  * guarantee behind the shared-cloud SKU. Critically, this runs as a
- * NOBYPASSRLS role: a superuser (which the parity suite uses) silently bypasses
+ * NOBYPASSRLS role: a superuser silently bypasses
  * RLS, so app-level `WHERE tenant=$1` would mask a broken policy. Here there is
  * NO tenant WHERE clause — isolation must come from RLS alone.
  *
- * Gated on DATABASE_URL (a superuser DSN, used to create the restricted role).
+ * Gated on DATABASE_URL; the admin URL creates the restricted role.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const RLS_ROLE = 'cr_rls_test';
@@ -19,7 +20,7 @@ const RLS_PASS = 'rlspass';
   let app: any;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     // Create the engine tables (+ RLS policies) by opening a store once.
     const { createStore } = await import('./index.js');
     const s = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'seed' } as any);

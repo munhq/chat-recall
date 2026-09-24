@@ -13,6 +13,7 @@ import { describe, test, expect, afterAll, beforeAll } from 'vitest';
 import { runWithAuthor, currentAuthor, runWithTenant } from './tenant-context.js';
 import { tenantQuery } from './pg-pool.js';
 import pg from 'pg';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 describe('ambient author context', () => {
   test('defaults to a null author outside any context', () => {
@@ -88,7 +89,7 @@ const VIS_PASS = 'vispass';
 /**
  * The security guarantee is the RLS policy, and RLS is only binding under a
  * NOBYPASSRLS role (a superuser — which POSTGRES_USER is — silently bypasses
- * it). So: SEED as the superuser store (real author stamping + schema), then
+ * it). So: SEED through the store (real author stamping + schema), then
  * READ as a restricted role through the REAL tenantQuery path (which sets
  * app.tenant + app.viewer via setScopeGucs from the ambient author context).
  * This exercises the exact plumbing every store read uses, with the policy
@@ -134,7 +135,7 @@ const VIS_PASS = 'vispass';
     }));
 
     // Restricted, RLS-subject role + a pool that connects as it.
-    const sudo = new pg.Pool({ connectionString: PG_URL });
+    const sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     await sudo.query(`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${VIS_ROLE}') THEN CREATE ROLE ${VIS_ROLE} LOGIN PASSWORD '${VIS_PASS}' NOBYPASSRLS; END IF; END $$;`);
     await sudo.query(`GRANT USAGE ON SCHEMA public TO ${VIS_ROLE}`);
     await sudo.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${VIS_ROLE}`);

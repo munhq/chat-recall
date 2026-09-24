@@ -32,14 +32,15 @@
  * repository was capable of failing on an RLS defect. Production runs as
  * `super=false bypassrls=false`, which is where every one of these surfaced.
  *
- * So this file creates its own NON-SUPERUSER role and connects as that. It is
- * the only place RLS is actually exercised.
+ * So this file creates its own NON-SUPERUSER role and connects as that.
+ * vitest.global-setup.ts now does the same for every Postgres test.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 
 import { createStore } from './index.js';
 import { createMetadataCache, createOutcomeCache } from './caches.js';
 import { runWithAuthor } from './tenant-context.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 
@@ -61,7 +62,7 @@ function withRole(url: string, user: string, password: string): string {
 beforeAll(async () => {
   if (!PG_URL) return;
   const pg = (await import('pg')).default;
-  admin = new pg.Pool({ connectionString: PG_URL, max: 2 });
+  admin = new pg.Pool({ connectionString: pgAdminUrl(), max: 2 });
   // The schema must exist before privileges are granted on it.
   const bootstrap = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'rls_bootstrap' } as any);
   await bootstrap.close();
@@ -85,9 +86,10 @@ beforeAll(async () => {
   // (… FORCE ROW LEVEL SECURITY), which requires ownership. Granting membership
   // in the owner role confers ownership privileges WITHOUT conferring SUPERUSER
   // or BYPASSRLS — those are role ATTRIBUTES and are never inherited through
-  // membership, which is the property that keeps this probe honest.
-  const owner = (await admin.query(`SELECT current_user AS u`)).rows[0].u;
-  await admin.query(`GRANT ${owner} TO ${PROBE_ROLE}`);
+  // membership, which is the property that keeps this probe honest. The role
+  // in DATABASE_URL is that owner: vitest.global-setup.ts made it so.
+  const owner = decodeURIComponent(new URL(PG_URL).username);
+  await admin.query(`GRANT "${owner}" TO ${PROBE_ROLE}`);
   probeUrl = withRole(PG_URL, PROBE_ROLE, PROBE_PASSWORD);
 });
 
