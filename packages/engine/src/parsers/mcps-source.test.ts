@@ -66,17 +66,36 @@ describe('McpsSource', () => {
     expect(r.extra.command).toContain('uvx');
   });
 
-  test('Codex plugin-bundled MCP at ~/.codex/.tmp/plugins/plugins/<x>/.mcp.json', async () => {
-    // Codex plugins live at the doubled-"plugins" path on disk
-    // (~/.codex/.tmp/plugins/plugins/<name>/). The source reads
-    // `mcpData.mcpServers` from each plugin's .mcp.json, so the fixture
-    // must use the same envelope as the production format.
-    writeJson('.codex/.tmp/plugins/plugins/foo/.mcp.json', {
+  test('Codex plugin-bundled MCP of an INSTALLED plugin', async () => {
+    // Installed plugins live at plugins/cache/<marketplace>/<plugin>/<version>/,
+    // and the newest version is the one read. The source reads
+    // `mcpData.mcpServers` from the plugin's .mcp.json.
+    writeJson('.codex/plugins/cache/acme-market/foo/0.1.9/.mcp.json', {
+      mcpServers: { 'foo-old': { command: 'npx', args: ['foo-mcp@0.1.9'] } },
+    });
+    writeJson('.codex/plugins/cache/acme-market/foo/0.1.10/.mcp.json', {
       mcpServers: { foo: { command: 'npx', args: ['foo-mcp'] } },
     });
     const items = await collect();
-    const r = items.find(i => i.extra.tool === 'codex' && i.extra.scope === 'plugin' && i.extra.mcpName === 'foo');
-    expect(r).toBeDefined();
+    const plugin = items.filter(i => i.extra.tool === 'codex' && i.extra.scope === 'plugin');
+    expect(plugin.map(i => i.extra.mcpName)).toEqual(['foo']);
+  });
+
+  test('a plugin that is only in the Codex catalog is not reported', async () => {
+    // .tmp/plugins/plugins/ is Codex's copy of the plugin catalog. A pull
+    // installed a catalog plugin's Mac-only server on a Linux PC from here.
+    writeJson('.codex/.tmp/plugins/plugins/build-ios-apps/.mcp.json', {
+      mcpServers: { xcodebuildmcp: { command: 'npx', args: ['-y', 'xcodebuildmcp@latest', 'mcp'] } },
+    });
+    const items = await collect();
+    expect(items.find(i => i.extra.mcpName === 'xcodebuildmcp')).toBeUndefined();
+  });
+
+  test('every MCP row records the platform and arch it was registered on', async () => {
+    writeJson('.mcp.json', { mcpServers: { rip: { command: 'npx', args: ['mcp-ripgrep'] } } });
+    const items = await collect();
+    expect(items[0].extra.platform).toBe(process.platform);
+    expect(items[0].extra.arch).toBe(process.arch);
   });
 
   test('the shared settings.json with mcpServers', async () => {

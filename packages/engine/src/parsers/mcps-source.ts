@@ -13,7 +13,7 @@
  *                 ~/.opencode/config.json (mcp, alt path)
  *   - Gemini    — ~/.gemini/settings.json (mcpServers)
  *   - Codex     — ~/.codex/config.toml [mcp_servers.*]
- *                 ~/.codex/.tmp/plugins/plugins/<plugin>/.mcp.json
+ *                 ~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/.mcp.json
  *
  * Each MCP entry yields one MemoryItem keyed by `<tool>_mcp_<name>`.
  */
@@ -172,16 +172,13 @@ export class McpsSource implements MemorySource {
 
     // Codex — config.toml [mcp_servers.*] + per-plugin .mcp.json files
     yield* this.fromCodexToml(CODEX.configToml());
-    const pluginsDir = CODEX.pluginsDir();
-    if (existsSync(pluginsDir)) {
-      for (const plugin of readdirSync(pluginsDir)) {
-        const mcpPath = join(pluginsDir, plugin, '.mcp.json');
-        yield* this.fromObject(readJson(mcpPath)?.mcpServers, {
-          tool: 'codex',
-          filePath: mcpPath,
-          scope: 'plugin',
-        });
-      }
+    for (const { dir } of CODEX.installedPluginDirs()) {
+      const mcpPath = join(dir, '.mcp.json');
+      yield* this.fromObject(readJson(mcpPath)?.mcpServers, {
+        tool: 'codex',
+        filePath: mcpPath,
+        scope: 'plugin',
+      });
     }
   }
 

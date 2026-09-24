@@ -16,7 +16,7 @@
  *                 ~/.opencode/{skill,skills}/<name>/SKILL.md
  *   - Codex     — ~/.codex/skills/<name>/SKILL.md           (user-authored)
  *                 ~/.codex/skills/.system/<name>/SKILL.md   (OpenAI bundled, READ-ONLY)
- *                 ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
+ *                 ~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
  *
  * Each skill yields one MemoryItem with extra.tool tagging the source. Skills
  * tagged `shared` already live in the tool-neutral location every tool reads,
@@ -148,16 +148,12 @@ export class SkillsSource implements MemorySource {
       yield* this.fromSkillRoot(root);
     }
 
-    // Codex plugin skills live at ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
-    // — the doubled "plugins" segment is intentional in Codex's on-disk layout.
+    // Skills of the Codex plugins that are installed; see installedPluginDirs.
     if (!isSourceEnabled('codex', 'skills')) return;
-    const codexPluginsDir = CODEX.pluginsDir();
-    if (existsSync(codexPluginsDir)) {
-      for (const pluginName of readdirSync(codexPluginsDir)) {
-        const skillsDir = join(codexPluginsDir, pluginName, 'skills');
-        if (!existsSync(skillsDir)) continue;
-        yield* this.fromSkillRoot({ path: skillsDir, tool: 'codex' as const }, pluginName);
-      }
+    for (const { name: pluginName, dir } of CODEX.installedPluginDirs()) {
+      const skillsDir = join(dir, 'skills');
+      if (!existsSync(skillsDir)) continue;
+      yield* this.fromSkillRoot({ path: skillsDir, tool: 'codex' as const }, pluginName);
     }
   }
 

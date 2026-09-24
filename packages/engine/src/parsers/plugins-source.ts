@@ -124,17 +124,13 @@ export class PluginsSource implements MemorySource {
       }
     }
 
-    // ── Codex plugin packs — ~/.codex/.tmp/plugins/plugins/<name>/ ───
+    // ── Codex plugin packs — the installed ones; see installedPluginDirs ───
     // Each pack carries a .codex-plugin/plugin.json manifest. Skills and
     // MCPs bundled inside a pack are picked up by SkillsSource / McpsSource
     // separately; here we surface the pack itself so the Toolkit Plugins
     // tab shows what's installed.
-    const codexPluginsRoot = CODEX.pluginsDir();
-    if (isSourceEnabled('codex', 'plugins') && existsSync(codexPluginsRoot)) {
-      let entries: string[];
-      try { entries = readdirSync(codexPluginsRoot); } catch { entries = []; }
-      for (const name of entries) {
-        const pluginDir = join(codexPluginsRoot, name);
+    if (isSourceEnabled('codex', 'plugins')) {
+      for (const { name, dir: pluginDir } of CODEX.installedPluginDirs()) {
         let st;
         try { st = statSync(pluginDir); } catch { continue; }
         if (!st.isDirectory()) continue;
