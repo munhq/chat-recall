@@ -172,7 +172,9 @@ async function runPull(
       })
     : rows;
 
-  const report = executePull(filtered, { thisDeviceId: hostname(), types: wanted });
+  // An intent that names one server is the user choosing it, so it installs
+  // whatever platform registered it.
+  const report = executePull(filtered, { thisDeviceId: hostname(), types: wanted, explicit: opts.name ? [opts.name] : undefined });
   const written = report.outcomes.filter((o) => o.status === 'written');
   const failed = report.outcomes.filter((o) => o.status === 'failed');
   return {

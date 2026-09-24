@@ -11,7 +11,7 @@ import { describe, expect, test } from 'vitest';
 
 import { basename } from 'node:path';
 
-import { entryFromSpec, planPull, portableCommand, type RemoteArtifactRow } from './toolkit-pull.js';
+import { entryFromSpec, executePull, planPull, platformRefusal, portableCommand, type RemoteArtifactRow } from './toolkit-pull.js';
 import { isOnPath } from './which.js';
 
 const row = (type: string, name: string, extra: Record<string, unknown>): RemoteArtifactRow => ({
@@ -111,6 +111,48 @@ describe('planPull', () => {
     const rows = [row('mcp', 'acme', { mcpName: 'acme', spec: { command: 'acme-mcp' } })];
     expect(planPull(rows, { types: ['skill'] }).mcps).toHaveLength(0);
     expect(planPull(rows, { types: ['mcp'] }).mcps).toHaveLength(1);
+  });
+});
+
+describe('a server another platform registered', () => {
+  // xcodebuildmcp, registered on a Mac, starts through npx. npx resolves on
+  // Linux too, so the command check passed and a pull installed it into five
+  // tools on a Linux PC.
+  const mac = (name: string, cmd = 'node') =>
+    row('mcp', name, { mcpName: name, platform: 'darwin', spec: { command: cmd, args: ['-y', `${name}@latest`] } });
+
+  test('the planner collects the platform of every row of a name', () => {
+    const rows = [
+      mac('cr-probe-tool'),
+      row('mcp', 'cr-probe-tool', { mcpName: 'cr-probe-tool', tool: 'codex', platform: 'linux', spec: { command: 'node' } }),
+      row('mcp', 'cr-probe-old', { mcpName: 'cr-probe-old', spec: { command: 'node' } }),
+    ];
+    const byName = Object.fromEntries(planPull(rows).mcps.map((m) => [m.name, m.platforms]));
+    expect(byName['cr-probe-tool']).toEqual(['darwin', 'linux']);
+    expect(byName['cr-probe-old']).toEqual([]);
+  });
+
+  test('it installs only where the same platform registered it, or when named', () => {
+    const none = new Set<string>();
+    expect(platformRefusal('x', ['darwin'], 'darwin', none)).toBeNull();
+    expect(platformRefusal('x', ['darwin', 'linux'], 'linux', none)).toBeNull();
+    expect(platformRefusal('x', ['darwin'], 'linux', none)).toMatch(/registered only on darwin.*--mcp x/);
+    expect(platformRefusal('x', [], 'linux', none)).toMatch(/no device recorded its platform/);
+    expect(platformRefusal('x', ['darwin'], 'linux', new Set(['x']))).toBeNull();
+  });
+
+  test('a pull skips it with the reason, and installs it when it is named', () => {
+    const rows = [mac('cr-probe-xcode-only')];
+    const auto = executePull(rows, { types: ['mcp'], dryRun: true, platform: 'linux' });
+    expect(auto.outcomes.length).toBeGreaterThan(0);
+    for (const o of auto.outcomes) {
+      expect(o.status).toBe('skipped');
+      expect(o.reason).toMatch(/registered only on darwin/);
+    }
+    const chosen = executePull(rows, { types: ['mcp'], dryRun: true, platform: 'linux', explicit: ['cr-probe-xcode-only'] });
+    expect(chosen.outcomes.every((o) => o.status === 'written')).toBe(true);
+    const same = executePull(rows, { types: ['mcp'], dryRun: true, platform: 'darwin' });
+    expect(same.outcomes.every((o) => o.status === 'written')).toBe(true);
   });
 });
 

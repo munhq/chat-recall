@@ -80,9 +80,12 @@ const BASE_EXTRACTOR_VERSION = 2;
  *                rebuilding from it would write a corrupted skill.
  *   agent +1   — `extra.body`, same reason; the codec converts it per tool.
  *   command +1 — `extra.body`, same reason.
+ *   mcp +2     — `extra.platform` and `extra.arch` of the uploading device. A
+ *                pull installs a server only where a device of the same
+ *                platform registered it.
  */
 const ITEM_SOURCE_BUMP: Record<string, number> = {
-  mcp: 1,
+  mcp: 2,
   skill: 1,
   agent: 1,
   command: 1,
