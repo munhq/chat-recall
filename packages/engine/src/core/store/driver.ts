@@ -16,7 +16,7 @@
  *   - PgStore     (store/pg.ts)     — Postgres + pgvector. Team / cloud.
  */
 
-import type { IngestBatch, IngestCounts, IngestMetaWriter } from './ingest-batch.js';
+import type { IngestBatch, IngestCounts, IngestMetaWriter, IngestSideWriters } from './ingest-batch.js';
 import type { MemoryStore } from '../memory-store.js';
 
 /** Any method → the same method returning a Promise of its (awaited) result. */
@@ -233,12 +233,13 @@ export interface StorageDriver {
   /**
    * One ingest request's writes, in order, in one transaction.
    *
-   * `meta` is used only by the SQLite driver, whose metadata cache is a separate
-   * FILE it cannot reach. Postgres keeps session_metadata and compute_cache in
-   * the same database and writes them inside its own transaction, so it ignores
-   * this argument. Omitting it on SQLite silently skips those two tables.
+   * `meta` and `side` are used only by the SQLite driver, whose metadata cache,
+   * outcome cache and knowledge graph are separate FILES it cannot reach.
+   * Postgres keeps all of them in the same database and writes them inside its
+   * own transaction, so it ignores both arguments. Omitting them on SQLite
+   * silently skips those tables.
    */
-  writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter): Promise<IngestCounts>;
+  writeIngestBatch(batch: IngestBatch, meta?: IngestMetaWriter, side?: IngestSideWriters): Promise<IngestCounts>;
 
   // ── secret findings (security dashboard) ──
   secretFindingsSummary: AsyncMethod<MemoryStore['secretFindingsSummary']>;
