@@ -7,10 +7,11 @@
  *
  * This is the guard that makes the attribution-flip corruption class
  * structurally impossible. Runs as a NOBYPASSRLS role (a superuser silently
- * bypasses RLS). Gated on DATABASE_URL (a superuser DSN, used to mint the role).
+ * bypasses RLS). Gated on DATABASE_URL; the admin URL mints the role.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const RLS_ROLE = 'cr_wguard_test';
@@ -24,7 +25,7 @@ const BOB = 'user-bob';
   let app: any;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     // Build the engine schema (tables + RLS incl. the write-guard) once.
     const { createStore } = await import('./index.js');
     const s = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'seed' } as any);

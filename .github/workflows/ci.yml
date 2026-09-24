@@ -100,8 +100,10 @@ jobs:
   #
   # which no test in the repository was capable of reproducing.
   #
-  # rls-child-writes.test.ts creates its own NON-superuser role from this
-  # connection and reconnects as that, so RLS is genuinely enforced here.
+  # vitest.global-setup.ts sees that DATABASE_URL names a superuser, creates a
+  # role with neither SUPERUSER nor BYPASSRLS, and points every Postgres test at
+  # it. The superuser URL reaches the tests only for privileged setup. So RLS
+  # applies to every test in this job, as it does in production.
   postgres-tests:
     name: store tests against real Postgres (RLS enforced)
     runs-on: ubuntu-latest
@@ -126,10 +128,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      # The store suites only. The rest of the suite already runs on three
-      # platforms above; re-running it here would double the bill for no signal.
-      - name: Store + RLS tests
-        run: npx vitest run packages/engine/src/core/store
+      # The store suites, and every *.pg.test.ts: the server tests that need
+      # Postgres, POST /api/sync among them. The rest of the suite runs on three
+      # platforms above.
+      - name: Store + server Postgres tests
+        run: npx vitest run packages/engine/src/core/store .pg.test.ts
 
   # Every image and video that reaches a public surface, OCR'd frame by frame.
   #
