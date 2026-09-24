@@ -49,6 +49,11 @@ const BOT_WORKTREE_MARKERS = ['.claude-pr-bot'];
 
 /** Resolved-id cache keyed on realpath input. */
 const resolveCache = new Map<string, ResolvedProject>();
+// Keyed by the path as given. resolveProjectId runs once per transcript record,
+// and realpathSync lstats each part of the path first: 10,001 lstat calls for
+// one 10,000-record session, and on a macOS runner, where /home is an autofs
+// mount, one sync test took over 120 s.
+const inputCache = new Map<string, ResolvedProject>();
 
 /** Git remote cache keyed on git toplevel realpath. */
 const gitCache = new Map<string, RemoteProbe>();
@@ -95,6 +100,7 @@ export function loadProjectsConfig(): ProjectsConfig {
 /** Clear all caches. Call after the config file changes or in tests. */
 export function resetProjectResolverCache(): void {
   resolveCache.clear();
+  inputCache.clear();
   gitCache.clear();
   workspaceCache.clear();
   wsIdCache.clear();
@@ -121,12 +127,13 @@ export function resolveProjectId(inputPath: string): ResolvedProject {
     return { id: `path:${inputPath}`, displayName: inputPath, source: 'path' };
   }
 
-  const realPath = safeRealpath(inputPath);
-  const cached = resolveCache.get(realPath);
-  if (cached) return cached;
+  const known = inputCache.get(inputPath);
+  if (known) return known;
 
-  const result = doResolve(realPath);
+  const realPath = safeRealpath(inputPath);
+  const result = resolveCache.get(realPath) ?? doResolve(realPath);
   resolveCache.set(realPath, result);
+  inputCache.set(inputPath, result);
   return result;
 }
 
