@@ -129,7 +129,16 @@ const MCP_OUT_MAX_BYTES = 64 * 1024 * 1024;
  */
 function runMcp(binPath: string, workspace: string, calls: any[], timeoutMs = 180_000): Promise<Map<number, string>> {
   return new Promise((resolve, reject) => {
-    const p = spawn(binPath, ['--mcp', '--workspace', workspace], { stdio: ['pipe', 'pipe', 'ignore'] });
+    // CODEINDEX_NO_DAEMON keeps the index in this child. Since codeindex 0.5 the
+    // default --mcp process is a relay onto a shared workspace daemon. The relay
+    // exits when stdin closes, before the daemon has replied, so every collect
+    // got zero replies ("returned no files"). Each daemon then stayed in the
+    // watch unit's cgroup: 11 of them held about 1 GB and oomd killed the unit
+    // every 4 to 5 minutes. The variable is ignored by codeindex before 0.5.
+    const p = spawn(binPath, ['--mcp', '--workspace', workspace], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: { ...process.env, CODEINDEX_NO_DAEMON: '1' },
+    });
     const res = new Map<number, string>();
     let pending = '';        // only ever the tail after the last newline
     let failed = false;
