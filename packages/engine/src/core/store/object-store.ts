@@ -152,9 +152,12 @@ export class ObjectStore {
   }
 }
 
-let cached: ObjectStore | null | undefined;
+/** What the raw archive uses: put, get, delete, and the bucket name for log lines. */
+export type RawObjectStore = Pick<ObjectStore, 'put' | 'get' | 'delete' | 'bucket'>;
+
+let cached: RawObjectStore | null | undefined;
 /** The process-wide store, or null when the environment configures none. */
-export function getObjectStore(): ObjectStore | null {
+export function getObjectStore(): RawObjectStore | null {
   if (cached === undefined) {
     const cfg = objectStoreFromEnv();
     cached = cfg ? new ObjectStore(cfg) : null;
@@ -163,3 +166,5 @@ export function getObjectStore(): ObjectStore | null {
 }
 /** Test seam: forget the memoized store so the next call re-reads the env. */
 export function resetObjectStore(): void { cached = undefined; }
+/** Test seam: use this store until the next resetObjectStore(). */
+export function setObjectStoreForTests(store: RawObjectStore | null): void { cached = store; }

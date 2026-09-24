@@ -67,6 +67,8 @@ export class PgStore implements StorageDriver {
   private readonly tenant: string;
   /** The client of the transaction opened by `withTransaction`, while it runs. */
   private pinned: any = null;
+  /** Work that must wait for the pinned transaction to commit. See afterCommit. */
+  private committed: Array<() => Promise<void>> = [];
 
   constructor(databaseUrl?: string, tenant?: string) {
     this.databaseUrl =
@@ -134,9 +136,65 @@ export class PgStore implements StorageDriver {
    */
   async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
     if (this.pinned) return fn();
-    return tenantTx(this.pool, this.tenant, async (client: any) => {
-      this.pinned = client;
-      try { return await fn(); } finally { this.pinned = null; }
+    this.committed = [];
+    let result: T;
+    try {
+      result = await tenantTx(this.pool, this.tenant, async (client: any) => {
+        this.pinned = client;
+        try { return await fn(); } finally { this.pinned = null; }
+      });
+    } catch (e) {
+      // Rolled back: nothing the hooks would act on was ever committed.
+      this.committed = [];
+      throw e;
+    }
+    const hooks = this.committed;
+    this.committed = [];
+    // The transaction has committed, so its caller has succeeded whatever a
+    // hook does next.
+    for (const hook of hooks) {
+      try { await hook(); } catch (e) {
+        const { createLogger } = await import('../logger.js');
+        createLogger('pg').warn({ err: e }, 'after-commit work failed');
+      }
+    }
+    return result;
+  }
+  /**
+   * Run `fn` once the data it acts on is committed.
+   *
+   * Object storage is outside the transaction. The ingest purged tombstoned
+   * sessions inside its one transaction and deleted their archive objects on
+   * the spot, so a request that failed after the purge rolled the raw_sessions
+   * rows back and left them naming objects that were gone: every later read of
+   * those sessions failed. Inside withTransaction the work is queued and runs
+   * after COMMIT, and it is dropped on ROLLBACK. Outside one, the caller's own
+   * transaction has already committed, so it runs now.
+   *
+   * A failure in `fn` is logged and does not reach the caller: the data is
+   * committed by then, and the request that committed it has succeeded.
+   */
+  private async afterCommit(fn: () => Promise<void>): Promise<void> {
+    if (this.pinned) { this.committed.push(fn); return; }
+    await fn();
+  }
+  /**
+   * Delete archive objects that no committed row names any more.
+   *
+   * One failure must not abandon the rest, and none fails the caller: an object
+   * left behind serves nobody, because a row is what every read consults.
+   */
+  private async deleteObjectsAfterCommit(keys: string[]): Promise<void> {
+    const store = getObjectStore();
+    if (!store || keys.length === 0) return;
+    await this.afterCommit(async () => {
+      const results = await Promise.allSettled(keys.map((k) => store.delete(k)));
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) {
+        const { createLogger } = await import('../logger.js');
+        const first = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+        createLogger('pg').warn({ err: first.reason, failed, of: keys.length }, 'raw archive: superseded objects not deleted');
+      }
     });
   }
   /** Run `fn` on the pinned client under the viewer of the CURRENT author
@@ -1446,7 +1504,8 @@ export class PgStore implements StorageDriver {
     // session_outcome_cache are visible to a member only through a visible
     // memory_metadata row (author_visibility). With the parent deleted first,
     // their DELETEs matched nothing and raised nothing: on one tenant 392
-    // deleted sessions kept their archives, and self-heal rebuilt them.
+    // deleted sessions kept their archives, and self-heal rebuilt them. The
+    // archive objects those rows name were never deleted either.
     const statements: Array<[table: string, sql: string]> = [
       ['memory_chunks', `DELETE FROM memory_chunks WHERE tenant=$1 AND item_id = ANY($2) AND source_type='session'`],
       // memory_vectors is written by the vector store but carries its own text
@@ -1484,17 +1543,15 @@ export class PgStore implements StorageDriver {
       }
       if (present.has('memory_metadata')) {
         await client.query(
-          `DELETE FROM memory_metadata WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`,
-          [this.t, ids]);
+          `DELETE FROM memory_metadata WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`, [this.t, ids]);
       }
       return objectKeys;
     });
-    // The rows go before the objects, and outside the transaction: a row is
-    // what authorizes and what every read consults, so an object left behind
-    // serves nobody, while a row pointing at a deleted object would fail every
-    // read of that session. One object failure must not abandon the rest.
-    const store = getObjectStore();
-    if (store && keys.length > 0) await Promise.allSettled(keys.map((k) => store.delete(k)));
+    // The objects go after the rows are COMMITTED: a row is what authorizes
+    // and what every read consults, so an object left behind serves nobody,
+    // while a row pointing at a deleted object would fail every read of that
+    // session. Inside the ingest transaction that means after its COMMIT.
+    await this.deleteObjectsAfterCommit(keys);
   }
   /** Tombstone a whole set of sessions in one statement, whatever its size. */
   async addTombstonesMany(sessionIds: string[]): Promise<void> {
