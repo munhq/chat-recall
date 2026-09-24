@@ -18,6 +18,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { createStore } from './index.js';
 import { resetObjectStore, objectStoreFromEnv, ObjectStore, rawObjectKey } from './object-store.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const HAS_OBJECTS = !!process.env.RAW_ARCHIVE_S3_ENDPOINT && !!process.env.RAW_ARCHIVE_S3_BUCKET;
@@ -34,7 +35,10 @@ const TENANT = 'raw-archive-test';
     // A direct connection for the assertions about column state. The store
     // exposes no raw query, and widening its interface for a test would be the
     // wrong direction.
-    sql = new pg.Pool({ connectionString: PG_URL });
+    sql = new pg.Pool({ connectionString: pgAdminUrl() });
+    // The cases assert 'stored' for a first write, so rows a previous run left
+    // on the same database would read back as 'unchanged'.
+    await sql.query(`DELETE FROM raw_sessions WHERE tenant=$1`, [TENANT]);
   }, 60000);
   afterAll(async () => { await store?.close(); await sql?.end(); });
 

@@ -17,6 +17,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const RLS_ROLE = 'cr_decision_test';
@@ -29,7 +30,7 @@ const BOB = 'user-bob';
   let sudo: any; let app: any;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
     const s = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'seed' } as any);
     await s.close();

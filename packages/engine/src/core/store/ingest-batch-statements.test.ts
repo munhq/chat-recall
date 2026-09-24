@@ -18,6 +18,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { MemoryItem, MemoryChunk } from '../../types/memory.js';
 import type { IngestBatch } from './ingest-batch.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const T = 'ingest_stmt_team';
@@ -82,7 +83,7 @@ function batchOf(sessions: number, chunksEach: number): IngestBatch {
   let store: any; let sudo: any;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
     store = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: T } as any);
     for (const t of ['memory_chunks', 'memory_metadata', 'content_cache', 'session_metadata', 'compute_cache', 'secret_findings']) {

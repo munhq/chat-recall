@@ -19,6 +19,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { codeFindingIds } from '../../types/code-intel.js';
+import { pgAdminUrl } from '../../test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const T = 'remap_team';
@@ -45,7 +46,7 @@ const finding = (o: Record<string, unknown> = {}) => ({
     `SELECT id, linked_finding_id, linked_finding_identity FROM team_tasks WHERE tenant=$1 ORDER BY id`, [T])).rows;
 
   beforeAll(async () => {
-    sudo = new pg.Pool({ connectionString: PG_URL });
+    sudo = new pg.Pool({ connectionString: pgAdminUrl() });
     const { createStore } = await import('./index.js');
     const seed = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: 'seed' } as never);
     await seed.close();
