@@ -4,6 +4,48 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-09-24
+
+### Fixed
+- **The collector was OOM-killed every 4 to 5 minutes.** codeindex 0.5 made
+  `codeindex --mcp` a relay onto a shared daemon. The collector closes stdin
+  after it sends its calls, so the relay exited before any reply arrived. Every
+  code scan failed with "codeindex returned no files", and each daemon it had
+  started stayed inside the collector's systemd unit. Eleven of them held about
+  1 GB. The collector now runs codeindex with `CODEINDEX_NO_DAEMON=1`, and on
+  the machine where this was measured it scanned 31 of 31 workspaces with no
+  restart.
+- **Each full sync walk read about 1 GB of transcripts.** A full walk runs at
+  startup and every 15 minutes. It listed every session with a first-prompt
+  preview (467 MB for 10,350 Claude sessions, 423 MB for 236 OpenCode
+  sessions), and then it discarded the previews. The walk now lists sessions
+  without previews and reads 0 MB to do it. The collector's startup peak went
+  from 1,024 MB to 600 MB.
+- **A code scan pass rescanned every workspace.** A workspace whose git HEAD
+  and changed files match its last completed scan is now skipped. An unchanged
+  workspace is still sent again after 7 days.
+- **OpenCode previews could show a later prompt** from the same session. On a
+  database where every part has the same timestamp, the preview now comes from
+  the first user message. The query also stopped loading whole messages into
+  memory: one first message held 107 MB of diffs.
+- **Parsing a transcript ran `realpath` once per record** to find its project.
+  A 10,000-record session made 10,001 `lstat` calls on the same path. Each
+  path is now resolved once.
+
+### Fixed (server)
+- **Deleting a session kept its raw archive, derived data and outcome.** The
+  purge removed the metadata row first. Row-level security then hid the other
+  three tables from the member, so their deletes matched nothing and reported
+  no error.
+- **Self-heal brought deleted sessions back.** It rebuilt a missing session
+  from any archive it found and never checked the tombstone. It now skips a
+  deleted session, and each pass removes whatever an earlier delete left
+  behind, including the archive in object storage.
+- **Sync returned HTTP 500 for a batch containing a session with no author**
+  (`author_write_update` on `memory_metadata`). An append now records the
+  writer as the author of such a row. One bad row used to fail all 50 sessions
+  in its batch.
+
 ## [0.6.8] — 2026-09-14
 
 Everything here came from opening the app on a phone and looking at it. Every
