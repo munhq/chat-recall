@@ -4,6 +4,29 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-09-24
+
+### Fixed
+- **A pull installed MCP servers that cannot run on this machine.** It checked
+  only that the command exists here, and a server started through `npx`,
+  `uvx` or `docker` passes that check on any platform. An Xcode server
+  registered on a Mac was installed into five tools on a Linux PC, where one
+  copy started with every session. Each MCP registration now records the
+  platform of the device it came from, and a pull installs a server only where
+  a device of the same platform registered it. To install one anyway, name it:
+  `chat-recall toolkit pull --mcp <names>`.
+- **Every plugin in the Codex catalog was reported as installed.** chat-recall
+  read `~/.codex/.tmp/plugins/`, which is Codex's copy of its plugin catalog,
+  so the skills and MCP servers of plugins nobody installed were uploaded as
+  yours and pulled onto your other devices. It now reads only the plugins in
+  `~/.codex/plugins/cache/`, the ones Codex installed.
+- **A skill or MCP server you removed came back.** The account kept every
+  toolkit item a device had ever uploaded. Each device now sends the list of
+  skills, MCP servers, commands, agents and plugins it has, and an item leaves
+  the account when no device has it any more. An item another device still
+  has stays. On the machine where this was measured, the first sync removed
+  832 items that only that machine had ever reported.
+
 ## [0.7.3] — 2026-09-24
 
 ### Fixed (server)
