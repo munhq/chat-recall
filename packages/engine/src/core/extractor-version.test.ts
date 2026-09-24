@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VERSION } from './extractor-version.js';
+import { extractorVersionForTool, extractorVersionForId, extractorVersionForItem, toolOfId, EXTRACTOR_VERSION } from './extractor-version.js';
 
 describe('toolOfId — works for item ids (plans/tasks), not just sessions', () => {
   test('derives the tool from the id prefix', () => {
@@ -40,5 +40,18 @@ describe('per-tool extractor version', () => {
     const rowV = EXTRACTOR_VERSION; // what every session recorded before the bumps
     expect(rowV < extractorVersionForTool('claude')).toBe(true);   // re-ship
     expect(rowV < extractorVersionForTool('agy')).toBe(true);     // re-ship
+  });
+});
+
+describe('extractorVersionForItem — a per-tool source bump re-ships that tool alone', () => {
+  // The Codex sources started reading installed plugins. Their items were
+  // never uploaded and are older than the last sync, so only a version bump
+  // ships them, and it must not re-ship every other tool's skills.
+  test("codex skills and plugins sit one above other tools' skills and plugins", () => {
+    const base = (id: string, t: string) => extractorVersionForTool(toolOfId(id)) + (t === 'mcp' ? 2 : 1);
+    expect(extractorVersionForItem('codex_skill_x', 'skill')).toBe(base('codex_skill_x', 'skill') + 1);
+    expect(extractorVersionForItem('codex_plugin_x', 'plugin')).toBe(extractorVersionForTool('codex') + 1);
+    expect(extractorVersionForItem('claude_skill_x', 'skill')).toBe(base('claude_skill_x', 'skill'));
+    expect(extractorVersionForItem('codex_mcp_x', 'mcp')).toBe(base('codex_mcp_x', 'mcp'));
   });
 });
