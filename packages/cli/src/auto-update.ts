@@ -14,12 +14,12 @@
  * The decision + checksum logic is pure; the side effects (download/install/
  * restart) are injected so they can be validated without a real global install.
  */
-import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execSync, execFileSync } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
 import { writeFileSync, mkdtempSync, rmSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { join, dirname, sep } from 'node:path';
+import { join, dirname, sep, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
@@ -268,9 +268,11 @@ export function runningPrefix(moduleUrl = import.meta.url): string | null {
  * appended to the error, trimmed, because that string is carried to the server
  * in an `auto_update_failed` event and must stay small.
  */
-function npmInstall(cmd: string): void {
+function npmInstall(npm: NpmCommand, args: string[]): void {
   try {
-    execSync(cmd, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const opts = { stdio: ['ignore', 'ignore', 'pipe'] as ('ignore' | 'pipe')[], env: npm.env };
+    if (npm.shell) execSync([npm.file, ...npm.args, ...args].map((a) => `"${a}"`).join(' '), opts);
+    else execFileSync(npm.file, [...npm.args, ...args], opts);
   } catch (e) {
     const err = e as { stderr?: Buffer | string; message?: string };
     const detail = String(err.stderr ?? '').trim().split('\n')
@@ -280,14 +282,74 @@ function npmInstall(cmd: string): void {
   }
 }
 
+export interface NpmCommand {
+  /** Executable to spawn. */
+  file: string;
+  /** Arguments that come before npm's own (the npm-cli.js path when `file` is node). */
+  args: string[];
+  /** Environment for the child, with the running node's directory first on PATH. */
+  env: NodeJS.ProcessEnv;
+  /** Run through the shell: a bare `npm` resolved from PATH (npm.cmd on Windows). */
+  shell: boolean;
+}
+
+export interface NpmLocation {
+  execPath: string;
+  prefix: string | null;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  exists: (p: string) => boolean;
+}
+
+/**
+ * The npm that belongs to the node running this process.
+ *
+ * A macOS collector ran `npm install -g --prefix "/opt/homebrew" …` and failed
+ * 5,769 times from 2026-09-02 to 2026-09-24. launchd starts an agent with
+ * PATH=/usr/bin:/bin:/usr/sbin:/sbin and the plist sets no PATH, so `/bin/sh`
+ * found no `npm`: Homebrew installs it in /opt/homebrew/bin. The same install
+ * from a terminal worked: that device went 0.5.30 → 0.5.31 → 0.5.32 in 82
+ * seconds on 2026-09-01, by hand, after 318 failed attempts by the daemon.
+ *
+ * So npm is found from process.execPath and the prefix this copy runs from, and
+ * it runs as `node npm-cli.js`. The npm launcher script starts with
+ * `#!/usr/bin/env node`, which fails the same way under the launchd PATH. The
+ * running node's directory also goes first on the child's PATH, for anything
+ * npm spawns. A bare `npm` from PATH is the last candidate.
+ */
+export function resolveNpm(loc: NpmLocation): NpmCommand {
+  const win = loc.platform === 'win32';
+  const p = win ? pathWin32 : pathPosix;
+  const nodeDir = p.dirname(loc.execPath);
+  const cliUnder = (root: string) => win
+    ? p.join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    : p.join(root, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const candidates = [
+    cliUnder(win ? nodeDir : p.join(nodeDir, '..')),
+    ...(loc.prefix ? [cliUnder(loc.prefix)] : []),
+  ];
+
+  // Windows keeps the variable as `Path`; write back to the key that exists.
+  const pathKey = Object.keys(loc.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  const binDirs = [nodeDir, ...(loc.prefix ? [win ? loc.prefix : p.join(loc.prefix, 'bin')] : [])];
+  const delimiter = win ? ';' : ':';
+  const current = loc.env[pathKey] ?? '';
+  const env = { ...loc.env, [pathKey]: [...binDirs, ...(current ? [current] : [])].join(delimiter) };
+
+  const cli = candidates.find((c) => loc.exists(c));
+  if (cli) return { file: loc.execPath, args: [cli], env, shell: false };
+  return { file: 'npm', args: [], env, shell: true };
+}
+
 function realInstall(tgz: string): void {
   const prefix = runningPrefix();
+  const npm = resolveNpm({ execPath: process.execPath, prefix, platform: process.platform, env: process.env, exists: existsSync });
   if (prefix) {
-    npmInstall(`npm install -g --prefix "${prefix}" "${tgz}"`);
+    npmInstall(npm, ['install', '-g', '--prefix', prefix, tgz]);
     return;
   }
-  try { npmInstall(`npm install -g "${tgz}"`); }
-  catch { npmInstall(`npm install -g --prefix "${process.env.HOME}/.local" "${tgz}"`); }
+  try { npmInstall(npm, ['install', '-g', tgz]); }
+  catch { npmInstall(npm, ['install', '-g', '--prefix', join(homedir(), '.local'), tgz]); }
 }
 function realRestart(platform: NodeJS.Platform): void {
   if (platform === 'linux') execSync('systemctl --user restart chat-recall-watch.service', { stdio: 'ignore' });

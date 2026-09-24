@@ -7,7 +7,7 @@
  * tests pin the three behaviours that stop that happening again.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,5 +91,49 @@ describe('recovery', () => {
     process.env.CHAT_RECALL_DATA_DIR = join(dir, 'does', 'not', 'exist');
     expect(readUpdateState()).toEqual({});
     expect(hasGivenUpOn('0.6.4')).toBe(false);
+  });
+});
+
+// The whole flow, with an install that always fails. The 0.5.32 collector had
+// no brake and ran this 5,769 times. Here the fourth and later ticks must not
+// download or install, and only three events reach the server.
+describe('runAutoUpdate applies the brake', () => {
+  test('three failed installs, one "giving up" event, then no more attempts', async () => {
+    vi.resetModules();
+    const reported: string[] = [];
+    vi.doMock('./client-events.js', () => ({
+      reportClientEvent: (_kind: string, opts: { message?: string } = {}) => { reported.push(opts.message ?? ''); },
+    }));
+    const realFetch = globalThis.fetch;
+    try {
+      const { runAutoUpdate } = await import('./auto-update.js');
+      const bytes = Buffer.from('tarball');
+      let downloads = 0;
+      let installs = 0;
+      const deps = {
+        download: async () => { downloads++; return bytes; },
+        install: () => { installs++; throw new Error('Command failed: npm install -g'); },
+        restart: () => {},
+      };
+      // The checksum must match or the install step is never reached.
+      const { createHash } = await import('node:crypto');
+      globalThis.fetch = (async () => ({
+        ok: true, status: 200,
+        json: async () => ({ edition: 'cloud', cli: { version: '99.0.0', sha256: createHash('sha256').update(bytes).digest('hex') } }),
+      })) as unknown as typeof fetch;
+
+      for (let i = 0; i < 10; i++) await runAutoUpdate('https://recall.example.com', {}, '0.5.32', deps);
+
+      expect(installs).toBe(3);
+      expect(downloads).toBe(3);
+      expect(reported).toHaveLength(3);
+      expect(reported[0]).toContain('attempt 1 of 3');
+      expect(reported[2]).toContain('giving up after 3 attempts');
+      const last = await runAutoUpdate('https://recall.example.com', {}, '0.5.32', deps);
+      expect(last.reason).toMatch(/gave up installing 99\.0\.0/);
+    } finally {
+      globalThis.fetch = realFetch;
+      vi.doUnmock('./client-events.js');
+    }
   });
 });
