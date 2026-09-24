@@ -44,8 +44,48 @@ async function setScopeGucs(c: any, tenant: string): Promise<void> {
   // checkouts. The '*' sentinel means "no author context → a worker/CLI → see
   // the whole tenant"; a real request sets the viewer's sub (or '' for a
   // null-sub self-host request, which then sees only NULL-author rows).
+  const viewer = viewerGuc();
+  await c.query("SELECT set_config('app.viewer', $1, true)", [viewer]);
+  viewerOf.set(c, viewer);
+}
+
+/** The `app.viewer` value for the current author context: '*' with no author
+ *  (worker, CLI, runUnrestricted), '' for an author with no sub, else the sub. */
+export function viewerGuc(): string {
   const viewer = currentViewer();
-  await c.query("SELECT set_config('app.viewer', $1, true)", [viewer === undefined ? '*' : (viewer ?? '')]);
+  return viewer === undefined ? '*' : (viewer ?? '');
+}
+
+/** The `app.viewer` each client's open transaction holds now. */
+const viewerOf = new WeakMap<object, string>();
+
+/**
+ * Run `fn` on an OPEN transaction's client with `app.viewer` matching the
+ * CURRENT author context, then put back the value the client held before.
+ *
+ * The GUC is transaction-local, so an open transaction keeps the viewer it was
+ * opened with. runUnrestricted() changes only the async context that a NEW
+ * transaction reads, and inside an open one it did nothing: the ingest
+ * transaction wrote its links under the member's viewer and every sync failed
+ * the RESTRICTIVE author_visibility policy.
+ *
+ * A nested call under the same context is a no-op, so an elevated section that
+ * calls another store method stays elevated to its end.
+ *
+ * The restore runs only when `fn` succeeds. After a failure the transaction is
+ * aborted, every statement on it fails, and a restore would replace the real
+ * error with 25P02.
+ */
+export async function withViewerOn<T>(client: any, fn: () => Promise<T>): Promise<T> {
+  const want = viewerGuc();
+  const prev = viewerOf.get(client);
+  if (prev === undefined || prev === want) return fn();
+  await client.query("SELECT set_config('app.viewer', $1, true)", [want]);
+  viewerOf.set(client, want);
+  const r = await fn();
+  await client.query("SELECT set_config('app.viewer', $1, true)", [prev]);
+  viewerOf.set(client, prev);
+  return r;
 }
 
 /** Open (and cache) a connection pool. Pure — NO schema/DDL side effect, so it

@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { tenantQuery, tenantTx, bulkInsert, tenantQueryRo } from './pg-pool.js';
+import { tenantQuery, tenantTx, bulkInsert, tenantQueryRo, withViewerOn } from './pg-pool.js';
 import { writeSessionMetaRows, readStaleMarkers, writeComputeRows } from './caches.js';
 import { isEmptyBatch, type IngestBatch, type IngestCounts } from './ingest-batch.js';
 import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../../types/code-intel.js';
@@ -139,15 +139,22 @@ export class PgStore implements StorageDriver {
       try { return await fn(); } finally { this.pinned = null; }
     });
   }
+  /** Run `fn` on the pinned client under the viewer of the CURRENT author
+   *  context, so a runUnrestricted() call inside the transaction elevates the
+   *  statements it makes, and only those. See withViewerOn. */
+  private onPinned<T>(fn: (client: any) => Promise<T>): Promise<T> {
+    const client = this.pinned;
+    return withViewerOn(client, () => fn(client));
+  }
   /** A client for a multi-statement write: the pinned one when a transaction is
    *  already open, else a fresh transaction of its own. */
   private async tx<T>(fn: (client: any) => Promise<T>): Promise<T> {
-    if (this.pinned) return fn(this.pinned);
+    if (this.pinned) return this.onPinned(fn);
     return tenantTx(this.pool, this.tenant, fn);
   }
 
   private async q(sql: string, params: unknown[] = []): Promise<any[]> {
-    if (this.pinned) return (await this.pinned.query(sql, params)).rows;
+    if (this.pinned) return this.onPinned(async (c) => (await c.query(sql, params)).rows);
     const r = await tenantQuery(this.pool, this.tenant, sql, params);
     return r.rows;
   }
@@ -158,7 +165,7 @@ export class PgStore implements StorageDriver {
     // is a different server and cannot see rows this transaction has written
     // but not committed, so routing there mid-transaction would read a state
     // the caller has already moved past.
-    if (this.pinned) return (await this.pinned.query(sql, params)).rows;
+    if (this.pinned) return this.onPinned(async (c) => (await c.query(sql, params)).rows);
     // Falls back to the primary when the replica goes away MID-LIFE, not only
     // when it was already down at init — see tenantQueryRo.
     const r = await tenantQueryRo(this.roPool, this.pool, this.tenant, sql, params);
@@ -951,14 +958,18 @@ export class PgStore implements StorageDriver {
 
     const markerSessions = [...new Set((batch.compute ?? []).filter((c) => c.kind === 'markers').map((c) => c.sessionId))];
 
-    // UNRESTRICTED for the whole batch: compute_cache and memory_links carry a
-    // SELECT policy that PostgreSQL applies as the WITH CHECK of an upsert, so
+    // The batch runs as the MEMBER. Metadata, chunks, session metadata and
+    // findings are stamped with currentAuthor() and carry an author-write-guard
+    // (author_sub = app.viewer), so under the '*' context they were stamped NULL
+    // and failed author_write_insert inside the ingest transaction.
+    //
+    // Steps 7 and 8 alone run unrestricted: compute_cache and memory_links carry
+    // a SELECT policy that PostgreSQL applies as the WITH CHECK of an upsert, so
     // a row for a session whose metadata is not visible to this viewer would
     // fail with 42501 and take the entire request with it. Neither table has an
     // author-write-guard, and reads keep the member's real viewer, so this
-    // makes nothing newly visible — the same reasoning as setCompute and
-    // addLink, applied once instead of per statement.
-    await runUnrestricted(() => this.tx(async (client) => {
+    // makes nothing newly visible — the same reasoning as setCompute and addLink.
+    await this.tx(async (client) => {
       // 1. Metadata rows. FIRST: this clears the cached summary of every
       //    session it writes, and step 3 puts the new summaries back.
       if (batch.items?.length) await this.writeItemRows(client, batch.items);
@@ -981,14 +992,20 @@ export class PgStore implements StorageDriver {
       if (batch.findings?.length) counts.findings += await this.writeFindingRows(client, batch.findings);
 
       // 7. Derived computations, with the markers shrink guard read once.
-      if (batch.compute?.length) {
-        const stale = await readStaleMarkers(client, this.t, markerSessions);
-        counts.computeOffered += await writeComputeRows(client, this.t, batch.compute, stale);
-      }
+      const compute = batch.compute ?? [];
+      const links = batch.links ?? [];
+      if (compute.length || links.length) {
+        await runUnrestricted(() => withViewerOn(client, async () => {
+          if (compute.length) {
+            const stale = await readStaleMarkers(client, this.t, markerSessions);
+            counts.computeOffered += await writeComputeRows(client, this.t, compute, stale);
+          }
 
-      // 8. Links between items.
-      if (batch.links?.length) await this.writeLinkRows(client, batch.links);
-    }));
+          // 8. Links between items.
+          if (links.length) await this.writeLinkRows(client, links);
+        }));
+      }
+    });
     return counts;
   }
 

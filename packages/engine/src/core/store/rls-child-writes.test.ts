@@ -248,6 +248,77 @@ describe('a session-keyed child row written before its parent', () => {
     // sync; this assertion is what makes a fourth omission a red test.
   });
 
+  pgTest('the sync ingest writes a batch inside its one transaction, stamped with its author', async () => {
+    // The shape of POST /api/sync since the ingest became one transaction:
+    // withTransaction() opens a pinned client whose app.viewer is the member's
+    // sub, and writeIngestBatch() runs on it. Production failed every sync this
+    // way, for every tenant:
+    //   new row violates row-level security policy "author_write_insert" for table "memory_metadata"
+    //   new row violates row-level security policy "author_visibility" for table "memory_links"
+    const tenant = `rls_ingest_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'ingest-author', device: 'dev-1' }, () => store.withTransaction(async () => {
+        await store.writeIngestBatch({
+          items: [{
+            id: 'sess-ingest', sourceType: 'session', title: 'ingest',
+            projectPath: '/home/user/code/example', projectId: 'example-app',
+            filePath: '', mtime: 1, contentPreview: 'first prompt',
+          }],
+          chunks: [{
+            chunkId: 'sess-ingest_user_0', itemId: 'sess-ingest', sourceType: 'session', title: 'ingest',
+            text: 'first prompt', chunkType: 'user', projectPath: '/home/user/code/example',
+            projectId: 'example-app', filePath: '', mtime: 1,
+          } as any],
+          sessionMeta: [{ sessionId: 'sess-ingest', firstPrompt: 'first prompt', summary: '', summarySource: 'original', mtime: 1, indexedAt: 1 } as any],
+          compute: [{ sessionId: 'sess-ingest', kind: 'markers', mtime: 1, data: { prompts: ['a'] } }],
+          findings: [{ sessionId: 'sess-ingest', findings: [{ detector: 'd', rule: 'r', line: 1, preview: 'p' }] }],
+          // The target is not in this batch and not visible to the writer.
+          links: [{ sourceType: 'session', sourceId: 'sess-ingest', targetType: 'plan', targetId: 'plan-elsewhere', linkType: 'session_plan', confidence: 1 } as any],
+        });
+      }));
+      const authors = (await admin.query(
+        `SELECT 'memory_metadata' AS t, author_sub FROM memory_metadata WHERE tenant=$1
+         UNION ALL SELECT 'memory_chunks', author_sub FROM memory_chunks WHERE tenant=$1
+         UNION ALL SELECT 'session_metadata', author_sub FROM session_metadata WHERE tenant=$1
+         UNION ALL SELECT 'secret_findings', author_sub FROM secret_findings WHERE tenant=$1
+         ORDER BY 1`, [tenant])).rows;
+      expect(authors).toEqual([
+        { t: 'memory_chunks', author_sub: 'ingest-author' },
+        { t: 'memory_metadata', author_sub: 'ingest-author' },
+        { t: 'secret_findings', author_sub: 'ingest-author' },
+        { t: 'session_metadata', author_sub: 'ingest-author' },
+      ]);
+      const links = await admin.query(`SELECT count(*)::int AS n FROM memory_links WHERE tenant=$1`, [tenant]);
+      expect(links.rows[0].n).toBe(1);
+    } finally {
+      await store.close();
+    }
+  });
+
+  pgTest('runUnrestricted raises the viewer inside an open transaction, and puts it back', async () => {
+    // addLinks() elevates with runUnrestricted(). Inside withTransaction() no new
+    // transaction opens, so the elevation must reach the pinned client's GUC.
+    const tenant = `rls_pinned_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'pinned-author', device: 'dev-1' }, () => store.withTransaction(async () => {
+        await store.addLinks([{ sourceType: 'session', sourceId: 'sess-a', targetType: 'plan', targetId: 'plan-b', linkType: 'session_plan', confidence: 1 } as any]);
+        // Back under the member's viewer: another author's row stays hidden.
+        await store.setItem({ id: 'sess-mine', sourceType: 'session', title: 'mine', projectPath: '/p', projectId: 'p', filePath: '', mtime: 1, contentPreview: 'x' });
+      }));
+      await admin.query(`UPDATE memory_metadata SET author_sub='someone-else' WHERE tenant=$1 AND id='sess-mine'`, [tenant]);
+      const hidden = await runWithAuthor({ sub: 'pinned-author', device: 'dev-1' },
+        () => store.withTransaction(async () => {
+          await store.addLinks([{ sourceType: 'session', sourceId: 'sess-a', targetType: 'plan', targetId: 'plan-c', linkType: 'session_plan', confidence: 1 } as any]);
+          return store.getItem('sess-mine', 'session');
+        }));
+      expect(hidden).toBeNull();
+    } finally {
+      await store.close();
+    }
+  });
+
   pgTest('THE PROTECTION IS INTACT: elevating the write did not widen any READ', async () => {
     // The whole safety argument for runUnrestricted is that it elevates a WRITE
     // and leaves reads gated. If that were wrong, this is where it shows: a
