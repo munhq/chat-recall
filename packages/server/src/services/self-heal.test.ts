@@ -152,6 +152,19 @@ describe('healSessionFromArchive', () => {
     // Idempotent: a second sweep doesn't double-enqueue (dedup vs pending).
     const r2 = await selfHealTenant(store, { sinceMs: 0, dryRun: false });
     expect(r2.recheckEnqueued).toBe(0);
+
+    // Answered: the client acked the recheck. The session still has no archive
+    // (the client omits the archive of a large session), and the sweep must not
+    // ask the same question again every hour.
+    const intent = (await store.listPendingSyncIntents(undefined, 100)).find((p) => p.kind === 'recheck_session' && p.name === id)!;
+    await store.ackSyncIntent(intent.id, 'done', JSON.stringify({ status: 'already-full' }));
+    const r3 = await selfHealTenant(store, { sinceMs: 0, dryRun: false });
+    expect(r3.recheckEnqueued).toBe(0);
+
+    // The transcript changed after the answer, so the question is new.
+    await store.setCachedContent(id, 'session', Date.now() + 60_000, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: [{ line: 1, role: 'user', content: 'thin' }], subagents: [], o: 0 }));
+    const r4 = await selfHealTenant(store, { sinceMs: 0, dryRun: false });
+    expect(r4.recheckEnqueued).toBe(1);
     await store.close();
   });
 

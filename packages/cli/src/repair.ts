@@ -134,6 +134,16 @@ export async function repairSession(id: string, opts: { dryRun?: boolean; force?
     };
   }
 
+  // Nothing to recover when every server already holds at least the fullest
+  // archive. The rebuild below also unions the on-disk tail, and the normal
+  // sync ships that tail, so skipping here loses nothing. The rebuild costs
+  // about 18 times the transcript in memory: 1.17 GB RSS for a 42 MB session,
+  // over the collector's 1 GB MemoryHigh, for a recheck that returned
+  // 'already-full' every time.
+  if (!opts.force && endpoints.every((ep) => (currentOnServer.get(ep.url) ?? 0) >= fullest.messages)) {
+    return { sessionId: id, status: 'already-full', fullestMessages: fullest.messages, fullestSource: fullest.source, pushed: [] };
+  }
+
   // Seed the shadow so the sync builder reads the recovered-full transcript.
   // buildConversationSync then re-exports the CURRENT disk file and unions it
   // with this seed via the shadow, so the rebuilt conversation is the true

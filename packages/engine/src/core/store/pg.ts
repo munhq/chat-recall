@@ -1647,6 +1647,9 @@ export class PgStore implements StorageDriver {
       `SELECT c.id FROM content_cache c
        WHERE c.tenant=$1 AND c.source_type='session' AND c.mtime >= $2
          AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.tenant=$1 AND r.session_id = c.id)
+         AND NOT EXISTS (SELECT 1 FROM sync_intents i
+                         WHERE i.tenant=$1 AND i.kind='recheck_session' AND i.name = c.id
+                           AND i.created_at >= c.mtime)
        ORDER BY c.mtime DESC LIMIT $3`,
       [this.t, Math.floor(sinceMs) || 0, limit]);
     return rows.map((r: any) => r.id);
