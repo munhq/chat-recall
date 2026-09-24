@@ -51,7 +51,7 @@ import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
-import { orderByStaleness, noteIndexed, pruneCursor } from '../src/code-index-cursor.js';
+import { orderByStaleness, noteIndexed, pruneCursor, readCursor, workspaceFingerprint, isUnchangedSinceIndexed } from '../src/code-index-cursor.js';
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { daemonLog } from '../src/daemon-log.js';
 import { record, flush } from '../src/telemetry.js';
@@ -913,12 +913,18 @@ async function codeIndexTick(): Promise<void> {
     // silently marked done.
     pruneCursor(discovered);
     const workspaces = orderByStaleness(discovered);
-    const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine/core/code/collector.js');
+    const { collectCode, resolveCodeindexBin, COLLECTOR_VERSION } = await import('@chat-recall/engine/core/code/collector.js');
     let bin: string;
     try { bin = await resolveCodeindexBin(true); }   // resolve/install codeindex once per pass
     catch (e) { daemonLog.error(`code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
-    let ok = 0;
+    let ok = 0, unchanged = 0;
+    const cursor = readCursor();
     for (const ws of workspaces) {
+      // A workspace whose code did not change since its last completed scan
+      // gives the same result again. Every restart used to start a pass that
+      // rescanned all of them.
+      const fp = workspaceFingerprint(ws, COLLECTOR_VERSION);
+      if (isUnchangedSinceIndexed(ws, fp, cursor)) { unchanged++; continue; }
       // Per-workspace log line — when this tick OOMs or hangs, the log names
       // WHERE. (The 2026-07-03 crash hunt had to reconstruct this from GC
       // timestamps; never again.)
@@ -937,10 +943,10 @@ async function codeIndexTick(): Promise<void> {
       }
       // Completed: this workspace goes to the back of the queue so the next
       // sweep — or the next restart — moves on to one that has waited longer.
-      noteIndexed(ws);
+      noteIndexed(ws, Date.now(), fp);
       ok++;
     }
-    if (ok > 0) daemonLog.info(`code intelligence: indexed ${ok}/${workspaces.length} workspace(s)`);
+    if (ok > 0 || unchanged > 0) daemonLog.info(`code intelligence: indexed ${ok}/${workspaces.length} workspace(s), ${unchanged} unchanged`);
   } finally {
     codeIndexInFlight = false;
   }
