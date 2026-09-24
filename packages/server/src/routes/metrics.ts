@@ -171,60 +171,74 @@ async function collectCapacity(pool: any, slugs: string[]) {
 
 /**
  * Fleet health from client_events — failures reported, and collectors that
- * stopped reporting at all.
+ * stopped reporting at all. client_events carries no user content — kind,
+ * tool, CLI version, OS, an opaque device id and a redacted message.
  *
- * NOT per tenant, and deliberately: this answers an operator's question ("is
- * anyone's collector dead?"), so it reads across every tenant in one pass
- * rather than looping. client_events carries no user content — kind, tool,
- * CLI version, OS, an opaque device id and a redacted message.
+ * Summed per tenant inside each tenant's RLS context, like collectCapacity.
+ * client_events is RLS-scoped by `app.tenant`, and the server's role is subject
+ * to RLS. One cross-tenant read with no tenant set saw no rows, so active,
+ * stale and every failure count read 0. A device reports under one tenant, so
+ * the per-tenant device counts add up.
  *
  * A dead collector cannot report its own death, so `stale` is measured by
  * ABSENCE: a device that reported inside the last 7 days and has said nothing
  * for 6 hours. Bounding it to 7 days keeps a machine that was retired months
  * ago from alerting forever.
  */
-export async function collectFleetHealth(pool: any): Promise<{ failures: Record<string, number>; active: number; stale: number }> {
+export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ failures: Record<string, number>; active: number; stale: number }> {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const failures: Record<string, number> = {};
   let active = 0, stale = 0;
   try {
-    const f = await pool.query(
-      `SELECT kind, count(*)::int AS n FROM client_events
-        WHERE ts > $1 AND kind IN ('auto_update_failed','breaker_trip','target_failure','mcp_crash','oversized_session')
-        GROUP BY kind`, [now - day]);
-    for (const r of f.rows) failures[r.kind] = Number(r.n);
+    for (const t of slugs) {
+      let f: { rows: Array<{ kind: string; n: number }> };
+      let d: { rows: Array<{ active: string; stale: string }> };
+      try {
+        f = await tenantQuery(pool, t,
+          `SELECT kind, count(*)::int AS n FROM client_events
+            WHERE tenant=$1 AND ts > $2
+              AND kind IN ('auto_update_failed','breaker_trip','target_failure','mcp_crash','oversized_session')
+            GROUP BY kind`, [t, now - day], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS });
 
-    // Two windows, because two kinds of device report differently.
-    //
-    // A collector on a version that sends collector_heartbeat beats every 5
-    // minutes whether or not it had work, so 30 minutes of silence is already
-    // a fault. One on an older version is only heard from when a sync happens,
-    // so it needs a window wide enough for a closed laptop -- 6 hours -- and
-    // that wait is the reason the heartbeat exists.
-    //
-    // last_beat is NULL for a device that has never sent one, and the COALESCE
-    // puts it on the older, wider rule rather than alerting immediately.
-    // Every parameter here is REFERENCED. Postgres cannot infer a type for one
-    // that is not, so a spare in the array fails the whole statement with
-    // 42P18 "could not determine data type of parameter $N" — which this query
-    // did, on every scrape, for as long as the pod had been up. Fleet health
-    // was never recorded and the only sign was a warn line the catch below
-    // swallowed by design.
-    const d = await pool.query(
-      `SELECT
-         count(*) FILTER (WHERE last_ts > $1) AS active,
-         count(*) FILTER (
-           WHERE last_ts > $3
-             AND CASE WHEN last_beat IS NOT NULL THEN last_beat <= $4 ELSE last_ts <= $2 END
-         ) AS stale
-       FROM (SELECT device_id,
-                    max(ts) AS last_ts,
-                    max(ts) FILTER (WHERE kind = 'collector_heartbeat') AS last_beat
-               FROM client_events WHERE device_id <> '' GROUP BY device_id) d`,
-      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day, now - 30 * 60 * 1000]);
-    active = Number(d.rows[0]?.active ?? 0);
-    stale = Number(d.rows[0]?.stale ?? 0);
+        // Two windows, because two kinds of device report differently.
+        //
+        // A collector on a version that sends collector_heartbeat beats every 5
+        // minutes whether or not it had work, so 30 minutes of silence is already
+        // a fault. One on an older version is only heard from when a sync happens,
+        // so it needs a window wide enough for a closed laptop -- 6 hours -- and
+        // that wait is the reason the heartbeat exists.
+        //
+        // last_beat is NULL for a device that has never sent one, and the CASE
+        // puts it on the older, wider rule rather than alerting immediately.
+        // Every parameter here is REFERENCED. Postgres cannot infer a type for one
+        // that is not, so a spare in the array fails the whole statement with
+        // 42P18 "could not determine data type of parameter $N" — which this query
+        // did, on every scrape, for as long as the pod had been up. Fleet health
+        // was never recorded and the only sign was a warn line the catch below
+        // swallowed by design.
+        d = await tenantQuery(pool, t,
+          `SELECT
+             count(*) FILTER (WHERE last_ts > $2) AS active,
+             count(*) FILTER (
+               WHERE last_ts > $4
+                 AND CASE WHEN last_beat IS NOT NULL THEN last_beat <= $5 ELSE last_ts <= $3 END
+             ) AS stale
+           FROM (SELECT device_id,
+                        max(ts) AS last_ts,
+                        max(ts) FILTER (WHERE kind = 'collector_heartbeat') AS last_beat
+                   FROM client_events WHERE tenant=$1 AND device_id <> '' GROUP BY device_id) d`,
+          [t, now - day, now - 6 * 60 * 60 * 1000, now - 7 * day, now - 30 * 60 * 1000],
+          { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS });
+      } catch (e) {
+        if (!isLockContention(e)) throw e;
+        log.warn({ tenant: t }, 'fleet health: skipped a tenant waiting on a lock');
+        continue;
+      }
+      for (const r of f.rows) failures[r.kind] = (failures[r.kind] ?? 0) + Number(r.n);
+      active += Number(d.rows[0]?.active ?? 0);
+      stale += Number(d.rows[0]?.stale ?? 0);
+    }
   } catch (e) {
     // Never void a scrape for this. Capacity and pool gauges are the ones that
     // page; fleet health is a diagnosis aid and can be a tick late.
@@ -408,7 +422,7 @@ router.get('/', async (req, res) => {
     gSecretFindingsVerified.set(cap.verified);
     gTenants.set(slugs.length);
 
-    const fleet = await collectFleetHealth(pool);
+    const fleet = await collectFleetHealth(pool, slugs);
     gClientFailures24h.reset();   // a kind that stopped happening must go to 0, not keep its last value
     for (const [kind, n] of Object.entries(fleet.failures)) gClientFailures24h.labels(kind).set(n);
     gCollectorsActive.set(fleet.active);

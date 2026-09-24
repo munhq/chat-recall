@@ -19,30 +19,40 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { collectFleetHealth } from './metrics.js';
+import { pgAdminUrl } from '@chat-recall/engine/test-support/pg-urls.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 
+// The two devices report under different tenants. client_events is RLS-scoped
+// by tenant, so the query must count inside each one and add them up.
+const TENANTS = ['default', 'fleet_other'];
+
 (PG_URL ? describe : describe.skip)('the fleet-health query', () => {
   let pool: any;
+  // Seeds and cleans past RLS: client_events is tenant-walled, and these rows
+  // stand for devices in any tenant.
+  let admin: any;
 
   beforeAll(async () => {
     pool = new pg.Pool({ connectionString: PG_URL });
-    await pool.query(`CREATE TABLE IF NOT EXISTS client_events (
+    admin = new pg.Pool({ connectionString: pgAdminUrl() });
+    await admin.query(`CREATE TABLE IF NOT EXISTS client_events (
       tenant TEXT NOT NULL DEFAULT 'default', device_id TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL, ts BIGINT NOT NULL, payload JSONB NOT NULL DEFAULT '{}')`);
-    await pool.query(`DELETE FROM client_events WHERE device_id IN ('laptop','desktop')`);
+    await admin.query(`DELETE FROM client_events WHERE device_id IN ('laptop','desktop')`);
     const now = Date.now();
-    await pool.query(
-      `INSERT INTO client_events (device_id, kind, ts) VALUES
-        ('laptop','collector_heartbeat',$1), ('laptop','sync',$1),
-        ('desktop','collector_heartbeat',$2), ('desktop','sync',$2),
-        ('laptop','breaker_trip',$1)`,
+    await admin.query(
+      `INSERT INTO client_events (tenant, device_id, kind, ts) VALUES
+        ('default','laptop','collector_heartbeat',$1), ('default','laptop','sync',$1),
+        ('fleet_other','desktop','collector_heartbeat',$2), ('fleet_other','desktop','sync',$2),
+        ('default','laptop','breaker_trip',$1)`,
       [now - 60_000, now - 3 * 60 * 60 * 1000]);
   }, 30000);
 
   afterAll(async () => {
-    try { await pool.query(`DELETE FROM client_events WHERE device_id IN ('laptop','desktop')`); } catch { /* best effort */ }
+    try { await admin.query(`DELETE FROM client_events WHERE device_id IN ('laptop','desktop')`); } catch { /* best effort */ }
     await pool?.end();
+    await admin?.end();
   });
 
   test('THE FAILURE: the query runs, so the panel gets numbers', async () => {
@@ -51,19 +61,19 @@ const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
     // query. The only observable difference between a query that ran and one
     // that died is whether the counts are real. Verified by reintroducing the
     // spare parameter: this test fails, a resolves-assertion does not.
-    const r = await collectFleetHealth(pool);
+    const r = await collectFleetHealth(pool, TENANTS);
     expect(r.active, 'zero active devices means the query never ran').toBeGreaterThan(0);
   });
 
   test('it counts an active device and the failures it reported', async () => {
-    const r = await collectFleetHealth(pool);
+    const r = await collectFleetHealth(pool, TENANTS);
     expect(r.active).toBeGreaterThanOrEqual(2);
     expect(r.failures.breaker_trip).toBeGreaterThanOrEqual(1);
   });
 
   test('a device whose heartbeat stopped is stale, one beating now is not', async () => {
     // desktop last beat 3h ago against a 30-minute rule; laptop beat a minute ago.
-    const r = await collectFleetHealth(pool);
+    const r = await collectFleetHealth(pool, TENANTS);
     expect(r.stale).toBeGreaterThanOrEqual(1);
   });
 });
