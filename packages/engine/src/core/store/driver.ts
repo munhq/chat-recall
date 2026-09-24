@@ -312,6 +312,7 @@ export interface StorageDriver {
   listPendingSyncIntents: AsyncMethod<MemoryStore['listPendingSyncIntents']>;
   listAllPendingSyncIntents: AsyncMethod<MemoryStore['listAllPendingSyncIntents']>;
   ackSyncIntent: AsyncMethod<MemoryStore['ackSyncIntent']>;
+  expireStaleSyncIntents: AsyncMethod<MemoryStore['expireStaleSyncIntents']>;
   listSyncIntents: AsyncMethod<MemoryStore['listSyncIntents']>;
 
   // ── code intelligence (codeindex merge) ──
