@@ -12,6 +12,7 @@
  * a CLI that exactly matches its own server version, and self-hosters get a
  * working installer with zero registry dependencies.
  */
+import { cliRelease } from '../util/cli-release.js';
 import express from 'express';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -185,6 +186,30 @@ router.get('/install.sh', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Vary', 'X-Forwarded-Host, X-Forwarded-Proto, Host');
   res.type('text/plain; charset=utf-8').send(installScript(origin));
+});
+
+/**
+ * GET /install/chat-recall-<version>.tgz — the tarball, only while this pod
+ * holds that version. Auto-update asks for the version the sync response
+ * named. The unversioned URL is served by whichever pod answers, and during a
+ * rollout that returned 0.7.2 to a client a new pod had told 0.7.3, which
+ * failed its checksum. 409 says "not this pod, not yet"; the client retries on
+ * a later sync.
+ */
+router.get(/^\/install\/chat-recall-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\.tgz$/, (req, res) => {
+  const wanted = (req.params as Record<string, string>)[0];
+  const held = cliRelease();
+  if (!held || !existsSync(TGZ_PATH)) {
+    res.status(404).json({ error: 'CLI tarball not present on this server build', expectedAt: TGZ_PATH });
+    return;
+  }
+  if (held.version !== wanted) {
+    res.status(409).json({ error: `this server holds CLI ${held.version}, not ${wanted}`, held: held.version });
+    return;
+  }
+  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+  res.type('application/gzip');
+  res.sendFile(TGZ_PATH);
 });
 
 router.get('/install/chat-recall.tgz', (_req, res) => {
