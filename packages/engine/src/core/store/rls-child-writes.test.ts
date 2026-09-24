@@ -298,6 +298,94 @@ describe('a session-keyed child row written before its parent', () => {
     }
   });
 
+  pgTest('an append sync claims a session that self-heal recreated with no author', async () => {
+    // Self-heal recreates a lost metadata row from its archive, and the archive
+    // records no author, so the row has author_sub NULL. The next append sync
+    // from its owner only touches the mtime. Production failed that with
+    //   new row violates row-level security policy "author_write_update" for table "memory_metadata"
+    const tenant = `rls_touch_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await store.setItem({ id: 'sess-healed', sourceType: 'session', title: 'healed', projectPath: '/p', projectId: 'p', filePath: '', mtime: 1, contentPreview: 'x' });
+      await store.setItem({ id: 'sess-healed-2', sourceType: 'session', title: 'healed', projectPath: '/p', projectId: 'p', filePath: '', mtime: 1, contentPreview: 'x' });
+      await store.setItem({ id: 'sess-healed-3', sourceType: 'session', title: 'healed', projectPath: '/p', projectId: 'p', filePath: '', mtime: 1, contentPreview: 'x' });
+      const nulls = await admin.query(`SELECT count(*)::int AS n FROM memory_metadata WHERE tenant=$1 AND author_sub IS NULL`, [tenant]);
+      expect(nulls.rows[0].n).toBe(3);
+
+      await runWithAuthor({ sub: 'touch-author', device: 'dev-1' }, async () => {
+        await store.withTransaction(() => store.writeIngestBatch({ touchMtime: [{ sessionId: 'sess-healed', mtime: 2 }] }));
+        await store.touchSessionMtime('sess-healed-2', 2);
+        expect(await store.updateItemProjectPath('sess-healed-3', 'session', '/q')).toBe(true);
+      });
+      const rows = (await admin.query(
+        `SELECT id, mtime::int AS mtime, project_path, author_sub, author_device FROM memory_metadata WHERE tenant=$1 ORDER BY id`, [tenant])).rows;
+      expect(rows).toEqual([
+        { id: 'sess-healed', mtime: 2, project_path: '/p', author_sub: 'touch-author', author_device: 'dev-1' },
+        { id: 'sess-healed-2', mtime: 2, project_path: '/p', author_sub: 'touch-author', author_device: 'dev-1' },
+        { id: 'sess-healed-3', mtime: 1, project_path: '/q', author_sub: 'touch-author', author_device: 'dev-1' },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  pgTest('a member who deletes a session removes its archive and derived rows too', async () => {
+    // The purge deleted memory_metadata first. The three tables visible only
+    // through that parent then matched nothing, so a delete kept the archive,
+    // and self-heal rebuilt the deleted session from it.
+    const tenant = `rls_purge_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    const cache = await createMetadataCache({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    const oc = await createOutcomeCache({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    const member = { sub: 'purge-author', device: 'dev-1' };
+    try {
+      await runWithAuthor(member, async () => {
+        await store.setItem({ id: 'sess-del', sourceType: 'session', title: 't', projectPath: '/p', projectId: 'p', filePath: '', mtime: 1, contentPreview: 'x' });
+        await store.putRawSession('sess-del', 'claude', 1, Buffer.from([0x1f, 0x8b, 0x00]), 3, 'p', '/p');
+        await cache.setCompute('sess-del', 'markers', 1, { prompts: ['a'] });
+        await oc.put({
+          sessionId: 'sess-del', tool: 'claude', status: 'shipped', reason: 'test',
+          fileMtime: 1, fileSize: 1, contentHash: 'h', fileCount: 1,
+          linesAdded: 1, linesRemoved: 0, commits: 0, isFull: true, lastScannedOffset: 0,
+        } as any);
+        await store.purgeSession('sess-del');
+        await store.addTombstone('sess-del');
+      });
+      const left = (await admin.query(
+        `SELECT 'raw_sessions' AS t, count(*)::int AS n FROM raw_sessions WHERE tenant=$1
+         UNION ALL SELECT 'compute_cache', count(*)::int FROM compute_cache WHERE tenant=$1
+         UNION ALL SELECT 'session_outcome_cache', count(*)::int FROM session_outcome_cache WHERE tenant=$1
+         UNION ALL SELECT 'memory_metadata', count(*)::int FROM memory_metadata WHERE tenant=$1
+         ORDER BY 1`, [tenant])).rows;
+      expect(left).toEqual([
+        { t: 'compute_cache', n: 0 },
+        { t: 'memory_metadata', n: 0 },
+        { t: 'raw_sessions', n: 0 },
+        { t: 'session_outcome_cache', n: 0 },
+      ]);
+      expect(await store.tombstonedWithRemains(10)).toEqual([]);
+    } finally {
+      await oc.close();
+      await cache.close();
+      await store.close();
+    }
+  });
+
+  pgTest('tombstonedWithRemains finds a deleted session that kept its archive', async () => {
+    const tenant = `rls_remains_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await store.putRawSession('sess-kept', 'claude', 1, Buffer.from([0x1f, 0x8b, 0x00]), 3, 'p', '/p');
+      await store.addTombstone('sess-kept');
+      await store.addTombstone('sess-clean');
+      expect(await store.tombstonedWithRemains(10)).toEqual(['sess-kept']);
+      await store.purgeSessionsMany(['sess-kept']);
+      expect(await store.tombstonedWithRemains(10)).toEqual([]);
+    } finally {
+      await store.close();
+    }
+  });
+
   pgTest('runUnrestricted raises the viewer inside an open transaction, and puts it back', async () => {
     // addLinks() elevates with runUnrestricted(). Inside withTransaction() no new
     // transaction opens, so the elevation must reach the pinned client's GUC.

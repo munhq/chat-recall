@@ -217,6 +217,9 @@ export interface StorageDriver {
   /** Which of these sessions are tombstoned — bounded by the batch, not by
    *  how many the tenant has ever deleted. */
   tombstonedAmong(sessionIds: string[]): Promise<Set<string>>;
+  /** Tombstoned sessions that still have a row in any session table. A delete
+   *  leaves none, so each id here is a purge that did not complete. */
+  tombstonedWithRemains(limit: number): Promise<string[]>;
   /**
    * Run everything `fn` does on ONE transaction.
    *

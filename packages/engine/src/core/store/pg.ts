@@ -481,7 +481,13 @@ export class PgStore implements StorageDriver {
   }
 
   async updateItemProjectPath(id: string, sourceType: SourceType, projectPath: string): Promise<boolean> {
-    const r = await tenantQuery(this.pool, this.tenant, `UPDATE memory_metadata SET project_path=$4 WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType, projectPath]);
+    const a = currentAuthor();
+    // Claims a NULL-author row; see writeTouchMtime.
+    const r = await tenantQuery(this.pool, this.tenant,
+      `UPDATE memory_metadata SET project_path=$4,
+              author_sub=COALESCE(author_sub, $5), author_device=COALESCE(author_device, $6)
+        WHERE tenant=$1 AND id=$2 AND source_type=$3`,
+      [this.t, id, sourceType, projectPath, a.sub, a.device]);
     return r.rowCount > 0;
   }
 
@@ -905,12 +911,19 @@ export class PgStore implements StorageDriver {
     const byId = new Map<string, number>();
     for (const r of rows) byId.set(r.sessionId, intMs(r.mtime));
     const list = [...byId.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const a = currentAuthor();
+    // A row that self-heal recreated from its archive has a NULL author, because
+    // the archive does not record one. author_write_update lets a member update
+    // that row only when the result carries the member as author, so the touch
+    // claims it the same way the setItem upsert does.
     await client.query(
-      `UPDATE memory_metadata m SET mtime = v.mtime, indexed_at = $3
+      `UPDATE memory_metadata m SET mtime = v.mtime, indexed_at = $3,
+              author_sub = COALESCE(m.author_sub, $5),
+              author_device = COALESCE(m.author_device, $6)
          FROM (SELECT * FROM unnest($2::text[], $4::bigint[]) AS t(id, mtime)) v
         WHERE m.tenant = $1 AND m.source_type = 'session' AND m.id = v.id
           AND m.mtime IS DISTINCT FROM v.mtime`,
-      [this.t, list.map((x) => x[0]), Date.now(), list.map((x) => x[1])]);
+      [this.t, list.map((x) => x[0]), Date.now(), list.map((x) => x[1]), a.sub, a.device]);
   }
 
   private async writeFindingRows(client: any, bySession: IngestBatch['findings'] & object): Promise<number> {
@@ -1053,9 +1066,13 @@ export class PgStore implements StorageDriver {
   }
 
   async touchSessionMtime(sessionId: string, mtime: number): Promise<void> {
+    const a = currentAuthor();
+    // Claims a NULL-author row; see writeTouchMtime.
     await this.q(
-      `UPDATE memory_metadata SET mtime=$3, indexed_at=$4 WHERE tenant=$1 AND id=$2 AND source_type='session'`,
-      [this.t, sessionId, intMs(mtime), Date.now()]);
+      `UPDATE memory_metadata SET mtime=$3, indexed_at=$4,
+              author_sub=COALESCE(author_sub, $5), author_device=COALESCE(author_device, $6)
+        WHERE tenant=$1 AND id=$2 AND source_type='session'`,
+      [this.t, sessionId, intMs(mtime), Date.now(), a.sub, a.device]);
   }
   async pruneEmptySessions(): Promise<number> {
     const r = await tenantQuery(this.pool, this.t,
@@ -1380,6 +1397,21 @@ export class PgStore implements StorageDriver {
   async removeTombstone(sessionId: string): Promise<void> {
     await this.q(`DELETE FROM session_tombstones WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
   }
+  async tombstonedWithRemains(limit: number): Promise<string[]> {
+    const rows = await this.qr(
+      `SELECT t.session_id FROM session_tombstones t
+        WHERE t.tenant=$1 AND (
+             EXISTS (SELECT 1 FROM memory_metadata x WHERE x.tenant=$1 AND x.id=t.session_id AND x.source_type='session')
+          OR EXISTS (SELECT 1 FROM memory_chunks x WHERE x.tenant=$1 AND x.item_id=t.session_id AND x.source_type='session')
+          OR EXISTS (SELECT 1 FROM content_cache x WHERE x.tenant=$1 AND x.id=t.session_id AND x.source_type='session')
+          OR EXISTS (SELECT 1 FROM raw_sessions x WHERE x.tenant=$1 AND x.session_id=t.session_id)
+          OR EXISTS (SELECT 1 FROM compute_cache x WHERE x.tenant=$1 AND x.session_id=t.session_id)
+          OR EXISTS (SELECT 1 FROM session_outcome_cache x WHERE x.tenant=$1 AND x.session_id=t.session_id)
+          OR EXISTS (SELECT 1 FROM secret_findings x WHERE x.tenant=$1 AND x.session_id=t.session_id))
+        ORDER BY t.session_id LIMIT $2`,
+      [this.t, limit]);
+    return rows.map((r: any) => r.session_id);
+  }
   async purgeSession(sessionId: string): Promise<void> {
     await this.purgeSessionsMany([sessionId]);
   }
@@ -1409,8 +1441,13 @@ export class PgStore implements StorageDriver {
     // lookup below. Catching the error per statement cannot work inside a
     // transaction: the first failure aborts it and every later statement
     // returns 25P02.
+    //
+    // THE PARENT ROW GOES LAST. raw_sessions, compute_cache and
+    // session_outcome_cache are visible to a member only through a visible
+    // memory_metadata row (author_visibility). With the parent deleted first,
+    // their DELETEs matched nothing and raised nothing: on one tenant 392
+    // deleted sessions kept their archives, and self-heal rebuilt them.
     const statements: Array<[table: string, sql: string]> = [
-      ['memory_metadata', `DELETE FROM memory_metadata WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`],
       ['memory_chunks', `DELETE FROM memory_chunks WHERE tenant=$1 AND item_id = ANY($2) AND source_type='session'`],
       // memory_vectors is written by the vector store but carries its own text
       // column returned by semantic search — without this a deleted session
@@ -1426,29 +1463,36 @@ export class PgStore implements StorageDriver {
     ];
     const keys = await this.tx(async (client: any) => {
       const present = new Set<string>();
-      const names = [...statements.map(([t]) => t), 'raw_sessions'];
+      const names = [...statements.map(([t]) => t), 'raw_sessions', 'memory_metadata'];
       const reg = await client.query(
         `SELECT n FROM unnest($1::text[]) AS n WHERE to_regclass(n) IS NOT NULL`, [names]);
       for (const r of reg.rows) present.add(r.n);
       for (const [table, sql] of statements) {
         if (present.has(table)) await client.query(sql, [this.t, ids]);
       }
-      if (!present.has('raw_sessions')) return [] as string[];
-      // The DELETE returns the keys, so this costs ONE round trip. Reading them
-      // with a separate SELECT first cost two, and the retention sweeps
-      // (retention.ts calls this in three places) run it over large sets: the
-      // extra query per row timed out the idempotency test, which sweeps 200
-      // seeded sessions twice, at 15s on a Windows runner.
-      const purged = await client.query(
-        `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id = ANY($2) RETURNING object_key`,
-        [this.t, ids]);
-      return purged.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
+      let objectKeys: string[] = [];
+      if (present.has('raw_sessions')) {
+        // The DELETE returns the keys, so this costs ONE round trip. Reading them
+        // with a separate SELECT first cost two, and the retention sweeps
+        // (retention.ts calls this in three places) run it over large sets: the
+        // extra query per row timed out the idempotency test, which sweeps 200
+        // seeded sessions twice, at 15s on a Windows runner.
+        const purged = await client.query(
+          `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id = ANY($2) RETURNING object_key`,
+          [this.t, ids]);
+        objectKeys = purged.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
+      }
+      if (present.has('memory_metadata')) {
+        await client.query(
+          `DELETE FROM memory_metadata WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`,
+          [this.t, ids]);
+      }
+      return objectKeys;
     });
     // The rows go before the objects, and outside the transaction: a row is
     // what authorizes and what every read consults, so an object left behind
-    // serves nobody and the sweep collects it, while a row pointing at a
-    // deleted object would fail every read of that session. One object failure
-    // must not abandon the rest.
+    // serves nobody, while a row pointing at a deleted object would fail every
+    // read of that session. One object failure must not abandon the rest.
     const store = getObjectStore();
     if (store && keys.length > 0) await Promise.allSettled(keys.map((k) => store.delete(k)));
   }

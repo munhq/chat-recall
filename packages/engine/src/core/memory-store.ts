@@ -1365,6 +1365,27 @@ export class MemoryStore {
     this.db.prepare(`DELETE FROM session_tombstones WHERE session_id = ?`).run(sessionId);
   }
 
+  /** Tombstoned sessions that still have a row in a session table present in
+   *  this file. */
+  tombstonedWithRemains(limit: number): string[] {
+    this.ensureTombstonesTable();
+    const present = new Set((this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((r) => r.name));
+    const probes: Array<[string, string]> = [
+      ['memory_metadata', `SELECT 1 FROM memory_metadata x WHERE x.id = t.session_id AND x.source_type = 'session'`],
+      ['memory_chunks_fts', `SELECT 1 FROM memory_chunks_fts x WHERE x.item_id = t.session_id AND x.source_type = 'session'`],
+      ['content_cache', `SELECT 1 FROM content_cache x WHERE x.id = t.session_id AND x.source_type = 'session'`],
+      ['raw_sessions', `SELECT 1 FROM raw_sessions x WHERE x.session_id = t.session_id`],
+      ['compute_cache', `SELECT 1 FROM compute_cache x WHERE x.session_id = t.session_id`],
+      ['session_outcome_cache', `SELECT 1 FROM session_outcome_cache x WHERE x.session_id = t.session_id`],
+    ];
+    const exists = probes.filter(([table]) => present.has(table)).map(([, sql]) => `EXISTS (${sql})`);
+    if (exists.length === 0) return [];
+    const rows = this.db.prepare(
+      `SELECT t.session_id FROM session_tombstones t WHERE ${exists.join(' OR ')} ORDER BY t.session_id LIMIT ?`,
+    ).all(limit) as Array<{ session_id: string }>;
+    return rows.map((r) => r.session_id);
+  }
+
   /** Remove every trace of a session from this store (all tables that key
    *  on session/item id). Foreign-class tables (compute/outcome/metadata
    *  caches share the db file) are cleared best-effort. */
