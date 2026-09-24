@@ -52,7 +52,7 @@ export function isServiceRunning(): boolean {
   if (process.platform === 'linux') {
     // systemd is-active is authoritative; skip the pgrep fallback (it
     // self-matches the bash -c that runs the check, causing false positives).
-    return /active/.test(tryCmd('systemctl --user is-active chat-recall-watch.service 2>/dev/null'));
+    return /^active$/m.test(tryCmd('systemctl --user is-active chat-recall-watch.service 2>/dev/null'));
   }
   return false;
 }

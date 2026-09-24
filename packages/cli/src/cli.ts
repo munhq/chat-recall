@@ -1821,7 +1821,7 @@ program
     } else {
       // systemd is-active is authoritative; skip the pgrep fallback (it
       // self-matches the bash -c that runs the check, causing false positives).
-      watchRunning = /active/.test(tryCmd('systemctl --user is-active chat-recall-watch.service 2>/dev/null'));
+      watchRunning = /^active$/m.test(tryCmd('systemctl --user is-active chat-recall-watch.service 2>/dev/null'));
     }
     note(watchRunning, 'Watch daemon', watchRunning ? 'running' : 'not running (run `chat-recall watch --install-service` to keep collection running)');
 
