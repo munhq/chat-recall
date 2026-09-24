@@ -16,20 +16,27 @@
  * which is what this cursor provides.
  *
  * ── Shape ────────────────────────────────────────────────────────────────
- * A tiny JSON map of workspace path → last successful index. Best-effort in both
+ * A tiny JSON map of workspace path → last successful index (its time and the
+ * workspace fingerprint it saw, so a pass skips code that did not change).
+ * Best-effort in both
  * directions: a missing or corrupt file just means "nothing indexed yet", and a
  * write that fails is ignored. It records COMPLETIONS only, so a workspace that
  * crashes the indexer is retried rather than being marked done — the opposite
  * choice would silently drop a repo forever.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 
 const cursorPath = (): string => join(getDataDir(), 'code-index-cursor.json');
 
-/** workspace path → epoch ms of the last COMPLETED index. */
-export type CodeIndexCursor = Record<string, number>;
+/** One completed index: when, and the workspace fingerprint it saw. */
+export interface CursorEntry { at: number; fp?: string }
+
+/** workspace path → the last COMPLETED index. */
+export type CodeIndexCursor = Record<string, CursorEntry>;
 
 export function readCursor(): CodeIndexCursor {
   try {
@@ -37,7 +44,12 @@ export function readCursor(): CodeIndexCursor {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       const out: CodeIndexCursor = {};
       for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-        if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+        // A bare number is the file an earlier version wrote: a time, no fingerprint.
+        if (typeof v === 'number' && Number.isFinite(v)) out[k] = { at: v };
+        else if (v && typeof v === 'object' && typeof (v as CursorEntry).at === 'number' && Number.isFinite((v as CursorEntry).at)) {
+          const fp = (v as CursorEntry).fp;
+          out[k] = typeof fp === 'string' ? { at: (v as CursorEntry).at, fp } : { at: (v as CursorEntry).at };
+        }
       }
       return out;
     }
@@ -54,12 +66,46 @@ function writeCursor(c: CodeIndexCursor): void {
 }
 
 /** Record a COMPLETED index. Never called for a failure — see the header. */
-export function noteIndexed(workspace: string, now = Date.now()): void {
+export function noteIndexed(workspace: string, now = Date.now(), fp?: string | null): void {
   const c = readCursor();
-  c[workspace] = now;
-  // Forget paths that are no longer candidates, so a machine that has moved on
-  // does not carry a growing map of dead repos forever.
+  c[workspace] = fp ? { at: now, fp } : { at: now };
   writeCursor(c);
+}
+
+/**
+ * What the code in a git workspace is right now: HEAD, plus each changed or
+ * untracked file with its size and mtime, plus the collector's own version so
+ * a new result format rescans everything. Null when the workspace is not a git
+ * repository or git does not answer; such a workspace is scanned every pass.
+ */
+export function workspaceFingerprint(workspace: string, collectorVersion: number): string | null {
+  try {
+    const git = (args: string[]) => execFileSync('git', ['-C', workspace, ...args],
+      { encoding: 'utf-8', timeout: 10_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+    const head = git(['rev-parse', 'HEAD']).trim();
+    const status = git(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+    const h = createHash('sha256').update(`v${collectorVersion}\0${head}\0`);
+    for (const entry of status.split('\0')) {
+      if (entry.length < 4) continue;
+      const rel = entry.slice(3);
+      let stamp = 'gone';
+      try { const s = statSync(join(workspace, rel)); stamp = `${s.size}:${Math.floor(s.mtimeMs)}`; } catch { /* deleted */ }
+      h.update(`${entry.slice(0, 2)}\0${rel}\0${stamp}\0`);
+    }
+    return h.digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** An unchanged workspace is still sent again after this long. The collector
+ *  cannot see the server's copy, and a server that lost it gets it back. */
+export const UNCHANGED_RESEND_MS = 7 * 24 * 3600 * 1000;
+
+/** True when the last completed index saw this same fingerprint recently. */
+export function isUnchangedSinceIndexed(workspace: string, fp: string | null, cursor: CodeIndexCursor, now = Date.now()): boolean {
+  const e = cursor[workspace];
+  return !!fp && !!e && e.fp === fp && now - e.at < UNCHANGED_RESEND_MS;
 }
 
 /**
@@ -73,7 +119,7 @@ export function noteIndexed(workspace: string, now = Date.now()): void {
  */
 export function orderByStaleness(workspaces: string[], cursor = readCursor()): string[] {
   return workspaces
-    .map((w, i) => ({ w, i, at: cursor[w] ?? -1 }))
+    .map((w, i) => ({ w, i, at: cursor[w]?.at ?? -1 }))
     .sort((a, b) => (a.at - b.at) || (a.i - b.i))
     .map((e) => e.w);
 }
