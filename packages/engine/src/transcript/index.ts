@@ -30,7 +30,7 @@ export {
 } from './raw.js';
 export {
   updateShadow, snapshotShadow, seedShadow, readShadowContainer, writeShadowContainer,
-  mergeContainer, mergeLineText, shadowFileFor, shadowRoot, shadowSizeOnDisk,
+  mergeContainer, mergeLineText, shadowFileFor, shadowRoot, shadowSizeOnDisk, shadowUncompressedBytes,
   type ShadowUpdate, type ShadowStatus, type ShadowMerge,
 } from './shadow.js';
 export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';

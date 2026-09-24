@@ -5,7 +5,8 @@
  * has ever been seen.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { gunzipSync } from 'zlib';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -15,6 +16,8 @@ import {
   updateShadow,
   readShadowContainer,
   seedShadow,
+  shadowFileFor,
+  shadowUncompressedBytes,
 } from './shadow.js';
 import { buildRawContainer, parseTranscriptFromContainer, type RawContainer } from './raw.js';
 import type { RawSessionExport } from '../core/tool-backend.js';
@@ -147,6 +150,15 @@ describe('updateShadow (disk round-trip)', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cr-shadow-')); process.env.CHAT_RECALL_DATA_DIR = dir; });
   afterEach(() => { delete process.env.CHAT_RECALL_DATA_DIR; rmSync(dir, { recursive: true, force: true }); });
+
+  test('shadowUncompressedBytes reads the container size without decompressing it', () => {
+    const id = 'sess-size';
+    expect(shadowUncompressedBytes('claude', id)).toBe(0);
+    updateShadow(id, exportOf('claude', `${id}.jsonl`, jsonl(['a', 'b', 'c'])));
+    const real = gunzipSync(readFileSync(shadowFileFor('claude', id))).length;
+    expect(real).toBeGreaterThan(0);
+    expect(shadowUncompressedBytes('claude', id)).toBe(real);
+  });
 
   test('first sight creates, resume recovers on the next tick', () => {
     const id = 'sess-1';

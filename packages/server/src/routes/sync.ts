@@ -77,6 +77,9 @@ interface ConvContext {
   touchBatch: NonNullable<IngestBatch['touchMtime']>;
   /** Sessions the client must re-send in full, returned in the response. */
   fullResyncNeeded: string[];
+  /** Full syncs the shrink guard refused, with the offset the stored copy is
+   *  synced through, returned in the response. */
+  shrinkGuardedIds: Array<{ session_id: string; o: number | null }>;
   tally: { conv: number; appendConv: number; shrinkGuarded: number };
 }
 
@@ -97,7 +100,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
   const {
     store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
     itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch, sessionMetaBatch,
-    touchBatch, fullResyncNeeded, tally,
+    touchBatch, fullResyncNeeded, shrinkGuardedIds, tally,
   } = ctx;
     if (!cv.session_id) return;
     if (deadSet.has(cv.session_id)) return; // deleted — never resurrect
@@ -280,6 +283,11 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
               'shrink-guard: kept fuller stored conversation, ignored a smaller full sync (upstream in-place truncation reached a client without a shadow)',
             );
             tally.shrinkGuarded++;
+            // Tell the client where the stored copy is synced through. A
+            // chunked session's head is always smaller than the stored
+            // conversation, and without this offset its appends never match.
+            const storedO = (prevEnv as { o?: unknown }).o;
+            shrinkGuardedIds.push({ session_id: cv.session_id, o: typeof storedO === 'number' ? storedO : null });
             return; // preserve stored envelope/chunks/title — write nothing
           }
         }
@@ -662,6 +670,7 @@ router.post('/', async (req, res) => {
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
       let appendConv = 0, shrinkGuarded = 0;
       const fullResyncNeeded: string[] = [];
+      const shrinkGuardedIds: Array<{ session_id: string; o: number | null }> = [];
       // Accumulate chunks + item-metadata across the WHOLE batch and flush each
       // ONCE (bulk, single transaction) instead of per conversation/item — turns
       // thousands of round-trips into a handful. Chunks from different items are
@@ -719,7 +728,7 @@ router.post('/', async (req, res) => {
               store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
               deadSet, priorContent, priorChunkIdx, priorArchive,
               itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
-              sessionMetaBatch, touchBatch, fullResyncNeeded, tally,
+              sessionMetaBatch, touchBatch, fullResyncNeeded, shrinkGuardedIds, tally,
             });
           }
           conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
@@ -972,7 +981,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded, shrink_guarded: shrinkGuardedIds };
     }));
 
     const { cliRelease } = await import('../util/cli-release.js');

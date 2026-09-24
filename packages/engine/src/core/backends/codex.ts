@@ -41,7 +41,7 @@ import {
   liveScanEditsFromEvents,
   replayFromEvents,
 } from '../generic-engine.js';
-import { readTailFromOffset } from './tail-read.js';
+import { readTailFromOffset, type TailRead } from './tail-read.js';
 import { flatString } from '../flat-string.js';
 
 const PREFIX = 'codex_';
@@ -579,10 +579,10 @@ export class CodexBackend implements ToolBackend {
     try { return statSync(loc.path).size; } catch { return 0; }
   }
 
-  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+  async readFromOffset(prefixedId: string, offset: number, maxBytes?: number): Promise<TailRead> {
     const loc = this.findSession(prefixedId);
     if (!loc) return { text: '', newOffset: offset };
-    return readTailFromOffset(loc.path, offset);
+    return readTailFromOffset(loc.path, offset, maxBytes);
   }
 }
 

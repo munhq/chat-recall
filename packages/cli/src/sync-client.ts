@@ -46,7 +46,7 @@ import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engi
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, type RawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
@@ -1552,16 +1552,61 @@ const refs = listAvailableBackends().flatMap((b) => {
       clearTimeout(timer);
     }
   };
+  // ── Chunked head (oversized FULL) ────────────────────────────────
+  // The head chunk of an oversized session ships alone, and its response is
+  // read. When the server already holds a fuller copy, its shrink guard keeps
+  // that copy and reports the offset it is synced through. The ledger then
+  // records that offset, so the next tick appends from where the server is.
+  // Recording the head's end instead makes every append miss the server's
+  // offset, answer full_resync_needed, and send the head again, forever.
+  const postChunkedHead = async (conv: Record<string, unknown>, fileSize: number): Promise<void> => {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (cred.token) headers.authorization = `Bearer ${cred.token}`;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error(`upload timed out after ${UPLOAD_TIMEOUT_MS}ms`)), UPLOAD_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${base}/api/sync`, {
+        method: 'POST', headers, body: JSON.stringify({ conversations: [conv] }), signal: ac.signal,
+      });
+      if (!res.ok) throw new Error(`chunked head sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+      const body = await res.json().catch(() => ({})) as { shrink_guarded?: Array<{ session_id: string; o?: number | null }> };
+      const id = conv.session_id as string;
+      const guarded = (body.shrink_guarded ?? []).find((g) => g.session_id === id);
+      const mtime = conv.mtime as number;
+      try {
+        if (!guarded) {
+          markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true }]);
+        } else if (typeof guarded.o === 'number' && guarded.o > 0 && guarded.o <= fileSize) {
+          markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true }]);
+        } else {
+          // The server holds more than this file has: the file was truncated in
+          // place. The server keeps the fuller copy; stop here at this mtime.
+          markSynced(base, [{ id, mtime }]);
+        }
+      } catch { /* ledger — never fail an upload over it */ }
+      appendResults.uploaded++;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   let appendBatch: Array<Record<string, unknown>> = [];
+  let appendBatchBytes = 0;
   const APPEND_BATCH_SIZE = 50;
+  // Chunks of a chunked session are up to SYNC_CHUNK_BYTES each, so the batch
+  // is bounded by bytes as well as by count.
+  const APPEND_BATCH_MAX_BYTES = SYNC_CHUNK_BYTES;
   const appendFlush = async (): Promise<void> => {
     if (appendBatch.length === 0) return;
     const batch = appendBatch;
     appendBatch = [];
+    appendBatchBytes = 0;
     await postAppend(batch);
   };
-  const appendAdd = async (conv: Record<string, unknown>): Promise<void> => {
+  const appendAdd = async (conv: Record<string, unknown>, bytes = 0): Promise<void> => {
+    if (appendBatch.length > 0 && appendBatchBytes + bytes > APPEND_BATCH_MAX_BYTES) await appendFlush();
     appendBatch.push(conv);
+    appendBatchBytes += bytes;
     if (appendBatch.length >= APPEND_BATCH_SIZE) await appendFlush();
   };
   const itemsBatch = makeBatcher('items', 100);
@@ -1727,7 +1772,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Oversized sessions are excluded: exportRawSession would materialize the
     // whole file (hundreds of MB — this loop is what OOM-killed the daemon).
     // Their bounded tail still gets the builtin scan in buildConversationSync.
-    const toScan = slice.filter((ref) => modeOf(ref) === 'full' && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES);
+    const toScan = slice.filter((ref) => modeOf(ref) === 'full' && sessionBuildBytes(ref) <= FULL_BUILD_MAX_BYTES);
     trace?.(`batch secret scan start: ${toScan.length} session(s), ≤${(BATCH_SCAN_MAX_BYTES / 1048576).toFixed(0)}MB per slice`);
     const batch = batchScanExternal(
       toScan.map((ref) => ({
@@ -1828,11 +1873,21 @@ const refs = listAvailableBackends().flatMap((b) => {
       const ack = ledger.get(ref.prefixedId)!;
       try {
         const tail = await buildConversationTail(ref, ack.o ?? 0, { mapPath, tenantRules });
-        if (tail && tail.findings.length > 0) {
+        // A chunked session cannot fall through to FULL: its FULL sync is the
+        // head chunk again, so the appends would reach the same finding and
+        // loop. It ships the tail, then the whole file's findings, scanned one
+        // chunk at a time, as the session's replacement set.
+        const chunked = sessionBuildBytes(ref) > FULL_BUILD_MAX_BYTES;
+        if (tail && tail.findings.length > 0 && !chunked) {
           promotedForFindings = true;   // fall through to FULL (do NOT continue)
         } else if (tail) {
           redactions += tail.redactions;
-          await appendAdd(tail.conv);
+          await appendAdd(tail.conv, tail.bytes);
+          if (tail.findings.length > 0) {
+            await appendFlush();       // the session row must exist before its findings
+            const all = await scanTranscriptFindingsChunked(ref, tenantRules);
+            if (all.length > 0) await findingsBatch.add(all);
+          }
           walked++;
           if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
           continue;
@@ -1929,7 +1984,8 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Remember the content hash so the convBatch ack stamps ledger `h` (enables
     // the mtime-only skip on a later tick). Undefined for the oversized-tail path.
     if (built.srcHash) shippedHash.set(ref.prefixedId, built.srcHash);
-    await convBatch.add(built.conv);
+    if (built.conv.chunked) await postChunkedHead(built.conv, sessionFileBytes(ref));
+    else await convBatch.add(built.conv);
     // Ship this session's secret findings as one group (server replaces wholesale).
     if (built.findings.length > 0) await findingsBatch.add(built.findings);
 
@@ -1945,7 +2001,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // excluded: replay/outcome re-read the WHOLE file (readEvents), and a
     // 353MB session with 100MB+ single JSON lines OOMed the walk right after
     // its (bounded) conversation shipped.
-    if (upload.sessionMeta && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES) {
+    if (upload.sessionMeta && sessionFileBytes(ref) <= DERIVED_MAX_BYTES) {
       try {
         const count = { redactions: 0 };
         // OFF THE MAIN THREAD. This is the heaviest work in the walk: replay,
@@ -2219,15 +2275,63 @@ export interface BuiltConversation {
  *  FULL sync, so the caller just re-stamps the ledger mtime and skips. */
 export interface UnchangedConversation { unchanged: true; srcHash: string; }
 
-/** Transcript bytes beyond which a FULL sync must not materialize the whole
- *  file. The FULL pipeline copies the transcript ~5× (parse, trim+redact,
- *  raw export, raw-text join, redacted container) — a 350MB session transiently
- *  needs >1.5GB of heap, which OOM-killed the watch daemon in a restart loop
- *  (ledger never acked → same file retried on every startup tick, forever). */
+/** Build bytes (see sessionBuildBytes) beyond which a FULL sync must not
+ *  materialize the session. A larger session ships in chunks instead: the head
+ *  chunk as its FULL sync, then the rest as appends.
+ *
+ *  The in-memory build holds the container many times over (export, container,
+ *  shadow merge, parse, redacted envelope, joined raw text, and a copy in the
+ *  scan worker). Measured on a 42 MB container: 840 MB peak RSS in full, 218 MB
+ *  in chunks, for the same 2,392 messages, under a unit with MemoryHigh=1G and
+ *  a resting RSS near 400 MB. At about 18 bytes per container byte, 24 MB
+ *  stays under the limit. */
 export const FULL_BUILD_MAX_BYTES =
-  Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '64', 10)) * 1024 * 1024;
-/** How much of an oversized transcript's tail still ships (newest content). */
-const FULL_BUILD_TAIL_BYTES = 16 * 1024 * 1024;
+  Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '24', 10)) * 1024 * 1024;
+/** Transcript bytes beyond which the derived computations (diff, outcome,
+ *  commits, markers) are skipped. They run in the scan worker and read the
+ *  whole transcript; a 353 MB session with 100 MB JSON lines OOMed the walk. */
+export const DERIVED_MAX_BYTES =
+  Math.max(8, parseInt(process.env.CHAT_RECALL_DERIVED_MAX_MB || '64', 10)) * 1024 * 1024;
+/** Bytes of transcript one chunk of a chunked sync carries: the head of an
+ *  oversized FULL sync, and each append. */
+export const SYNC_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Secret findings for a whole transcript, read one chunk at a time.
+ *
+ * A chunked session never holds its full text, so it cannot use the one-pass
+ * scan of the in-memory build. Line numbers are absolute: each chunk's
+ * findings are shifted by the lines of the chunks before it. A line longer
+ * than a chunk is skipped by the reader, and it counts as one line.
+ */
+export async function scanTranscriptFindingsChunked(
+  ref: SessionRef,
+  tenantRules?: Array<{ name: string; regex: string }>,
+): Promise<BuiltConversation['findings']> {
+  const backend = getBackendForId(ref.prefixedId);
+  const findings: BuiltConversation['findings'] = [];
+  if (!backend?.readFromOffset) return findings;
+  let offset = 0;
+  let lineBase = 0;
+  for (;;) {
+    const chunk = await backend.readFromOffset(ref.prefixedId, offset, SYNC_CHUNK_BYTES);
+    if (chunk.newOffset <= offset) break;
+    offset = chunk.newOffset;
+    if (chunk.skippedBytes) { lineBase += 1; continue; }
+    try {
+      for (const f of scanTextForFindings(chunk.text)) {
+        findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: lineBase + f.line, preview: f.preview });
+      }
+      if (tenantRules && tenantRules.length > 0) {
+        for (const f of scanTenantRules(chunk.text, tenantRules)) {
+          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: lineBase + f.line, preview: f.preview });
+        }
+      }
+    } catch { /* best-effort */ }
+    for (let i = chunk.text.indexOf('\n'); i >= 0; i = chunk.text.indexOf('\n', i + 1)) lineBase++;
+  }
+  return dropFuzzyFindings(findings, (f) => ({ detector: f.detector, rule: f.rule }));
+}
 
 /** Ceiling on PRE-REDACTION session text materialized on disk at any one moment
  *  by the optional external-detector batch scan. The batch dir is flushed and
@@ -2243,6 +2347,19 @@ export function sessionFileBytes(ref: SessionRef): number {
   const backend = getBackendForId(ref.prefixedId);
   if (!backend?.isAppendOnly?.()) return 0;
   return backend.fileSize?.(ref.prefixedId) ?? 0;
+}
+
+/**
+ * Bytes a FULL build of an append-only session loads (0 for non-AO backends):
+ * the larger of the main transcript and the shadow container, which also holds
+ * the subagent transcripts and any history an upstream rewrite dropped. The
+ * main file alone under-counts: a 19 MB transcript built from a 42 MB shadow
+ * and peaked at 840 MB RSS.
+ */
+export function sessionBuildBytes(ref: SessionRef): number {
+  const main = sessionFileBytes(ref);
+  if (main === 0) return 0;
+  return Math.max(main, shadowUncompressedBytes(ref.toolId as any, ref.rawId));
 }
 
 export async function buildConversationSync(
@@ -2265,15 +2382,16 @@ export async function buildConversationSync(
   let includeMeta = opts.includeMeta !== false;
   let srcHash: string | undefined;
 
-  // Oversized-transcript guard: ship the newest FULL_BUILD_TAIL_BYTES as this
-  // session's FULL sync instead of materializing the whole file. The envelope
-  // is marked truncated, raw/meta (whole-file reads) are dropped, and
-  // from_offset = file size — so the ledger advances and every later tick is
-  // a normal bounded APPEND. Truncation only loses the transcript's OLD head.
-  const fileBytes = sessionFileBytes(ref);
-  const oversized = fileBytes > FULL_BUILD_MAX_BYTES;
-  let tailText = '';
-  let tailOffsetEnd = 0;
+  // Oversized transcript: ship it in chunks. This FULL sync carries the HEAD
+  // chunk (the first SYNC_CHUNK_BYTES, cut at a line end) with from_offset at
+  // the end of that chunk. The ledger records that offset, so syncMode sees the
+  // file as larger than the cursor and every later tick APPENDs the next chunk
+  // until the server holds the whole transcript. The raw archive (a whole-file
+  // export) is dropped; telemetry stays, because parseSessionFile reads line by
+  // line.
+  const oversized = sessionBuildBytes(ref) > FULL_BUILD_MAX_BYTES;
+  let headOffsetEnd = 0;
+  let oversizedFindings: BuiltConversation['findings'] | null = null;
 
   // Parse the transcript live — this is the single canonical parse; the
   // envelope and the redacted text both come from it. When the shadow path
@@ -2285,14 +2403,18 @@ export async function buildConversationSync(
     const backend = getBackendForId(ref.prefixedId);
     if (!backend?.readFromOffset) return null;
     try {
-      const tail = await backend.readFromOffset(ref.prefixedId, fileBytes - FULL_BUILD_TAIL_BYTES);
-      tailText = tail.text;
-      tailOffsetEnd = tail.newOffset;
-      const messages = parseTailMessages(ref.toolId, tailText);
+      // A first line longer than a chunk is skipped by the reader; read on
+      // from past it so the head carries real messages.
+      let head = await backend.readFromOffset(ref.prefixedId, 0, SYNC_CHUNK_BYTES);
+      for (let hops = 0; head.skippedBytes && hops < 8; hops++) {
+        head = await backend.readFromOffset(ref.prefixedId, head.newOffset, SYNC_CHUNK_BYTES);
+      }
+      headOffsetEnd = head.newOffset;
+      const messages = parseTailMessages(ref.toolId, head.text);
       if (messages.length > 0) transcript = { messages, subagents: [] };
-    } catch { /* unreadable tail */ }
+    } catch { /* unreadable head */ }
     includeRaw = false;   // exportRawSession would read the whole file
-    includeMeta = false;  // parseSessionFile would read the whole file
+    oversizedFindings = await scanTranscriptFindingsChunked(ref, opts.tenantRules);
     // NB: oversized sessions are NOT shadowed — a full export would OOM the
     // walk (the very reason for the tail path). A session truncated FROM
     // oversized down to normal falls back to a fresh 'created' shadow; the
@@ -2410,8 +2532,6 @@ export async function buildConversationSync(
   // which is the same behaviour as an un-indexed session.
   let projectPath = ref.projectPath;
   const meta: Record<string, unknown> = { messageCount: textMessages.length };
-  // Flag tail-only FULL syncs so the UI can badge partial history.
-  if (oversized) meta.truncated = true;
   // Single-prompt invocations (batch/bot runs) carry a flag so the UI can
   // badge them and lists can de-emphasize them.
   if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
@@ -2547,22 +2667,9 @@ export async function buildConversationSync(
     }
     scanMs = performance.now() - t0;
   }
-  // Oversized sessions: builtin regex (+ tenant rules) over the bounded tail —
-  // the container path above never ran for them.
-  if (oversized && tailText) {
-    const t0 = performance.now();
-    try {
-      for (const f of scanTextForFindings(tailText)) {
-        findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: f.line, preview: f.preview });
-      }
-      if (opts.tenantRules && opts.tenantRules.length > 0) {
-        for (const f of scanTenantRules(tailText, opts.tenantRules)) {
-          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
-        }
-      }
-    } catch { /* best-effort */ }
-    scanMs = performance.now() - t0;
-  }
+  // Oversized sessions: the whole file was scanned chunk by chunk above —
+  // the container path never ran for them.
+  if (oversizedFindings) findings.push(...oversizedFindings);
 
   // High-precision default: drop fuzzy/low-precision detector findings
   // (generic-api-key, Box, URI, …) before shipping so the Security view isn't
@@ -2619,7 +2726,10 @@ export async function buildConversationSync(
       // (convBatch onFlush uses this, not a recomputed size) so the next
       // append's base_offset matches exactly — no spurious continuity misses on
       // an actively-growing session. undefined for non-append-only backends.
-      from_offset: oversized ? tailOffsetEnd : getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId),
+      from_offset: oversized ? headOffsetEnd : getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId),
+      // The head of a chunked session. The server reports back when its shrink
+      // guard keeps a fuller stored copy, so the client appends from there.
+      ...(oversized ? { chunked: true } : {}),
       meta,
       mtime,
     },
@@ -2661,19 +2771,32 @@ export async function buildConversationTail(
   ref: SessionRef,
   fromOffset: number,
   opts: { mapPath?: (p: string) => string; tenantRules?: Array<{ name: string; regex: string }> } = {},
-): Promise<{ conv: Record<string, unknown>; redactions: number; newOffset: number; findings: BuiltConversation['findings'] } | null> {
+): Promise<{ conv: Record<string, unknown>; redactions: number; newOffset: number; findings: BuiltConversation['findings']; bytes: number } | null> {
   const backend = getBackendForId(ref.prefixedId);
   if (!backend?.readFromOffset) return null;
   const mapPath = opts.mapPath ?? ((p: string) => p);
 
-  const { text: tailText, newOffset } = await backend.readFromOffset(ref.prefixedId, fromOffset);
-  if (!tailText.trim()) return null;
+  const { text: tailText, newOffset, skippedBytes } = await backend.readFromOffset(ref.prefixedId, fromOffset, SYNC_CHUNK_BYTES);
+  if (newOffset <= fromOffset) return null;
 
-  const messages = parseTailMessages(ref.toolId, tailText);
-  if (messages.length === 0) return null;
-
+  // A window with bytes but nothing to show (tool noise, a skipped line longer
+  // than a chunk) still has to move the server's synced-through offset, or the
+  // cursor reads the same window on every tick and the rest of a chunked
+  // session never ships. The server merges an empty tail and advances `o`.
+  const messages = skippedBytes ? [] : parseTailMessages(ref.toolId, tailText);
   const textMessages = messages.filter((m) => m.role !== 'summary' && m.content?.trim());
-  if (textMessages.length === 0 && !messages.some((m) => m.toolCalls?.length)) return null;
+  const hasContent = textMessages.length > 0 || messages.some((m) => m.toolCalls?.length);
+  if (!hasContent) {
+    return {
+      conv: {
+        session_id: ref.prefixedId, tool: ref.toolId, project_path: mapPath(ref.projectPath),
+        append: true, base_offset: fromOffset, from_offset: newOffset, redacted_text: '',
+        envelope: { v: TRANSCRIPT_VERSION, messages: [], subagents: [] },
+        mtime: Math.floor(ref.mtime) || 0,
+      },
+      redactions: 0, newOffset, findings: [], bytes: 0,
+    };
+  }
 
   // Skip chat-recall's OWN internal prompts in the tail (same gate as the
   // full builder). A tail that is ONLY an internal prompt ships nothing.
@@ -2726,6 +2849,7 @@ export async function buildConversationTail(
     redactions: count.redactions,
     newOffset,
     findings,
+    bytes: Buffer.byteLength(tailText),
   };
 }
 
