@@ -26,6 +26,7 @@ import { spawn } from 'child_process';
 import { createServer, connect, type Socket, type Server } from 'node:net';
 import { unlinkSync } from 'node:fs';
 import { ensureSocketDir, restrictSocket, socketPath, socketPathFromArgv } from './mcp-socket.js';
+import { onInputFinished, watchParent } from './relay-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import {
   createMcpServer, setIndexRunner, setEventReporter, setUpdateNotice, setServerVersion,
@@ -424,6 +425,11 @@ async function main() {
     // daemon is turned off, and the fallback whenever it cannot be reached.
     const transport = new StdioServerTransport();
     await createMcpServer().connect(transport);
+    // The transport never ends the process on its own. A session server whose
+    // client is gone must exit, or it keeps its sync loop and its heap forever.
+    const leave = () => process.exit(0);
+    onInputFinished(process.stdin, leave);
+    watchParent(leave);
   }
 
   // Deliver the chat-recall skills to this machine's AI tools. This is THE
