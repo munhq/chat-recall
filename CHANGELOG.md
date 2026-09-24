@@ -4,6 +4,20 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-09-24
+
+### Fixed
+- **An update during a server rollout failed its checksum.** The sync
+  response named the new version, and the download came from a server that
+  still had the old one. The update now asks for the version by name
+  (`/install/chat-recall-<version>.tgz`). A server that does not have it yet
+  says so, and the next sync tries again.
+- **An MCP-only machine kept syncing with old code after an update.** Without
+  the watch service, nothing restarted the MCP daemon, and one daemon synced
+  with a 19-day-old version while the new one sat on disk. The daemon now
+  runs each background sync with the installed CLI when that is newer, and
+  your open sessions keep their tools.
+
 ## [0.7.4] — 2026-09-24
 
 ### Fixed
