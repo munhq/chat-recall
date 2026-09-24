@@ -189,6 +189,37 @@ derived, telemetry, title, the works).
    preserved from the head) in sync-client.test.ts + sync.test.ts. Plus the
    shrink→FULL and missing-envelope→full_resync_needed paths.
 
+## Chunked FULL sync for large sessions
+
+A FULL build holds the session's container many times over in memory. The
+gate is `sessionBuildBytes`: the larger of the main transcript and the shadow
+container (main file, subagent transcripts, recovered history), read from the
+shadow's gzip ISIZE trailer. Over `FULL_BUILD_MAX_BYTES` (24 MB,
+`CHAT_RECALL_FULL_BUILD_MAX_MB`), the session ships in chunks on the append
+protocol above:
+
+1. **Head.** The FULL sync carries the first `SYNC_CHUNK_BYTES` (8 MB) cut at a
+   line end, with `from_offset` at the end of that chunk and `chunked: true`.
+   Telemetry ships (parseSessionFile reads line by line). The raw archive does
+   not. Secret findings cover the whole file, scanned one chunk at a time with
+   absolute line numbers.
+2. **Rest.** The ledger records the head's end as `o` and `s`, so `syncMode`
+   sees the file as larger and each tick APPENDs the next chunk.
+3. **A window with no messages** (tool noise, or a single line longer than a
+   chunk, which `readTailFromOffset` steps past) ships as an append with an
+   empty envelope, so the server's `o` still moves.
+4. **A secret in a chunked tail** ships the append, then the whole file's
+   findings as the replacement set. It never falls through to FULL: that
+   would send the head again and loop.
+5. **Shrink guard.** A head is smaller than a stored full copy, so the guard
+   keeps the stored copy. The response lists the session in `shrink_guarded`
+   with the stored `o`, and the client appends from that offset. When the
+   stored `o` is past the end of the local file, the file was truncated in
+   place: the client records the mtime and the server keeps the fuller copy.
+
+Measured on a 42 MB container: 840 MB peak RSS in full, 218 MB in chunks, the
+same 2,392 messages.
+
 ## What this does NOT change
 - Non-session sources (plan/task/claude_md/…) — unchanged.
 - Derived-field reconciliation (titles) — unchanged (already cheap, head-only).
