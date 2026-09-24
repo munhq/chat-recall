@@ -784,6 +784,53 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tenant_author ON memory_chunks(tenant, aut
 -- index on sessions keeps it off a full-tenant scan.
 CREATE INDEX IF NOT EXISTS idx_mm_activity ON memory_metadata(tenant, author_sub, project_id) WHERE source_type = 'session';
 
+-- Which device has each toolkit item (skill, mcp, command, agent, plugin). A
+-- device's sync sends its full inventory, which replaces that device's rows
+-- here, and an item row is deleted when no device has it any more. Before this
+-- a removed skill or MCP server stayed on the account for good, and a pull put
+-- it back on every other device.
+--
+-- SEEDED ONCE, in the boot that creates the table: every existing item row
+-- gets presence for the devices recorded on it (author_device, the first
+-- uploader, and syncedDeviceId, the last one), so a device that has not sent an
+-- inventory yet keeps its items. Seeding on every boot would put back presence
+-- that a device has since removed. RLS-aware: memory_metadata is FORCE RLS, so
+-- the seed sets app.tenant per tenant, the way tenantQuery does. The device is
+-- read from the JSON text by pattern, so a malformed extra_json cannot fail the
+-- boot.
+DO $$
+DECLARE tn TEXT; seeded INT; total INT := 0;
+BEGIN
+  IF to_regclass('public.toolkit_presence') IS NOT NULL THEN RETURN; END IF;
+  CREATE TABLE toolkit_presence (
+    tenant      TEXT NOT NULL DEFAULT 'default',
+    source_type TEXT NOT NULL,
+    id          TEXT NOT NULL,
+    device      TEXT NOT NULL,
+    seen_at     BIGINT NOT NULL,
+    PRIMARY KEY (tenant, source_type, id, device)
+  );
+  CREATE INDEX idx_toolkit_presence_device ON toolkit_presence (tenant, device, source_type);
+  FOR tn IN SELECT tenant FROM tenants UNION SELECT 'default' LOOP
+    PERFORM set_config('app.tenant', tn, true);
+    INSERT INTO toolkit_presence (tenant, source_type, id, device, seen_at)
+      SELECT m.tenant, m.source_type, m.id, d.device, COALESCE(m.indexed_at, 0)
+        FROM memory_metadata m
+        CROSS JOIN LATERAL (VALUES
+          (m.author_device),
+          (substring(COALESCE(m.extra_json, '') from '"syncedDeviceId":"([^"]+)"'))
+        ) AS d(device)
+       WHERE m.tenant = tn
+         AND m.source_type IN ('skill', 'mcp', 'command', 'agent', 'plugin')
+         AND d.device IS NOT NULL AND d.device <> ''
+      ON CONFLICT DO NOTHING;
+    GET DIAGNOSTICS seeded = ROW_COUNT;
+    total := total + seeded;
+  END LOOP;
+  PERFORM set_config('app.tenant', '', true);
+  RAISE NOTICE 'toolkit_presence seeded with % row(s)', total;
+END $$;
+
 -- ── Team collaboration control plane ─────────────────────────────────────
 -- Per-project opt-in sharing: a member (owner_sub) opts THEIR work on a
 -- project_id into team visibility. Default is private — nothing is visible to
@@ -898,7 +945,7 @@ BEGIN
     'wal_log','diary_entries','sync_intents','raw_sessions',
     'code_projects','code_findings','code_hotspots','code_actions',
     'client_events','team_tasks','team_task_comments',
-    'team_installs','vault_uploads'
+    'team_installs','vault_uploads','toolkit_presence'
   ] LOOP
     -- IDEMPOTENT: only configure a table that isn't already locked down. The
     -- ALTER/DROP/CREATE POLICY statements each take an ACCESS EXCLUSIVE lock on

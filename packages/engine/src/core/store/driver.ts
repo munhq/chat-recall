@@ -220,6 +220,8 @@ export interface StorageDriver {
   /** Tombstoned sessions that still have a row in any session table. A delete
    *  leaves none, so each id here is a purge that did not complete. */
   tombstonedWithRemains(limit: number): Promise<string[]>;
+  /** Replace one device's toolkit inventory; delete item rows no device has. */
+  reconcileToolkitInventory(device: string, entries: Array<{ sourceType: string; ids: string[] }>): Promise<{ removed: number }>;
   /**
    * Run everything `fn` does on ONE transaction.
    *

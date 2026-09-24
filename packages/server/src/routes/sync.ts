@@ -96,6 +96,29 @@ interface ConvContext {
  * It APPENDS to the batch arrays and writes nothing. The handler hands the
  * whole batch to the store once. See docs/SYNC-BATCH-WRITES.md §4.
  */
+/** The toolkit types an inventory may name; see TOOLKIT_INVENTORY_TYPES in the CLI. */
+const INVENTORY_TYPES = new Set(['skill', 'mcp', 'command', 'agent', 'plugin']);
+/** Ids per type in one inventory. One machine held 546 skills of one tool. */
+const INVENTORY_MAX_IDS = 20_000;
+
+/** A well-formed inventory, or nothing. A malformed entry is dropped whole,
+ *  because a partial list would read as "the device no longer has the rest". */
+export function parseInventory(raw: unknown): Array<{ sourceType: string; ids: string[] }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ sourceType: string; ids: string[] }> = [];
+  const seen = new Set<string>();
+  for (const e of raw) {
+    const t = (e as { source_type?: unknown })?.source_type;
+    const ids = (e as { ids?: unknown })?.ids;
+    if (typeof t !== 'string' || !INVENTORY_TYPES.has(t) || seen.has(t)) continue;
+    if (!Array.isArray(ids) || ids.length > INVENTORY_MAX_IDS) continue;
+    if (!ids.every((x) => typeof x === 'string' && x.length > 0 && x.length <= 512)) continue;
+    seen.add(t);
+    out.push({ sourceType: t, ids: ids as string[] });
+  }
+  return out;
+}
+
 async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promise<void> {
   const {
     store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
@@ -594,6 +617,7 @@ router.post('/', async (req, res) => {
   const dismissals = arr<SyncDismissal>(req.body?.dismissals);
   const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
   const fields = arr<SyncFieldRow>(req.body?.fields);
+  const inventory = parseInventory(req.body?.inventory);
 
   // Ingest backpressure: bound concurrent ingestion (per-tenant + global) and
   // cost the batch by row count, shedding with 429 + Retry-After (which the
@@ -601,7 +625,7 @@ router.post('/', async (req, res) => {
   // the DB-write path that browned out a node before. Keyed on the token tenant.
   const rowCount = conversations.length + items.length + links.length + findings.length
     + derived.length + kgEntities.length + kgTriples.length + tombstones.length
-    + dismissals.length + customRules.length + fields.length;
+    + dismissals.length + customRules.length + fields.length + inventory.length;
   (req as any).rlClass = 'ingest';          // cost-telemetry tags
   (req as any).tenant = (req as any).tenant || agent.tenant;
   const gate = await ingestGate(agent.tenant, rowCount);
@@ -666,7 +690,7 @@ router.post('/', async (req, res) => {
           }));
         } catch { /* progress is cosmetic — never fail an ingest over it */ }
       }
-      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
+      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0, inventoryRemoved = 0;
       let appendConv = 0, shrinkGuarded = 0;
       const fullResyncNeeded: string[] = [];
       const shrinkGuardedIds: Array<{ session_id: string; o: number | null }> = [];
@@ -942,6 +966,14 @@ router.post('/', async (req, res) => {
           der += written.computeOffered;
           kgT += written.kgTriplesInserted;
 
+          // The device's toolkit inventory, after the items it names were
+          // written. Only a device token names a device; any other caller
+          // cannot say whose inventory this is, so it is ignored.
+          if (inventory.length > 0 && agent.deviceId) {
+            inventoryRemoved = (await store.reconcileToolkitInventory(agent.deviceId, inventory)).removed;
+            if (inventoryRemoved > 0) log.info({ device: agent.deviceId, removed: inventoryRemoved }, 'toolkit rows no device has were removed');
+          }
+
           // Secret dismissals + custom rules — small tables, upserted whole.
           for (const d of dismissals) {
             if (!d.preview || !DISMISSAL_STATUSES.has(d.status)) continue;
@@ -978,7 +1010,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded, shrink_guarded: shrinkGuardedIds };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, inventory_removed: inventoryRemoved, full_resync_needed: fullResyncNeeded, shrink_guarded: shrinkGuardedIds };
     }));
 
     const { cliRelease } = await import('../util/cli-release.js');

@@ -1365,6 +1365,37 @@ export class MemoryStore {
     this.db.prepare(`DELETE FROM session_tombstones WHERE session_id = ?`).run(sessionId);
   }
 
+  /** Replace one device's toolkit inventory; delete item rows no device has.
+   *  Same rules as the Postgres driver's reconcileToolkitInventory. */
+  reconcileToolkitInventory(device: string, entries: Array<{ sourceType: string; ids: string[] }>): { removed: number } {
+    if (!device || entries.length === 0) return { removed: 0 };
+    this.db.exec(`CREATE TABLE IF NOT EXISTS toolkit_presence (
+      source_type TEXT NOT NULL, id TEXT NOT NULL, device TEXT NOT NULL, seen_at INTEGER NOT NULL,
+      PRIMARY KEY (source_type, id, device));`);
+    const now = Date.now();
+    let removed = 0;
+    for (const { sourceType, ids } of entries) {
+      const want = new Set(ids.filter(Boolean));
+      const had = (this.db.prepare(`SELECT id FROM toolkit_presence WHERE device = ? AND source_type = ?`)
+        .all(device, sourceType) as Array<{ id: string }>).map((r) => r.id);
+      const gone = had.filter((id) => !want.has(id));
+      const del = this.db.prepare(`DELETE FROM toolkit_presence WHERE device = ? AND source_type = ? AND id = ?`);
+      for (const id of gone) del.run(device, sourceType, id);
+      const up = this.db.prepare(`INSERT INTO toolkit_presence (source_type, id, device, seen_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT (source_type, id, device) DO UPDATE SET seen_at = excluded.seen_at`);
+      for (const id of want) up.run(sourceType, id, device, now);
+      const still = this.db.prepare(`SELECT 1 FROM toolkit_presence WHERE source_type = ? AND id = ? LIMIT 1`);
+      for (const id of gone) {
+        if (still.get(sourceType, id)) continue;
+        const run = (sql: string, ...args: unknown[]) => { try { return this.db.prepare(sql).run(...args).changes; } catch { return 0; } };
+        run(`DELETE FROM memory_chunks_fts WHERE item_id = ? AND source_type = ?`, id, sourceType);
+        run(`DELETE FROM memory_links WHERE (source_type = ? AND source_id = ?) OR (target_type = ? AND target_id = ?)`, sourceType, id, sourceType, id);
+        removed += run(`DELETE FROM memory_metadata WHERE id = ? AND source_type = ?`, id, sourceType);
+      }
+    }
+    return { removed };
+  }
+
   /** Tombstoned sessions that still have a row in a session table present in
    *  this file. */
   tombstonedWithRemains(limit: number): string[] {

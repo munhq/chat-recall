@@ -231,6 +231,31 @@ export function saveItemVersions(server: string, versions: Record<string, number
   renameSync(tmp, path);
 }
 
+// ── Toolkit inventory (per server, per source type) ──────────────────────
+// The hash of the item ids this device last reported for each toolkit source
+// type, so an unchanged inventory is not sent on every sync.
+type InventoryHashes = Record<string, Record<string, string>>; // server → source type → hash
+const inventoryPath = (): string => join(getDataDir(), 'toolkit-inventory.json');
+
+export function loadInventoryHashes(server: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(readFileSync(inventoryPath(), 'utf-8')) as InventoryHashes;
+    return { ...((parsed && typeof parsed === 'object' ? parsed[server] : null) || {}) };
+  } catch { return {}; }
+}
+
+export function saveInventoryHashes(server: string, hashes: Record<string, string>): void {
+  let all: InventoryHashes = {};
+  try { all = JSON.parse(readFileSync(inventoryPath(), 'utf-8')) as InventoryHashes; } catch { /* first write */ }
+  if (!all || typeof all !== 'object') all = {};
+  all[server] = { ...(all[server] || {}), ...hashes };
+  const path = inventoryPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(all));
+  renameSync(tmp, path);
+}
+
 /** session_id → mtime the server has acked, for one target server. */
 export function getSyncedMtimes(server: string): Map<string, number> {
   const data = load();
