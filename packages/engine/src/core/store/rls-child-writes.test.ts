@@ -411,11 +411,23 @@ describe('a session-keyed child row written before its parent', () => {
       const chunks = await admin.query(`SELECT count(*)::int AS n FROM memory_chunks WHERE tenant=$1 AND item_id='claude_mcp_laptop_only'`, [tenant]);
       expect(chunks.rows[0].n).toBe(0);
 
+      // An inventory that changed leaves the rows of unchanged ids as they
+      // were. xmin is the transaction that last wrote a row.
+      const xmin = async () => (await admin.query(
+        `SELECT xmin::text AS x FROM toolkit_presence WHERE tenant=$1 AND device='laptop' AND id='claude_mcp_kept'`, [tenant])).rows[0].x;
+      const before = await xmin();
+      await runWithAuthor(member, async () => {
+        await store.setItems([mcp('claude_mcp_new')]);
+        await store.withTransaction(() =>
+          store.reconcileToolkitInventory('laptop', [{ sourceType: 'mcp', ids: ['claude_mcp_kept', 'claude_mcp_new'] }]));
+      });
+      expect(await xmin()).toBe(before);
+
       // The desktop removes the shared one too: now no device has it.
       await runWithAuthor(member, () => store.withTransaction(() =>
         store.reconcileToolkitInventory('desktop', [{ sourceType: 'mcp', ids: [] }])));
       const left = (await admin.query(`SELECT id FROM memory_metadata WHERE tenant=$1 ORDER BY id`, [tenant])).rows.map((x: any) => x.id);
-      expect(left).toEqual(['claude_mcp_kept']);
+      expect(left).toEqual(['claude_mcp_kept', 'claude_mcp_new']);
     } finally {
       await store.close();
     }

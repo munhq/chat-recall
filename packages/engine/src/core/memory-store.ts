@@ -1382,7 +1382,7 @@ export class MemoryStore {
       const del = this.db.prepare(`DELETE FROM toolkit_presence WHERE device = ? AND source_type = ? AND id = ?`);
       for (const id of gone) del.run(device, sourceType, id);
       const up = this.db.prepare(`INSERT INTO toolkit_presence (source_type, id, device, seen_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT (source_type, id, device) DO UPDATE SET seen_at = excluded.seen_at`);
+        ON CONFLICT (source_type, id, device) DO NOTHING`);
       for (const id of want) up.run(sourceType, id, device, now);
       const still = this.db.prepare(`SELECT 1 FROM toolkit_presence WHERE source_type = ? AND id = ? LIMIT 1`);
       for (const id of gone) {
