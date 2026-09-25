@@ -4,6 +4,13 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-09-25
+
+### Fixed
+- **A changed toolkit inventory rewrote all of the device's presence rows.**
+  One new skill or MCP server wrote about 400 rows on one machine. Only the
+  rows that change are written now.
+
 ## [0.7.5] — 2026-09-24
 
 ### Fixed
