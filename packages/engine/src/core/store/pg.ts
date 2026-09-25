@@ -1512,11 +1512,14 @@ export class PgStore implements StorageDriver {
           `DELETE FROM toolkit_presence
             WHERE tenant=$1 AND device=$2 AND source_type=$3 AND NOT (id = ANY($4::text[]))
             RETURNING id`, [this.t, device, sourceType, want])).rows.map((r: any) => r.id as string);
+        // An id this device already reported keeps its row as it is: an
+        // inventory that changed by one item rewrote all of that device's
+        // presence rows (about 400 on one machine), for a column nothing reads.
         if (want.length > 0) {
           await client.query(
             `INSERT INTO toolkit_presence (tenant, source_type, id, device, seen_at)
              SELECT $1, $3, x, $2, $5 FROM unnest($4::text[]) AS x
-             ON CONFLICT (tenant, source_type, id, device) DO UPDATE SET seen_at = excluded.seen_at`,
+             ON CONFLICT (tenant, source_type, id, device) DO NOTHING`,
             [this.t, device, sourceType, want, now]);
         }
         if (gone.length === 0) continue;
