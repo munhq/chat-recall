@@ -449,9 +449,47 @@ const RecallShowSchema = z.object({
   max_messages: z.number().optional().default(10).describe('Maximum messages to return'),
   from_end: z.number().optional()
     .describe('Return the last N messages of the session. Mutually exclusive with around_line.'),
-  include_code: z.boolean().optional().default(false)
-    .describe('Keep code blocks in assistant messages instead of replacing them with [code block].'),
 });
+
+export interface ShowMessage {
+  line: number;
+  role: string;
+  content: string;
+  toolCalls?: Array<{ name: string; input?: Record<string, unknown> }>;
+}
+
+/**
+ * Render recall_show messages with their full text. The agent reads this to
+ * recover what a past session said, so a cut message reads as the whole one:
+ * a 1500-character cap sent agents to the raw transcript file instead.
+ * `max_messages` / `from_end` bound the size of the output.
+ */
+export function renderShowMessages(messages: ShowMessage[]): string[] {
+  // A tool_use renders as the exact command/file it acted on, so "what did
+  // the agent run?" is answerable from recall_show and a tool-only turn is
+  // not shown as blank. Bash → the command; file tools → the path.
+  const fmtToolCall = (tc: { name: string; input?: Record<string, unknown> }): string => {
+    const inp = tc.input || {};
+    const oneLine = (v: unknown) => String(v).replace(/\s*\n\s*/g, ' ⏎ ');
+    if (tc.name === 'Bash' && inp.command !== undefined) {
+      const desc = inp.description ? `  # ${oneLine(inp.description)}` : '';
+      return `[Bash]${desc}\n  $ ${oneLine(inp.command)}`;
+    }
+    if (inp.file_path !== undefined) return `[${tc.name}] ${inp.file_path}`;
+    return `[${tc.name}] ${oneLine(JSON.stringify(inp))}`;
+  };
+
+  const out: string[] = [];
+  for (const msg of messages) {
+    out.push(`**${msg.role}** (line ${msg.line})`);
+    const text = msg.content;
+    if (text.trim()) out.push(text);
+    for (const tc of (msg.toolCalls || [])) out.push(fmtToolCall(tc));
+    if (!text.trim() && !(msg.toolCalls || []).length) out.push('_(empty)_');
+    out.push('');
+  }
+  return out;
+}
 
 const RecallRecentSchema = z.object({
   project_filter: z.string().optional().describe('Filter by project name (e.g., "acme", "poly")'),
@@ -1376,8 +1414,7 @@ plan id (the plan filename without .md, as returned by
 recall_memory_search(source_types:['plan'])) and renders the complete plan text.
 
 Set \`from_end: N\` to fetch the last N messages (no line-number guessing).
-Set \`include_code: true\` to keep code blocks instead of redacting them — useful
-when the user is asking "what did we change?" and the diffs/SQL/commands matter.`,
+Every message comes back in full, code blocks and commands included.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1385,7 +1422,6 @@ when the user is asking "what did we change?" and the diffs/SQL/commands matter.
             around_line:   { type: 'number', description: 'Optional line number to show context around' },
             max_messages:  { type: 'number', default: 10, description: 'Maximum messages to return' },
             from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
-            include_code:  { type: 'boolean', default: false, description: 'Keep code blocks in assistant messages.' },
           },
           required: ['session_id'],
         },
@@ -2957,7 +2993,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // Edit/Write/Read file_path, …) — render them so tool-only turns are
         // not shown as blank. They are stored in the synced envelope and
         // returned by /api/conversations/:id.
-        const soft = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string; toolCalls?: Array<{ name: string; input?: Record<string, unknown> }> }>; total: number }>(
+        const soft = await remoteGetSoft<{ sessionId: string; messages: ShowMessage[]; total: number }>(
           `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
         if (!soft.data || soft.data.messages.length === 0) {
           // Not a known session — try it as a PLAN id (absorbed from
@@ -2993,9 +3029,6 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           displayMessages = messagesList.slice(0, params.max_messages);
         }
 
-        // Format output. Per-message truncation grows when code blocks are
-        // requested — diffs/SQL routinely overshoot 1500 chars.
-        const truncAt = params.include_code ? 8000 : 1500;
         const output = [`Session: ${params.session_id}`];
         const lastMsg = messagesList[messagesList.length - 1];
         output.push(`Total messages: ${messagesList.length} (max line: ${lastMsg ? lastMsg.line : 0})`);
@@ -3006,38 +3039,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         output.push('');
 
-        // Render a single tool_use as the exact command/file it acted on, so
-        // "what did the agent run?" is answerable from recall_show instead of
-        // showing the turn as blank. Bash → the command; file tools → the path.
-        const fmtToolCall = (tc: { name: string; input?: Record<string, unknown> }): string => {
-          const inp = tc.input || {};
-          const oneLine = (v: unknown) => String(v).replace(/\s*\n\s*/g, ' ⏎ ');
-          if (tc.name === 'Bash' && inp.command !== undefined) {
-            const desc = inp.description ? `  # ${oneLine(inp.description)}` : '';
-            let cmd = oneLine(inp.command);
-            if (cmd.length > truncAt) cmd = cmd.slice(0, truncAt) + '...';
-            return `[Bash]${desc}\n  $ ${cmd}`;
-          }
-          if (inp.file_path !== undefined) return `[${tc.name}] ${inp.file_path}`;
-          let argStr = oneLine(JSON.stringify(inp));
-          if (argStr.length > 300) argStr = argStr.slice(0, 300) + '...';
-          return `[${tc.name}] ${argStr}`;
-        };
-
-        for (const msg of displayMessages) {
-          output.push(`**${msg.role}** (line ${msg.line})`);
-          let text = msg.content;
-          if (text.length > truncAt) {
-            text = text.slice(0, truncAt) + '...';
-          }
-          if (text.trim()) output.push(text);
-          // Show the actual tool inputs the agent executed in this turn.
-          for (const tc of (msg.toolCalls || [])) {
-            output.push(fmtToolCall(tc));
-          }
-          if (!text.trim() && !(msg.toolCalls || []).length) output.push('_(empty)_');
-          output.push('');
-        }
+        output.push(...renderShowMessages(displayMessages));
 
         { const rc = resumeCommandFor(params.session_id); if (rc) output.push(`Resume: ${rc}`); }
 
