@@ -1142,8 +1142,7 @@ program
       const displayMessages = options.full ? messagesList : messagesList.slice(0, maxMessages);
 
       for (const msg of displayMessages) {
-        let text = msg.content;
-        if (!options.full && text.length > 1000) text = text.slice(0, 1000) + '...';
+        const text = msg.content;
 
         if (msg.role === 'user') {
           console.log(`${chalk.bold.blue('User')} ${chalk.dim(`(line ${msg.line})`)}`);

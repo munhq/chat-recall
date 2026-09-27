@@ -1,7 +1,7 @@
 /**
  * MCP additions from this redesign — over the JSON-RPC stdio transport:
  *   - recall_edits_timeline (new tool)
- *   - recall_show with from_end + include_code flags
+ *   - recall_show with from_end
  *   - recall_recent with since_hours filter
  *   - recall_session_files live-fallback (active session works without re-index)
  *
@@ -94,13 +94,13 @@ test('recall_show from_end caps to last N messages and reports total', async () 
   await c.init();
   const r = await c.call('tools/call', {
     name: 'recall_show',
-    arguments: { session_id: sessionId, from_end: 2, include_code: true },
+    arguments: { session_id: sessionId, from_end: 2 },
   });
   c.close();
   const text = r.result?.content?.[0]?.text || '';
   expect(text).toMatch(/Total messages: \d+/);
   expect(text).toMatch(/Showing last 2 message/);
-  // include_code=true means we did NOT redact code blocks.
+  // Messages come back whole: code blocks are kept.
   expect(text).not.toMatch(/\[code block\]/);
   void fetch;
 });

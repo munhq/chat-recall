@@ -47,8 +47,8 @@ Once you have a session id:
 - `mcp__chat-recall__recall_context` — structured context (requests, decisions,
   files, tools).
 - `mcp__chat-recall__recall_show` — raw slice; `from_end: N` for the last N
-  messages, `include_code: true` when the actual diffs/commands matter. It
-  returns 10 messages unless you raise `max_messages`, so don't read a truncated
+  messages. Each message comes back in full, code and commands included. It
+  returns 10 messages unless you raise `max_messages`, so don't read a partial
   slice as the whole session.
 - `mcp__chat-recall__recall_summary` — AI summary + outcome (did the work land?).
 
