@@ -4,6 +4,14 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.7] — 2026-09-27
+
+### Fixed
+- **`recall_show` cut every message at 1500 characters.** An agent that read a
+  past session got the start of a long answer and no way to fetch the rest.
+  Messages, commands and tool inputs now come back whole. `chat-recall show`
+  prints each message whole too.
+
 ## [0.7.6] — 2026-09-25
 
 ### Fixed
