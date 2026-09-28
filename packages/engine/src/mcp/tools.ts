@@ -11,6 +11,7 @@ import { resumeCommandFor } from '../core/resume-command.js';
 import { detectStackAt, evidenceLine, type StackEvidence } from '../core/stack-detect.js';
 import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
 import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
+import { renderShowMessages, type ShowMessage } from './show-render.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
 import {
   canonArea, isKnownArea, decisionSubject, DECISION_AREAS, parseDecisionSubject,
@@ -449,47 +450,9 @@ const RecallShowSchema = z.object({
   max_messages: z.number().optional().default(10).describe('Maximum messages to return'),
   from_end: z.number().optional()
     .describe('Return the last N messages of the session. Mutually exclusive with around_line.'),
+  expand_line: z.number().optional()
+    .describe('Return only the message at this line, with every tool input and result whole.'),
 });
-
-export interface ShowMessage {
-  line: number;
-  role: string;
-  content: string;
-  toolCalls?: Array<{ name: string; input?: Record<string, unknown> }>;
-}
-
-/**
- * Render recall_show messages with their full text. The agent reads this to
- * recover what a past session said, so a cut message reads as the whole one:
- * a 1500-character cap sent agents to the raw transcript file instead.
- * `max_messages` / `from_end` bound the size of the output.
- */
-export function renderShowMessages(messages: ShowMessage[]): string[] {
-  // A tool_use renders as the exact command/file it acted on, so "what did
-  // the agent run?" is answerable from recall_show and a tool-only turn is
-  // not shown as blank. Bash → the command; file tools → the path.
-  const fmtToolCall = (tc: { name: string; input?: Record<string, unknown> }): string => {
-    const inp = tc.input || {};
-    const oneLine = (v: unknown) => String(v).replace(/\s*\n\s*/g, ' ⏎ ');
-    if (tc.name === 'Bash' && inp.command !== undefined) {
-      const desc = inp.description ? `  # ${oneLine(inp.description)}` : '';
-      return `[Bash]${desc}\n  $ ${oneLine(inp.command)}`;
-    }
-    if (inp.file_path !== undefined) return `[${tc.name}] ${inp.file_path}`;
-    return `[${tc.name}] ${oneLine(JSON.stringify(inp))}`;
-  };
-
-  const out: string[] = [];
-  for (const msg of messages) {
-    out.push(`**${msg.role}** (line ${msg.line})`);
-    const text = msg.content;
-    if (text.trim()) out.push(text);
-    for (const tc of (msg.toolCalls || [])) out.push(fmtToolCall(tc));
-    if (!text.trim() && !(msg.toolCalls || []).length) out.push('_(empty)_');
-    out.push('');
-  }
-  return out;
-}
 
 const RecallRecentSchema = z.object({
   project_filter: z.string().optional().describe('Filter by project name (e.g., "acme", "poly")'),
@@ -1414,7 +1377,9 @@ plan id (the plan filename without .md, as returned by
 recall_memory_search(source_types:['plan'])) and renders the complete plan text.
 
 Set \`from_end: N\` to fetch the last N messages (no line-number guessing).
-Every message comes back in full, code blocks and commands included.`,
+Message text and commands come back in full. Tool calls come with their inputs
+and results; a body over 2000 characters shows its first and last 100 and the
+line to pass as \`expand_line\` to get it whole.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1422,6 +1387,7 @@ Every message comes back in full, code blocks and commands included.`,
             around_line:   { type: 'number', description: 'Optional line number to show context around' },
             max_messages:  { type: 'number', default: 10, description: 'Maximum messages to return' },
             from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
+            expand_line:   { type: 'number', description: 'Return only the message at this line, with every tool input and result whole.' },
           },
           required: ['session_id'],
         },
@@ -3010,6 +2976,19 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         const messagesList = soft.data.messages;
 
+        const expandHint = (line: number) =>
+          `Call recall_show with session_id "${params.session_id}" and expand_line ${line} for the whole text.`;
+
+        if (params.expand_line !== undefined) {
+          const hit = messagesList.find((m) => m.line === params.expand_line);
+          if (!hit) {
+            const lines = messagesList.map((m) => m.line);
+            return { content: [{ type: 'text', text: `No message at line ${params.expand_line} in ${params.session_id}. Its lines run from ${Math.min(...lines)} to ${Math.max(...lines)}.` }] };
+          }
+          const out = [`Session: ${params.session_id}`, `Line ${hit.line}, whole.`, '', ...renderShowMessages([hit], { full: true })];
+          return { content: [{ type: 'text', text: out.join('\n') }] };
+        }
+
         // Filter messages
         let displayMessages = messagesList;
 
@@ -3039,7 +3018,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         output.push('');
 
-        output.push(...renderShowMessages(displayMessages));
+        output.push(...renderShowMessages(displayMessages, { expandHint }));
 
         { const rc = resumeCommandFor(params.session_id); if (rc) output.push(`Resume: ${rc}`); }
 

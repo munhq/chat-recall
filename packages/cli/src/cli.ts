@@ -4,6 +4,7 @@
  */
 
 import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
+import { renderShowMessages, type ShowMessage } from '@chat-recall/engine/mcp/show-render.js';
 import type { McpClientId } from '@chat-recall/engine/core/mcp-clients.js';
 import { config } from 'dotenv';
 import { Command } from 'commander';
@@ -1118,13 +1119,14 @@ program
   .description('Show conversation content from a session (requires login)')
   .option('-m, --messages <number>', 'Number of messages to show', '10')
   .option('-f, --full', 'Show full conversation (all messages)', false)
-  .action(async (sessionId: string, options: { messages: string; full?: boolean }) => {
+  .option('-l, --line <number>', 'Show only the message at this line, with every tool input and result whole')
+  .action(async (sessionId: string, options: { messages: string; full?: boolean; line?: string }) => {
     try {
       // Server holds the full message list (rebuilt from synced chunks). limit=0
-      // returns the whole session; each row's `content` is already display text.
+      // returns the whole session, tool calls and their results included.
       const soft = await serverGetSoft<{
         sessionId: string;
-        messages: Array<{ line: number; role: string; content: string }>;
+        messages: ShowMessage[];
         total: number;
       }>(`/api/conversations/${encodeURIComponent(sessionId)}?limit=0`);
 
@@ -1137,23 +1139,23 @@ program
       console.log(chalk.bold('Session:'), sessionId);
       console.log();
 
+      if (options.line !== undefined) {
+        const line = parseInt(options.line, 10);
+        const hit = messagesList.find((m) => m.line === line);
+        if (!hit) {
+          const lines = messagesList.map((m) => m.line);
+          console.log(chalk.yellow(`No message at line ${options.line}. Its lines run from ${Math.min(...lines)} to ${Math.max(...lines)}.`));
+          process.exit(1);
+        }
+        console.log(renderShowMessages([hit], { full: true }).join('\n'));
+        return;
+      }
+
       // Without --full, show the first N messages (server returns them in order).
       const maxMessages = parseInt(options.messages, 10);
       const displayMessages = options.full ? messagesList : messagesList.slice(0, maxMessages);
-
-      for (const msg of displayMessages) {
-        const text = msg.content;
-
-        if (msg.role === 'user') {
-          console.log(`${chalk.bold.blue('User')} ${chalk.dim(`(line ${msg.line})`)}`);
-        } else if (msg.role === 'assistant') {
-          console.log(`${chalk.bold.green('Assistant')} ${chalk.dim(`(line ${msg.line})`)}`);
-        } else {
-          console.log(chalk.bold.yellow(msg.role));
-        }
-        console.log(text);
-        console.log();
-      }
+      const expandHint = (line: number) => `Run chat-recall show ${sessionId} --line ${line} for the whole text.`;
+      console.log(renderShowMessages(displayMessages, { expandHint }).join('\n'));
 
       console.log(chalk.dim(`Showing ${displayMessages.length} of ${messagesList.length} messages. Use --full for the complete conversation.`));
       { const rc = resumeCommandFor(sessionId); if (rc) console.log(chalk.dim(`Resume: ${rc}`)); }
