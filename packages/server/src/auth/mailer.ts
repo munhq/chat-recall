@@ -71,7 +71,7 @@ export function renderMail(
 }
 
 import { mailkit } from './mail-kit.js';
-import { recordMailSent } from '../util/growth.js';
+import { productKit } from '../util/product-kit.js';
 
 export interface Mail {
   to: string;
@@ -121,46 +121,13 @@ function mailFrom(): string {
   return process.env.MAIL_FROM || process.env.EMAIL_FROM || 'chat-recall <noreply@chatrecall.dev>';
 }
 
-/** Implicit TLS on 465, STARTTLS on 587.
- *
- *  Inferred from the port rather than read from SMTP_SECURE alone, because the
- *  failure mode of getting it wrong is silent: nodemailer on 465 without
- *  `secure` waits for a plaintext greeting that never comes and the send hangs
- *  until timeout. The fleet's other charts set port 465, so this is the likely
- *  misconfiguration, not a hypothetical one. */
-function smtpSecure(port: number): boolean {
-  if (process.env.SMTP_SECURE === 'true') return true;
-  if (process.env.SMTP_SECURE === 'false') return false;
-  return port === 465;
-}
-
-// nodemailer is imported lazily and the transport is cached: a self-host
-// install that never sends mail should not pay to load it, and the cloud
-// should not build a new connection pool per reset.
-let transportPromise: Promise<any> | null = null;
-
-async function transport(): Promise<any> {
-  if (!transportPromise) {
-    transportPromise = (async () => {
-      const nodemailer = await import('nodemailer');
-      const user = process.env.SMTP_USER;
-      const pass = process.env.SMTP_PASS;
-      const port = Number(process.env.SMTP_PORT) || 587;
-      return nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port,
-        secure: smtpSecure(port),
-        auth: user && pass ? { user, pass } : undefined,
-      });
-    })();
-    // A failed construction must not be cached, or every later send inherits it.
-    transportPromise.catch(() => { transportPromise = null; });
-  }
-  return transportPromise;
-}
-
 /**
  * Send a message, or log it when no SMTP is configured.
+ *
+ * The transport, the SES message id and the per-mail record are
+ * `@munhq/product-kit`'s `sendMail`, which every product in the fleet uses. A
+ * build without the kit, such as the public self-host image, also carries no
+ * copy pack, so it has nothing to send; it says so and returns.
  *
  * Never throws. A caller in an auth flow must not turn a mail failure into a
  * user-visible error, because the response to "forgot password" is deliberately
@@ -188,38 +155,13 @@ export async function sendMail(
     );
     return { sent: false, reason: 'no-smtp' };
   }
-  try {
-    const t = await transport();
-    const info = await t.sendMail({
-      from: mail.from || mailFrom(),
-      ...(mail.replyTo ? { replyTo: mail.replyTo } : {}),
-      to: mail.to, subject: mail.subject, text: mail.text, html: mail.html,
-    }) as { response?: string } | undefined;
-    recordMailSent({
-      kind: mail.kind ?? 'unnamed',
-      recipient: mail.to,
-      tenant: meta.tenant ?? null,
-      messageId: sesMessageId(info?.response),
-    });
-    return { sent: true };
-  } catch (err) {
-    // Log and swallow: see the doc comment above on why this cannot propagate.
-    console.error(`[mailer] send to ${mail.to} failed:`, err instanceof Error ? err.message : err);
+  const kit = productKit();
+  if (!kit) {
+    console.error('[mailer] SMTP_HOST is set, and this build carries no @munhq/product-kit to send with');
     return { sent: false, reason: 'send-failed' };
   }
-}
-
-/**
- * The message id SES assigned, from its SMTP reply.
- *
- * SES answers the DATA command with `250 Ok <message-id>`, and that id is the
- * `mail.messageId` of every delivery, bounce and complaint event it publishes
- * later. Keeping it is what joins "we sent this" to "it arrived". Null for any
- * other server's reply.
- */
-export function sesMessageId(response: string | undefined): string | null {
-  const m = /^250\s+Ok\s+([A-Za-z0-9-]{20,100})\s*$/i.exec(String(response ?? '').trim());
-  return m ? m[1]! : null;
+  const r = await kit.sendMail({ ...mail, from: mail.from || mailFrom() }, { tenant: meta.tenant ?? null });
+  return r.sent ? { sent: true } : { sent: false, reason: r.reason === 'no-mail' ? 'no-copy' : r.reason };
 }
 
 const SELF_HOST_URL = 'https://chatrecall.dev/self-hosting/';

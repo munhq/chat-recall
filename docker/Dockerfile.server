@@ -71,10 +71,18 @@ COPY packages/server/package.json ./packages/server/
 COPY .npmrc ./
 # The token is a BuildKit secret, so it is never a layer and never in the image.
 # Without MAILKIT=1 the secret is not even required: --omit=optional skips the
-# only @munhq package, and .npmrc redirects nothing else.
+# @munhq packages, and .npmrc redirects nothing else.
+# npm skips an optional dependency it cannot fetch, so a missing token or a
+# package this repository may not read would build an image that sends no mail
+# and records nothing. With MAILKIT=1 both @munhq packages must be present, or
+# the build stops here.
 RUN --mount=type=secret,id=npmtoken \
     if [ "$MAILKIT" = "1" ]; then \
-      NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken 2>/dev/null || true)" npm ci; \
+      NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken 2>/dev/null || true)" npm ci && \
+      for p in @munhq/mailkit @munhq/product-kit; do \
+        { [ -f "packages/server/node_modules/$p/package.json" ] || [ -f "node_modules/$p/package.json" ]; } \
+          || { echo "MAILKIT=1 and $p is not installed: check the npm token and the package's access"; exit 1; }; \
+      done; \
     else \
       npm ci --omit=optional; \
     fi
