@@ -27,11 +27,13 @@ import {
   bearer, deviceAuthorization, emailOTP, mcp, oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata,
   twoFactor,
 } from 'better-auth/plugins';
+import { createAuthMiddleware } from 'better-auth/api';
 import { toNodeHandler } from 'better-auth/node';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
+import { noteAttemptedEmail } from '../middleware/funnel.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -109,6 +111,19 @@ export function resetLinkFor(url: string): string {
  *  garbage client ids fail loudly instead of minting codes. */
 export const CLI_CLIENT_ID = 'chat-recall-cli';
 
+/**
+ * Hands the funnel middleware the address a request was about.
+ *
+ * After-hooks run on a refused request too, which is the case the funnel
+ * records: a failed sign-in has the typed address in its body, and a failed
+ * `device/approve` has a session. Exported for the test that runs it inside a
+ * real better-auth instance.
+ */
+export const funnelAfterHook = createAuthMiddleware(async (ctx) => {
+  const body = ctx.body as { email?: unknown } | undefined;
+  noteAttemptedEmail(body?.email, ctx.context.session?.user.email);
+});
+
 function baseURL(): string {
   const url = process.env.BETTER_AUTH_URL || process.env.APP_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
   return url.replace(/\/+$/, '');
@@ -174,6 +189,7 @@ function createAuth() {
       },
     },
     socialProviders: socialProviders(),
+    hooks: { after: funnelAfterHook },
     account: {
       accountLinking: {
         // Link a social sign-in to the EXISTING account with the same email

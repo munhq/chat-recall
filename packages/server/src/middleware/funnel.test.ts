@@ -7,9 +7,9 @@
  * persist a deviceCode row; nothing recorded a signup that never confirmed or a
  * verification code typed wrong.
  *
- * Two properties matter more than the counts, and both are asserted here:
- * a failed step must be recorded as a FAILURE rather than dropped, and no
- * credential may ever reach the event.
+ * Three properties matter more than the counts, and all are asserted here:
+ * a failed step is recorded as a failure, a failure names the address it was
+ * about, and no password, code or token ever reaches the event.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
@@ -20,7 +20,7 @@ vi.mock('../util/growth.js', () => ({
   growth: (event: string, props: unknown) => { sent.calls.push({ event, props }); },
 }));
 
-const { funnelTelemetry } = await import('./funnel.js');
+const { funnelTelemetry, noteAttemptedEmail } = await import('./funnel.js');
 
 /** An app that answers with whatever status the test asks for. */
 function app(status = 200) {
@@ -28,6 +28,21 @@ function app(status = 200) {
   a.use(express.json());
   a.all('/api/auth/*', funnelTelemetry, (_req, res) => { res.status(status).json({ ok: status < 300 }); });
   return a;
+}
+
+/** An app whose handler reports an address the way better-auth's after-hook does. */
+function appNoting(status: number, ...candidates: unknown[]) {
+  const a = express();
+  a.use(express.json());
+  a.all('/api/auth/*', funnelTelemetry, (_req, res) => {
+    noteAttemptedEmail(...candidates);
+    res.status(status).json({ ok: status < 300 });
+  });
+  return a;
+}
+
+function extraOf(i = 0): Record<string, unknown> {
+  return (sent.calls[i]?.props as { extra: Record<string, unknown> }).extra;
 }
 
 beforeEach(() => { sent.calls = []; });
@@ -58,7 +73,7 @@ describe('funnel telemetry', () => {
     expect((sent.calls[0]?.props as { extra: { status: number } }).extra.status).toBe(400);
   });
 
-  test('never records a credential — only a step name and a status', async () => {
+  test('a success records only a step name and a status', async () => {
     await request(app(200))
       .post('/api/auth/sign-up/email')
       .send({ email: 'someone@example.com', password: 'hunter2-not-in-events', name: 'X' });
@@ -67,6 +82,53 @@ describe('funnel telemetry', () => {
     expect(blob).not.toContain('hunter2-not-in-events');
     expect(Object.keys((sent.calls[0]?.props as { extra: Record<string, unknown> }).extra).sort())
       .toEqual(['status', 'step']);
+  });
+
+  test('a failure carries the address, and never the password', async () => {
+    await request(appNoting(401, ' Someone@Example.com '))
+      .post('/api/auth/sign-in/email')
+      .send({ email: ' Someone@Example.com ', password: 'hunter2-not-in-events' });
+    expect(sent.calls[0]?.event).toBe('funnel_fail');
+    expect(extraOf()).toEqual({ step: 'signin', status: 401, email: 'someone@example.com' });
+    expect(JSON.stringify(sent.calls)).not.toContain('hunter2-not-in-events');
+  });
+
+  test('a success drops the address the hook reported', async () => {
+    await request(appNoting(200, 'someone@example.com')).post('/api/auth/sign-in/email').send({});
+    expect(Object.keys(extraOf()).sort()).toEqual(['status', 'step']);
+  });
+
+  test('the first well-formed address wins, and anything else is dropped', async () => {
+    await request(appNoting(400, 'not-an-address', 42, 'session@example.com'))
+      .post('/api/auth/device/approve').send({});
+    expect(extraOf().email).toBe('session@example.com');
+
+    sent.calls = [];
+    await request(appNoting(400, 'not-an-address', `${'a'.repeat(250)}@example.com`))
+      .post('/api/auth/sign-up/email').send({});
+    expect(extraOf()).not.toHaveProperty('email');
+  });
+
+  test('an address noted outside a funnel request goes nowhere', async () => {
+    noteAttemptedEmail('stray@example.com');
+    await request(app(401)).post('/api/auth/sign-in/email').send({});
+    expect(extraOf()).not.toHaveProperty('email');
+  });
+
+  test('two concurrent requests keep their own addresses', async () => {
+    const a = express();
+    a.all('/api/auth/*', funnelTelemetry, async (req, res) => {
+      const who = String(req.query.who);
+      await new Promise((r) => setTimeout(r, who === 'first' ? 30 : 0));
+      noteAttemptedEmail(`${who}@example.com`);
+      res.status(401).end();
+    });
+    await Promise.all([
+      request(a).post('/api/auth/sign-in/email?who=first'),
+      request(a).post('/api/auth/sign-in/email?who=second'),
+    ]);
+    expect(sent.calls.map((c) => (c.props as { extra: { email: string } }).extra.email).sort())
+      .toEqual(['first@example.com', 'second@example.com']);
   });
 
   test('ignores auth requests that are not funnel steps', async () => {
