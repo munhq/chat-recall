@@ -41,27 +41,39 @@
  *
  * ── Once-only ──────────────────────────────────────────────────────────────
  *
- * Each stage is sent at most once per tenant. The record of having sent it is a
- * tenant setting (`trial_reminder_<stage>`), so a restart, a redeploy or a second
- * server replica cannot re-send one; there is no in-memory state to lose.
+ * Each stage is sent at most once per tenant. The sweep is the lifecycle
+ * scheduler of `@munhq/product-kit`. A send starts with a claim: an insert of
+ * (product, tenant, stage) into `lifecycle_mail`, in this server's own
+ * Postgres. Postgres gives the row to one inserter, and only that replica
+ * sends. So a restart, a redeploy or two replicas that sweep at the same time
+ * send each stage once.
  *
- * ── Why it is safe to run on every replica ─────────────────────────────────
+ * The setup and value copies of one stage share the claim key `trial.<stage>`,
+ * so a tenant gets one mail for each stage, whichever copy is due.
  *
- * The guard is a read-then-write on the tenant setting, which is not atomic
- * across replicas, so a simultaneous double-send is theoretically possible. The
- * consequence is one duplicate email, and the alternative — a lock table or a
- * leader election for three emails per tenant per fortnight — costs more than the
- * failure. The sweep is hourly and the windows are days wide, so replicas
- * realistically never collide inside one tick.
+ * The flags that recorded a send before the scheduler (`trial_reminder_<stage>`
+ * in tenant settings) became `lifecycle_mail` rows with the outcome `sent`, in
+ * cloud/migrations/0017_trial_reminder_claims.sql. A tenant that got a stage
+ * under the flags does not get it again.
  *
- * Mail failures never throw (see auth/mailer.ts) and are NOT marked as sent, so a
- * transient SMTP outage retries on the next sweep instead of silently swallowing
- * the only warning a user gets.
+ * A mail that fails to send releases its claim, so a transient SMTP outage
+ * retries on the next sweep. A deployment with no copy, no server or no sender
+ * keeps the claim with that reason, so a deployment that gets a server later
+ * does not mail every old stage at once.
+ *
+ * ── A build without the kit ────────────────────────────────────────────────
+ *
+ * The kit and `@munhq/mailkit` are optional dependencies, installed together
+ * (MAILKIT=1 in docker/Dockerfile.server). A build without them has no copy
+ * pack, so no reminder can have words. `startTrialReminders()` then logs one
+ * line and schedules nothing.
  */
+import type { Lifecycle, LifecyclePool, LifecycleStep } from '@munhq/product-kit/lifecycle';
 import { createControlPlane } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { sendMail, renderMail } from '../auth/mailer.js';
+import { renderMail, mailFrom, type Mail } from '../auth/mailer.js';
 import { mailkit } from '../auth/mail-kit.js';
+import { loadProductKit, lifecycleKit } from '../util/product-kit.js';
 import { isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 
 const log = createLogger('trial-reminders');
@@ -315,65 +327,163 @@ export async function trialReminderMail(
   return valueTrackMail(to, stage, daysLeft, usage);
 }
 
-/**
- * One sweep across all tenants. Returns what it did, so the caller can log it and
- * a test can assert on it without inspecting mail.
- */
-export async function sweepTrialReminders(
-  now = Date.now(),
-): Promise<{ scanned: number; onTrial: number; sent: Array<{ tenant: string; stage: ReminderStage }> }> {
-  const sent: Array<{ tenant: string; stage: ReminderStage }> = [];
-  let scanned = 0;
-  let onTrial = 0;
+/** One trialing tenant, as the scheduler sees it. */
+export interface TrialSubject {
+  id: string;
+  tenant: string;
+  /** The team owner's address: the person who can pay. */
+  to: string | null;
+  daysLeft: number | null;
+  /** The tenant's counts, read once for each sweep and only when a stage asks. */
+  usage(): Promise<TrialUsage | null>;
+}
 
+/** The deadline stages, most urgent first. */
+const DEADLINES = ['ended', 'final', 'half'] as const;
+
+/** Mail from this server has one sender. */
+async function withSender(input: Promise<Mail | null>): Promise<Mail | null> {
+  const mail = await input;
+  return mail ? { ...mail, from: mail.from || mailFrom() } : null;
+}
+
+/**
+ * The scheduler's steps, most urgent first.
+ *
+ * The scheduler sends the first due step of a tenant and no other in that
+ * sweep. A tenant found at 1 day left gets the final notice, and the halfway
+ * one it did not get stays unsent, because the final stage is still the first
+ * due step. This is the rule of `reminderStage()`.
+ *
+ * Each deadline stage has three copies under one claim key: the setup track
+ * for an account with nothing synced, and the value track with or without the
+ * tenant's counts. Counts that cannot be read take the value track with no
+ * numbers. The nudge goes only to an empty account, and only while no deadline
+ * stage is due.
+ */
+export function trialSteps(): Array<LifecycleStep<TrialSubject>> {
+  const steps: Array<LifecycleStep<TrialSubject>> = [];
+  for (const stage of DEADLINES) {
+    const key = `trial.${stage}`;
+    const at = (s: TrialSubject) => reminderStage(s.daysLeft) === stage;
+    const empty = (u: TrialUsage | null) => !!u && u.sessions === 0;
+    steps.push({
+      id: `trial.setup.${stage}`,
+      key,
+      due: async (s) => at(s) && empty(await s.usage()),
+      mail: (s) => withSender(setupTrackMail(s.to ?? '', stage, s.daysLeft ?? 0)),
+    });
+    steps.push({
+      id: `trial.value.${stage}.holdings`,
+      key,
+      due: async (s) => {
+        if (!at(s)) return false;
+        const u = await s.usage();
+        return !empty(u) && holdingsOf(u) !== null;
+      },
+      mail: async (s) => withSender(valueTrackMail(s.to ?? '', stage, s.daysLeft ?? 0, await s.usage())),
+    });
+    steps.push({
+      id: `trial.value.${stage}.plain`,
+      key,
+      due: async (s) => {
+        if (!at(s)) return false;
+        const u = await s.usage();
+        return !empty(u) && holdingsOf(u) === null;
+      },
+      mail: async (s) => withSender(valueTrackMail(s.to ?? '', stage, s.daysLeft ?? 0, await s.usage())),
+    });
+  }
+  steps.push({
+    id: 'trial.setup.nudge',
+    key: 'trial.nudge',
+    due: async (s) => {
+      if (!nudgeDue(s.daysLeft)) return false;
+      const u = await s.usage();
+      return !!u && u.sessions === 0;
+    },
+    mail: (s) => withSender(setupTrackMail(s.to ?? '', 'nudge', s.daysLeft ?? 0)),
+  });
+  return steps;
+}
+
+/**
+ * Every tenant on a no-card trial, with its owner's address.
+ *
+ * `loadUsage` is read lazily and once for each tenant in a sweep: only a
+ * tenant inside a stage's window costs a query.
+ */
+export async function* trialSubjects(
+  now: Date,
+  loadUsage: (tenant: string) => Promise<TrialUsage | null> = loadTrialUsage,
+): AsyncGenerator<TrialSubject> {
   const cp = await createControlPlane();
   try {
-    const tenants = await cp.listTenants();
-    for (const tenant of tenants) {
-      scanned++;
+    for (const tenant of await cp.listTenants()) {
       const ent = await cp.getEntitlement(tenant);
       if (!isNoCardTrial(ent)) continue;
-      onTrial++;
-
-      const left = trialDaysLeft(ent, now);
-      let stage = reminderStage(left);
-
-      // The install nudge, for a tenant no deadline stage has claimed yet. Its
-      // usage is read here rather than below because the account being EMPTY is
-      // what makes this stage due at all.
-      let usage: TrialUsage | null | undefined;
-      if (!stage && nudgeDue(left)) {
-        if (await cp.getTenantSetting(tenant, 'trial_reminder_nudge')) continue;
-        usage = await loadTrialUsage(tenant);
-        if (!usage || usage.sessions > 0) continue;
-        stage = 'nudge';
-      }
-      if (!stage) continue;
-
-      const key = `trial_reminder_${stage}`;
-      if (await cp.getTenantSetting(tenant, key)) continue;   // already sent
-
-      const to = await ownerEmail(cp, tenant);
-      if (!to) continue;
-
-      // Read AFTER the already-sent guard: no point costing a query for a tenant
-      // that is not going to be written to.
-      if (usage === undefined) usage = await loadTrialUsage(tenant);
-
-      const res = await sendMail(trialReminderMail(to, stage, left ?? 0, usage), { tenant });
-      if (!res.sent && res.reason === 'send-failed') {
-        log.warn({ tenant, stage }, 'trial reminder send failed; will retry');
-        continue;
-      }
-      await cp.setTenantSetting(tenant, key, String(now));
-      sent.push({ tenant, stage });
+      let usage: Promise<TrialUsage | null> | undefined;
+      yield {
+        id: tenant,
+        tenant,
+        to: await ownerEmail(cp, tenant),
+        daysLeft: trialDaysLeft(ent, now.getTime()),
+        usage: () => (usage ??= loadUsage(tenant)),
+      };
     }
   } finally {
     await cp.close();
   }
+}
 
-  if (sent.length) log.info({ sent, scanned, onTrial }, 'trial reminders sent');
-  return { scanned, onTrial, sent };
+export interface TrialReminderOptions {
+  /** The Postgres pool for `lifecycle_mail`. Default: this server's primary pool. */
+  pool?: LifecyclePool;
+  /** The tenant's counts. Default: `loadTrialUsage`. */
+  loadUsage?: (tenant: string) => Promise<TrialUsage | null>;
+}
+
+/**
+ * The trial reminder scheduler, or null when this build cannot send one.
+ *
+ * Null without `@munhq/product-kit/lifecycle`, and null without a Postgres
+ * URL, because the claims live in this server's Postgres.
+ */
+export async function trialReminders(opts: TrialReminderOptions = {}): Promise<Lifecycle | null> {
+  await loadProductKit();
+  const kit = lifecycleKit();
+  if (!kit) {
+    log.info('trial reminders: this build has no @munhq/product-kit lifecycle, so none are scheduled');
+    return null;
+  }
+  let pool = opts.pool;
+  if (!pool) {
+    if (!process.env.DATABASE_URL && !process.env.CHAT_RECALL_DATABASE_URL) {
+      log.warn('trial reminders: no DATABASE_URL, and the claims live in Postgres, so none are scheduled');
+      return null;
+    }
+    const { openPgPool } = await import('@chat-recall/engine/core/store/pg-pool.js');
+    pool = (await openPgPool()) as LifecyclePool;
+  }
+  const loadUsage = opts.loadUsage ?? loadTrialUsage;
+  return kit.lifecycle<TrialSubject>({
+    pool,
+    product: 'chat-recall',
+    killSwitch: 'TRIAL_REMINDERS',
+    subjects: (now) => trialSubjects(now, loadUsage),
+    steps: trialSteps(),
+    logger: {
+      info: (o, m) => log.info(o, m),
+      warn: (o, m) => log.warn(o, m),
+      error: (o, m) => log.error(o, m),
+    },
+  });
+}
+
+/** Start the hourly sweep, on the role that runs workers. */
+export async function startTrialReminders(): Promise<void> {
+  const scheduler = await trialReminders();
+  scheduler?.start();
 }
 
 /** The team owner's address — the person who can actually pay. */

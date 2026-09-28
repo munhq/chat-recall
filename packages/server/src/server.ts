@@ -70,7 +70,7 @@ import { advertisedLimits } from './middleware/rate-limit-config.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { sweepSyntheticRetention, sweepUserRetention, sweepLapsedRetention, lapsedRetentionDays } from './services/retention.js';
-import { sweepTrialReminders } from './services/trial-reminders.js';
+import { startTrialReminders } from './services/trial-reminders.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
 import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
@@ -1063,34 +1063,18 @@ const httpServer = app.listen(PORT, HOST, () => {
     log.info('synthetic-tenant retention sweep enabled');
   }
 
-  // Trial reminders: warn a trialing tenant at 7 / 2 / 0 days left, once each.
-  // Hourly is ample for day-wide windows, and the per-stage "already sent" flag
-  // lives in tenant settings so restarts and extra replicas cannot re-send.
-  // Gated on billing being configured: self-host has no trials to remind about.
+  // Trial reminders: warn a trialing tenant at 3 / 1 / 0 days left, once each.
+  // The lifecycle scheduler of @munhq/product-kit runs the hourly sweep and
+  // claims each stage in Postgres, so restarts and extra replicas cannot
+  // re-send. Gated on billing being configured: self-host has no trials to
+  // remind about.
   //
-  // TRIAL_REMINDERS=0 stops every one of them at the source. A flag rather than
-  // a code change because the reason to stop is usually about the recipients
-  // rather than the code — on 2026-09-13, five tenants were due a reminder
-  // before anyone had established which countries they were in.
-  if (isServerMode() && runWorkers && billingEnabled() && process.env.TRIAL_REMINDERS !== '0') {
-    const TRIAL_SWEEP_MS = 60 * 60 * 1000;
-    let trialInFlight = false;
-    const trialSweep = async (): Promise<void> => {
-      if (trialInFlight) return;
-      trialInFlight = true;
-      try {
-        await sweepTrialReminders();
-      } catch (err) {
-        log.error({ err }, 'trial reminder sweep failed');
-      } finally {
-        trialInFlight = false;
-      }
-    };
-    setInterval(() => { void trialSweep(); }, TRIAL_SWEEP_MS).unref();
-    setTimeout(() => { void trialSweep(); }, 45_000).unref();
-    log.info('trial reminder sweep enabled');
-  } else if (isServerMode() && runWorkers && billingEnabled()) {
-    log.warn('trial reminder sweep DISABLED by TRIAL_REMINDERS=0 — nobody is being mailed');
+  // TRIAL_REMINDERS=0 (or LIFECYCLE_MAIL=0) stops every one of them at the
+  // source, and the scheduler logs that it is disabled. The reason to stop is
+  // usually about the recipients, and a variable stops the mail without a
+  // release.
+  if (isServerMode() && runWorkers && billingEnabled()) {
+    startTrialReminders().catch((err) => log.error({ err }, 'trial reminder scheduler failed to start'));
   }
 
   // Licence activation refresh, for a SELF-HOSTED deployment holding a serial. Runs

@@ -44,6 +44,6 @@
   },
   "optionalDependencies": {
     "@munhq/mailkit": "^0.1.1",
-    "@munhq/product-kit": "^0.1.0"
+    "@munhq/product-kit": "^0.4.1"
   }
 }

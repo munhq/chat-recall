@@ -1,12 +1,16 @@
 /**
  * Trial reminders: which stage is due, and what each of the two tracks promises.
  *
- * The stage function is pure, so it is tested directly. The sweep itself is
- * covered through `reminderStage` plus the copy, because the sweep's remaining
- * logic is control-plane I/O that the integration harness exercises end to end.
+ * The stage function and the scheduler steps are pure, so they are tested
+ * directly. The claims in Postgres, and the flags the migration copies into
+ * them, are tested in trial-reminders.pg.test.ts.
  */
-import { describe, test, expect } from 'vitest';
-import { reminderStage, nudgeDue, nudgeAfterDays, trialReminderMail, type TrialUsage } from './trial-reminders.js';
+import { describe, test, expect, afterEach } from 'vitest';
+import {
+  reminderStage, nudgeDue, nudgeAfterDays, trialSteps, trialReminders,
+  type TrialUsage, type TrialSubject,
+} from './trial-reminders.js';
+import { __setProductKit } from '../util/product-kit.js';
 
 /** The body with its wrapping collapsed. Every content assertion goes through
  *  this: the copy wraps at 78 columns around numbers whose width varies per
@@ -68,6 +72,65 @@ describe('reminderStage', () => {
   });
 });
 
+
+/**
+ * The step the scheduler sends: the first due step in list order. This is the
+ * rule of the lifecycle scheduler, applied here to the steps without the kit.
+ */
+async function firstDue(daysLeft: number | null, usage: TrialUsage | null) {
+  let reads = 0;
+  const subject: TrialSubject = {
+    id: 't', tenant: 't', to: 'owner@example.com', daysLeft,
+    usage: async () => { reads++; return usage; },
+  };
+  for (const step of trialSteps()) {
+    if (await step.due(subject, new Date())) return { id: step.id, key: step.key, reads };
+  }
+  return { id: null, key: null, reads };
+}
+
+describe('the scheduler steps', () => {
+  test('each deadline stage picks its copy from the counts, under one claim key', async () => {
+    expect(await firstDue(3, ACTIVE)).toMatchObject({ id: 'trial.value.half.holdings', key: 'trial.half' });
+    expect(await firstDue(3, IDLE)).toMatchObject({ id: 'trial.setup.half', key: 'trial.half' });
+    expect(await firstDue(1, ONE)).toMatchObject({ id: 'trial.value.final.holdings', key: 'trial.final' });
+    expect(await firstDue(1, IDLE)).toMatchObject({ id: 'trial.setup.final', key: 'trial.final' });
+    expect(await firstDue(0, ACTIVE)).toMatchObject({ id: 'trial.value.ended.holdings', key: 'trial.ended' });
+    expect(await firstDue(-2, IDLE)).toMatchObject({ id: 'trial.setup.ended', key: 'trial.ended' });
+  });
+
+  test('counts that cannot be read take the value track with no numbers', async () => {
+    for (const stage of STAGES) {
+      const left = stage === 'half' ? 3 : stage === 'final' ? 1 : 0;
+      expect(await firstDue(left, null)).toMatchObject({ id: `trial.value.${stage}.plain`, key: `trial.${stage}` });
+    }
+  });
+
+  test('the most urgent stage is the first due step', async () => {
+    expect((await firstDue(2, ACTIVE)).key).toBe('trial.half');
+    expect((await firstDue(1, ACTIVE)).key).toBe('trial.final');
+  });
+
+  test('the nudge goes to an empty account only, before the deadline stages', async () => {
+    expect(await firstDue(5, IDLE)).toMatchObject({ id: 'trial.setup.nudge', key: 'trial.nudge' });
+    expect((await firstDue(5, ACTIVE)).id).toBeNull();
+    expect((await firstDue(5, null)).id).toBeNull();
+  });
+
+  test('outside every window nothing is due, and the counts are not read', async () => {
+    expect(await firstDue(7, IDLE)).toEqual({ id: null, key: null, reads: 0 });
+    expect(await firstDue(null, IDLE)).toEqual({ id: null, key: null, reads: 0 });
+  });
+});
+
+describe('a build without @munhq/product-kit', () => {
+  afterEach(() => { __setProductKit(null); });
+
+  test('schedules no trial reminder', async () => {
+    __setProductKit(null);
+    expect(await trialReminders()).toBeNull();
+  });
+});
 
 /*
  * The copy assertions that stood below moved out with the words.
