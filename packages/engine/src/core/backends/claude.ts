@@ -152,27 +152,45 @@ export class ClaudeBackend implements ToolBackend {
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
-    const seen = new Set<string>();
-    const out: SessionRef[] = [];
+    const byId = new Map<string, SessionRef>();
 
     // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
     // same set the indexer scans, so index and sync stay consistent.
     for (const root of claudeProjectDirs()) {
-      this.collectSessionsFromRoot(root, cutoff, filter, seen, out, opts.previews !== false);
+      this.collectSessionsFromRoot(root, filter, byId, opts.previews !== false);
     }
 
+    // The cutoff applies to the session, so a session whose primary copy is old
+    // and whose live copy is new is listed.
+    const out = [...byId.values()].filter((r) => r.mtime >= cutoff);
     out.sort((a, b) => b.mtime - a.mtime);
     return opts.limit ? out.slice(0, opts.limit) : out;
   }
 
+  /**
+   * Add this root's sessions to `byId`. A session resumed under a second
+   * profile has one file in each home under the same id. It is ONE session: the
+   * first home keeps its path, and its mtime is the newest of all copies.
+   *
+   * Each copy was listed as its own ref before. Session 8da8d72b had a primary
+   * copy frozen at 05:55 and a second-home copy growing until 12:00; the walk
+   * handled both refs under one ledger row with two different mtimes, and the
+   * row that shipped nothing stamped the other copy's mtime.
+   */
   private collectSessionsFromRoot(
     root: string,
-    cutoff: number,
     filter: string | undefined,
-    seen: Set<string>,
-    out: SessionRef[],
+    byId: Map<string, SessionRef>,
     previews: boolean,
   ): void {
+    const add = (ref: SessionRef): void => {
+      const prior = byId.get(ref.rawId);
+      if (!prior) { byId.set(ref.rawId, ref); return; }
+      if (ref.mtime > prior.mtime) {
+        prior.mtime = ref.mtime;
+        prior.modified = ref.modified;
+      }
+    };
     if (!existsSync(root)) return;
 
     for (const proj of readdirSync(root, { withFileTypes: true })) {
@@ -185,6 +203,7 @@ export class ClaudeBackend implements ToolBackend {
       // it carries pre-computed first-prompt + messageCount so we skip
       // re-reading every transcript header.
       const indexPath = join(projPath, 'sessions-index.json');
+      const indexed = new Set<string>();
       if (existsSync(indexPath)) {
         try {
           const indexData = JSON.parse(readFileSync(indexPath, 'utf-8'));
@@ -200,9 +219,8 @@ export class ClaudeBackend implements ToolBackend {
           }>;
           for (const entry of entries) {
             if (!entry.fullPath || !existsSync(entry.fullPath)) continue;
-            if ((entry.fileMtime ?? 0) < cutoff) continue;
-            seen.add(entry.sessionId);
-            out.push({
+            indexed.add(entry.sessionId);
+            add({
               toolId: 'claude',
               rawId: entry.sessionId,
               prefixedId: entry.sessionId,
@@ -226,14 +244,15 @@ export class ClaudeBackend implements ToolBackend {
       for (const f of files) {
         if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
         const sessionId = basename(f, '.jsonl');
-        if (seen.has(sessionId)) continue;
+        if (indexed.has(sessionId)) continue;
         const fullPath = join(projPath, f);
         let stat;
         try { stat = statSync(fullPath); } catch { continue; }
-        if (stat.mtimeMs < cutoff) continue;
+        const prior = byId.get(sessionId);
+        if (prior) { add({ ...prior, mtime: stat.mtimeMs, modified: stat.mtime.toISOString() }); continue; }
         const firstPrompt = previews ? extractFirstUserPromptSync(fullPath, { maxLength: 200 }) : '';
 
-        out.push({
+        add({
           toolId: 'claude',
           rawId: sessionId,
           prefixedId: sessionId,

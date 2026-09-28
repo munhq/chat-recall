@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import {
   findSessionFile, findSessionFiles, findGeminiSessionFile,
   withSessionScanScope, invalidateSessionFileIndex, invalidateGeminiSessionIndex,
+  INDEX_RECHECK_MS,
 } from './live-session-scan.js';
 
 let home: string;
@@ -110,6 +111,23 @@ describe('scan scope', () => {
       expect(findSessionFile(id)).toBeNull();     // served from the index
     });
     expect(findSessionFile(id)).not.toBeNull();   // scope closed → fresh again
+  });
+
+  test('an unchanged tree keeps the index across rechecks', async () => {
+    const id = 'cdcdcdcd-1111-2222-3333-444444444444';
+    writeSession(home, '-home-user-proj', id);
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      await withSessionScanScope(async () => {
+        const first = findSessionFiles(id);
+        now += INDEX_RECHECK_MS;
+        expect(findSessionFiles(id)).toEqual(first);
+      });
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   test('nesting does not drop the outer scope\'s index early', async () => {
