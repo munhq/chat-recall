@@ -27,13 +27,24 @@
  * Keep this in step with the tool backends in `./backends/`.
  */
 
+/**
+ * The id prefix chat-recall puts on each tool's sessions. A claude id carries
+ * none. `gemini_` stays because rows synced before Gemini CLI was switched off
+ * still carry it.
+ */
+export const SESSION_ID_PREFIXES = {
+  codex: 'codex_',
+  opencode: 'opencode_',
+  agy: 'agy_',
+  cursor: 'cursor_',
+  gemini: 'gemini_',
+} as const;
+
 /** Prefix → tool, for ids whose tool is not already known. */
 function toolOfSessionId(sessionId: string): string {
-  if (sessionId.startsWith('codex_')) return 'codex';
-  if (sessionId.startsWith('opencode_')) return 'opencode';
-  if (sessionId.startsWith('agy_')) return 'agy';
-  if (sessionId.startsWith('cursor_')) return 'cursor';
-  if (sessionId.startsWith('gemini_')) return 'gemini';
+  for (const [tool, prefix] of Object.entries(SESSION_ID_PREFIXES)) {
+    if (sessionId.startsWith(prefix)) return tool;
+  }
   return 'claude';  // claude ids carry no prefix
 }
 
