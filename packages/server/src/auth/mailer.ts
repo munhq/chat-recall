@@ -45,7 +45,7 @@
 async function fromPack(id: string, to: string, vars: Record<string, string | number | undefined> = {}): Promise<Mail | null> {
   const kit = await mailkit();
   if (!kit) return null;
-  return renderMail(kit.copy(id, to, vars), kit);
+  return renderMail(kit.copy(id, to, vars), kit, id);
 }
 
 /**
@@ -58,6 +58,7 @@ async function fromPack(id: string, to: string, vars: Record<string, string | nu
 export function renderMail(
   m: { to: string; subject: string; preheader: string; blocks: unknown[]; footer?: unknown[]; from?: string; replyTo?: string } | null,
   kit: NonNullable<Awaited<ReturnType<typeof mailkit>>>,
+  kind?: string,
 ): Mail | null {
   if (!m) return null;
   const { from, replyTo, ...message } = m;
@@ -65,10 +66,12 @@ export function renderMail(
     ...kit.compose(message as never),
     ...(from ? { from } : {}),
     ...(replyTo ? { replyTo } : {}),
+    ...(kind ? { kind } : {}),
   };
 }
 
 import { mailkit } from './mail-kit.js';
+import { recordMailSent } from '../util/growth.js';
 
 export interface Mail {
   to: string;
@@ -87,6 +90,14 @@ export interface Mail {
   from?: string;
   /** Where a reply goes, when that differs from the sender. */
   replyTo?: string;
+  /**
+   * Which message this is: the copy-pack id, such as `trial.setup.final`.
+   *
+   * Recorded with every send (see `recordMailSent`). SES keeps no per-message
+   * history, so before this the only trace of a verification code or a reminder
+   * was the mail in the recipient's inbox.
+   */
+  kind?: string;
 }
 
 /** The account page on THIS deployment — where a person manages or cancels a
@@ -158,6 +169,7 @@ async function transport(): Promise<any> {
  */
 export async function sendMail(
   input: Mail | null | Promise<Mail | null>,
+  meta: { tenant?: string } = {},
 ): Promise<{ sent: boolean; reason?: string }> {
   const mail = await input;
   // A builder answers null when the copy pack has nothing for it. Sending is
@@ -178,10 +190,16 @@ export async function sendMail(
   }
   try {
     const t = await transport();
-    await t.sendMail({
+    const info = await t.sendMail({
       from: mail.from || mailFrom(),
       ...(mail.replyTo ? { replyTo: mail.replyTo } : {}),
       to: mail.to, subject: mail.subject, text: mail.text, html: mail.html,
+    }) as { response?: string } | undefined;
+    recordMailSent({
+      kind: mail.kind ?? 'unnamed',
+      recipient: mail.to,
+      tenant: meta.tenant ?? null,
+      messageId: sesMessageId(info?.response),
     });
     return { sent: true };
   } catch (err) {
@@ -189,6 +207,19 @@ export async function sendMail(
     console.error(`[mailer] send to ${mail.to} failed:`, err instanceof Error ? err.message : err);
     return { sent: false, reason: 'send-failed' };
   }
+}
+
+/**
+ * The message id SES assigned, from its SMTP reply.
+ *
+ * SES answers the DATA command with `250 Ok <message-id>`, and that id is the
+ * `mail.messageId` of every delivery, bounce and complaint event it publishes
+ * later. Keeping it is what joins "we sent this" to "it arrived". Null for any
+ * other server's reply.
+ */
+export function sesMessageId(response: string | undefined): string | null {
+  const m = /^250\s+Ok\s+([A-Za-z0-9-]{20,100})\s*$/i.exec(String(response ?? '').trim());
+  return m ? m[1]! : null;
 }
 
 const SELF_HOST_URL = 'https://chatrecall.dev/self-hosting/';

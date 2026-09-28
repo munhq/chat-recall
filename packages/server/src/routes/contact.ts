@@ -94,7 +94,7 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
     log.error({ stored }, 'contact enquiry received but this build carries no mailer');
     return respond(req, res, false, 'contact is not configured on this server');
   }
-  const mail = kit.compose({
+  const mail = { ...kit.compose({
     to: TO,
     subject: `chat-recall ${topic} enquiry`,
     preheader: `${email}${company ? ` · ${company}` : ''}`,
@@ -104,7 +104,7 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
       { kind: 'quote', text: message },
       { kind: 'cta', label: 'Reply', url: `mailto:${email}` },
     ],
-  });
+  }), kind: 'internal.contact_enquiry' };
 
   try {
     const r = await sendMail(mail);
@@ -185,7 +185,7 @@ router.post('/feedback', express.json({ limit: '16kb' }), async (req, res) => {
     const who = email || 'someone who did not leave an address';
     const kit = await mailkit();
     if (!kit) return;
-    const mail = kit.compose({
+    const mail = { ...kit.compose({
       to: TO,
       subject: 'chat-recall feedback',
       preheader: `${who}${version ? ` · cli ${version}` : ''}`,
@@ -200,7 +200,7 @@ router.post('/feedback', express.json({ limit: '16kb' }), async (req, res) => {
         // than none: it looks like a way to answer and is not.
         ...(email ? [{ kind: 'cta' as const, label: 'Reply', url: `mailto:${email}` }] : []),
       ],
-    });
+    }), kind: 'internal.cli_feedback' };
     const r = await sendMail(mail);
     if (r.sent) await markFeedbackMailed(stored);
     else log.error({ reason: r.reason }, 'feedback mail not delivered (message is stored)');
