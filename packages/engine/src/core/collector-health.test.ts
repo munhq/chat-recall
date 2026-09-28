@@ -9,7 +9,7 @@
  * gets ignored, and then the real outage is invisible again.
  */
 import { describe, test, expect } from 'vitest';
-import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, updateCollectorHealth, readCollectorHealth, type CollectorHealth } from './collector-health.js';
+import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, updateCollectorHealth, readCollectorHealth, crashesAtBoot, recentCrashes, type CollectorHealth } from './collector-health.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,7 +50,7 @@ describe('judging collector health', () => {
     // process still managed some work, so every point-in-time check looked fine.
     const v = judgeHealth(healthy({ restartsLastHour: CRASHLOOP_RESTARTS }), NOW);
     expect(v.ok).toBe(false);
-    expect(v.summary).toContain('restarted');
+    expect(v.summary).toContain('crashed');
   });
 
   test('nothing reaching any server is called out, with the reason', () => {
@@ -91,8 +91,65 @@ describe('judging collector health', () => {
     }, NOW);
     expect(v.reasons).toHaveLength(3);
     expect(v.summary).toContain('not reported');
-    expect(v.summary).toContain('restarted 12 times');
+    expect(v.summary).toContain('crashed 12 times');
     expect(v.summary).toContain('never');
+  });
+});
+
+/**
+ * Only a crash counts toward the crash loop.
+ *
+ * Every start used to count, so a boot, an upgrade and the self-restart onto
+ * the new bundle — three starts in a few minutes of ordinary use — printed
+ * "not syncing: it restarted 3 times" over a sync that was current.
+ */
+describe('counting crashes at boot', () => {
+  const prior = (over: Partial<CollectorHealth> = {}): CollectorHealth => healthy({ startedAt: NOW - mins(10), ...over });
+
+  test('the first start on a machine is not a crash', () => {
+    expect(crashesAtBoot(null, NOW)).toEqual([]);
+  });
+
+  test('a start after a clean exit is not a crash', () => {
+    expect(crashesAtBoot(prior({ cleanExitAt: NOW - mins(1) }), NOW)).toEqual([]);
+  });
+
+  test('a start after a process that left no clean exit is a crash', () => {
+    expect(crashesAtBoot(prior(), NOW)).toEqual([NOW]);
+  });
+
+  test('a clean exit from an EARLIER process does not cover a later one that crashed', () => {
+    // The mark is older than the prior process's own start, so it belongs to
+    // the process before that one.
+    expect(crashesAtBoot(prior({ cleanExitAt: NOW - mins(20) }), NOW)).toEqual([NOW]);
+  });
+
+  test('the history carries over, and a clean start adds nothing to it', () => {
+    const history = [NOW - mins(30), NOW - mins(20)];
+    expect(crashesAtBoot(prior({ crashes: history, cleanExitAt: NOW - mins(1) }), NOW)).toEqual(history);
+    expect(crashesAtBoot(prior({ crashes: history }), NOW)).toEqual([...history, NOW]);
+  });
+
+  test('three clean restarts in an hour stay silent; three crashes do not', () => {
+    let h: CollectorHealth | null = null;
+    for (let i = 0; i < 3; i++) {
+      const start = NOW - mins(30 - i * 10);
+      const crashes = recentCrashes(crashesAtBoot(h, start), start);
+      h = healthy({ startedAt: start, crashes, restartsLastHour: crashes.length, cleanExitAt: start + mins(5) });
+    }
+    expect(judgeHealth(h, NOW).ok).toBe(true);
+
+    let c: CollectorHealth | null = healthy({ startedAt: NOW - mins(40) });
+    for (let i = 0; i < 3; i++) {
+      const start = NOW - mins(30 - i * 10);
+      const crashes = recentCrashes(crashesAtBoot(c, start), start);
+      c = healthy({ startedAt: start, crashes, restartsLastHour: crashes.length });
+    }
+    expect(judgeHealth(c, NOW).summary).toContain('crashed 3 times');
+  });
+
+  test('crashes older than an hour fall out of the count', () => {
+    expect(recentCrashes([NOW - mins(90), NOW - mins(5), NOW - mins(5)], NOW)).toEqual([NOW - mins(5)]);
   });
 });
 
@@ -107,21 +164,21 @@ describe('judging collector health', () => {
  * seconds and telemetry escaped only right after a sync.
  */
 describe('updateCollectorHealth preserves fields it does not know about', () => {
-  test('telemetryEligible and starts survive an unrelated write', () => {
+  test('telemetryEligible and crashes survive an unrelated write', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cr-health-'));
     const prevDir = process.env.CHAT_RECALL_DATA_DIR;
     process.env.CHAT_RECALL_DATA_DIR = dir;
     try {
       updateCollectorHealth({
         telemetryEligible: { 'https://example.invalid': { allowed: true, at: 1 } },
-        starts: [1, 2, 3],
+        crashes: [1, 2, 3],
       } as Partial<CollectorHealth>);
       // A progress tick, which is what the daemon writes constantly.
       updateCollectorHealth({ progress: { done: 1, total: 2 } } as Partial<CollectorHealth>);
 
       const after = readCollectorHealth();
       expect(after?.telemetryEligible?.['https://example.invalid']?.allowed).toBe(true);
-      expect(after?.starts).toEqual([1, 2, 3]);
+      expect(after?.crashes).toEqual([1, 2, 3]);
       expect(after?.progress).toBeTruthy();
     } finally {
       if (prevDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
