@@ -115,3 +115,21 @@ describe('oncePerDay — the throttle that keeps a hot path from flooding the ta
     await m.closeGrowth();
   });
 });
+
+describe('recordMailSent() never throws, in any configuration', () => {
+  it('disabled: returns immediately and does nothing', async () => {
+    const m = await load({ METRICS_ENABLED: undefined, METRICS_PRODUCT: undefined, METRICS_DSN: undefined });
+    expect(m.recordMailSent({ kind: 'auth.otp.verify', recipient: 'a@example.com' })).toBeUndefined();
+  });
+
+  it('enabled with an unreachable DSN: still does not throw', async () => {
+    const m = await load({
+      METRICS_ENABLED: 'true', METRICS_PRODUCT: 'chat-recall',
+      METRICS_DSN: 'postgresql://nobody:nothing@127.0.0.1:1/none?connect_timeout=1',
+    });
+    expect(() => m.recordMailSent({ kind: 'trial.setup.final', recipient: 'a@example.com', tenant: 't', messageId: null }))
+      .not.toThrow();
+    await new Promise((r) => setTimeout(r, 300));
+    await m.closeGrowth();
+  });
+});

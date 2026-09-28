@@ -195,6 +195,48 @@ export function growth(event: GrowthEvent, props: GrowthProps = {}): void {
   });
 }
 
+/** One mail handed to the mail server. */
+export interface MailSent {
+  /** The copy-pack id, e.g. `trial.setup.final`. */
+  kind: string;
+  recipient: string;
+  /** The account the mail is about, when the sender knows it. */
+  tenant?: string | null;
+  /** The id SES assigned, which its delivery and bounce events carry. */
+  messageId?: string | null;
+}
+
+/**
+ * Record that a mail went out. Same contract as `growth`: returns immediately,
+ * never throws, never awaited.
+ *
+ * Its own table, `mail_sent`, beside `events` in the metrics database. SES keeps
+ * no record of each message, so a trial reminder or a verification code left no
+ * trace anywhere except the recipient's inbox. The cockpit reads this table to
+ * show what each person was sent, and joins it on `message_id` to the SES events
+ * that say whether it arrived.
+ */
+export function recordMailSent(m: MailSent): void {
+  if (!ENABLED) return;
+  const p = getPool();
+  if (!p) return;
+  queueMicrotask(() => {
+    p.query(
+      `INSERT INTO mail_sent (product, kind, tenant, recipient, message_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        PRODUCT,
+        m.kind.slice(0, 80),
+        m.tenant ?? null,
+        m.recipient.trim().toLowerCase().slice(0, 254),
+        m.messageId ?? null,
+      ],
+    ).catch((err) => {
+      log.debug({ err, kind: m.kind, product: PRODUCT }, 'mail record dropped');
+    });
+  });
+}
+
 /** Test-only: forget the oncePerDay state. */
 export function __resetGrowthThrottle(): void { seen.clear(); }
 

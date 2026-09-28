@@ -254,7 +254,7 @@ async function setupTrackMail(to: string, stage: ReminderStage, daysLeft: number
     accountUrl: ACCOUNT_URL,
     selfHostUrl: SELF_HOST_URL,
     upgradeUrl: UPGRADE_URL,
-  }), kit);
+  }), kit, id);
 }
 
 /**
@@ -292,7 +292,7 @@ async function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number
     selfHostUrl: SELF_HOST_URL,
     upgradeUrl: UPGRADE_URL,
   });
-  return renderMail(withFigures(message, h ? h.figures : []), kit);
+  return renderMail(withFigures(message, h ? h.figures : []), kit, id);
 }
 
 /**
@@ -360,7 +360,7 @@ export async function sweepTrialReminders(
       // that is not going to be written to.
       if (usage === undefined) usage = await loadTrialUsage(tenant);
 
-      const res = await sendMail(trialReminderMail(to, stage, left ?? 0, usage));
+      const res = await sendMail(trialReminderMail(to, stage, left ?? 0, usage), { tenant });
       if (!res.sent && res.reason === 'send-failed') {
         log.warn({ tenant, stage }, 'trial reminder send failed; will retry');
         continue;
