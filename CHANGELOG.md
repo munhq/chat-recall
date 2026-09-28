@@ -4,6 +4,21 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.8] — 2026-09-28
+
+### Fixed
+- **A session resumed under a second Claude profile stayed on the server as
+  its first copy.** The collector watched only the primary home, listed each
+  copy as its own session, and kept a session index that did not see a copy
+  made after it was built. One session showed 521 of its 778 messages for ten
+  hours. The collector now watches every Claude home, lists a session once
+  with its newest mtime, and rechecks its index every second.
+- **`recall_show` dropped file contents and every tool result.** It now prints
+  Write and Edit bodies and each result under its call. A body over 2000
+  characters shows its first and last 100 characters; `expand_line` returns
+  that message whole. `chat-recall show` prints tool calls too, and `--line`
+  shows one message whole.
+
 ## [0.7.7] — 2026-09-27
 
 ### Fixed
