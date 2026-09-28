@@ -40,7 +40,9 @@ description: >-
 Every tool here takes a NAMED `session_id` (not a positional argument).
 
 - `mcp__chat-recall__recall_show` — read the session slice (`around_line`,
-  `from_end`). Each message comes back in full. It returns **10 messages
+  `from_end`). Each message comes back in full, with its tool calls and
+  results. A body over 2000 characters shows its ends and the `expand_line`
+  that returns it whole. It returns **10 messages
   by default**: raise `max_messages` before telling the user what a session
   contains, or you will describe a tenth of it as the whole.
 - `mcp__chat-recall__recall_summary` — AI summary + outcome.
