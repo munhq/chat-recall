@@ -115,7 +115,9 @@ export function mailerConfigured(): boolean {
   return !!process.env.SMTP_HOST;
 }
 
-function mailFrom(): string {
+/** The default sender. The trial reminders send through the kit's scheduler,
+ *  and they set this sender too, so every mail from this server has the same one. */
+export function mailFrom(): string {
   // EMAIL_FROM is what every other chart in the fleet sets; accept both so the
   // same values.yaml shape works here without a special case.
   return process.env.MAIL_FROM || process.env.EMAIL_FROM || 'chat-recall <noreply@chatrecall.dev>';

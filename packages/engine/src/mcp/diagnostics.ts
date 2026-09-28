@@ -26,7 +26,7 @@ export interface SyncState {
 /**
  * How many days before the end the countdown starts.
  *
- * MUST match `stageFor()` in packages/server/src/services/trial-reminders.ts,
+ * MUST match `reminderStage()` in packages/server/src/services/trial-reminders.ts,
  * which sends the 'half' reminder email at the same threshold. Two channels
  * telling the same user two different deadlines is worse than one channel.
  */

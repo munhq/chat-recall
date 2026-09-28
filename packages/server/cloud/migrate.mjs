@@ -84,6 +84,12 @@ const FILES = [
   // 0011: it takes the author from the parent row, and 0011 is what puts one
   // there for rows that predate attribution.
   './migrations/0015_chunk_author_from_parent.sql',
+  // One-off. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Copies each `trial_reminder_<stage>` tenant flag into `lifecycle_mail` as a
+  // sent claim, so the lifecycle scheduler does not send a stage that the flag
+  // sweep sent. It must run before the first server with the scheduler boots,
+  // which the initContainer order gives.
+  './migrations/0017_trial_reminder_claims.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is

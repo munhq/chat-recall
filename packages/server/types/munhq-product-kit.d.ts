@@ -54,3 +54,67 @@ declare module '@munhq/product-kit/funnel' {
 declare module '@munhq/product-kit/growth' {
   export { growth } from '@munhq/product-kit';
 }
+
+/**
+ * The lifecycle scheduler: timed mail, claimed once for each subject and step
+ * in the product's own Postgres. services/trial-reminders.ts loads it through
+ * util/product-kit.ts.
+ */
+declare module '@munhq/product-kit/lifecycle' {
+  import type { Mail, SendResult } from '@munhq/product-kit';
+
+  export interface LifecyclePool {
+    query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
+  }
+  export interface LifecycleSubject {
+    id: string | number;
+    to: string | null | undefined;
+    tenant?: string | number | null;
+  }
+  export type LifecycleVars = Record<string, string | number | undefined>;
+  export interface LifecycleStep<S extends LifecycleSubject> {
+    id: string;
+    key?: string;
+    due(subject: S, now: Date): boolean | Promise<boolean>;
+    vars?(subject: S, now: Date): LifecycleVars | Promise<LifecycleVars>;
+    mail?(subject: S, now: Date): Mail | null | Promise<Mail | null>;
+  }
+  export interface LifecycleLogger {
+    info(obj: object, msg: string): void;
+    warn(obj: object, msg: string): void;
+    error(obj: object, msg: string): void;
+  }
+  export interface LifecycleOptions<S extends LifecycleSubject> {
+    pool: LifecyclePool;
+    product: string;
+    subjects(now: Date): AsyncIterable<S> | Iterable<S> | Promise<Iterable<S>>;
+    steps: ReadonlyArray<LifecycleStep<S>>;
+    intervalMs?: number;
+    firstRunMs?: number;
+    killSwitch?: string;
+    claimTimeoutMs?: number;
+    logger?: LifecycleLogger;
+  }
+  export interface SweepItem { subject: string; step: string; message: string }
+  export interface SweepReport {
+    ran: boolean;
+    skipped?: 'disabled' | 'in-flight';
+    scanned: number;
+    due: number;
+    sent: Array<SweepItem & { messageId: string | null }>;
+    held: Array<SweepItem & { reason: Exclude<Extract<SendResult, { sent: false }>['reason'], 'send-failed'> }>;
+    failed: SweepItem[];
+    claimedElsewhere: number;
+    noAddress: number;
+    errors: number;
+  }
+  export interface Lifecycle {
+    sweep(now?: Date): Promise<SweepReport>;
+    start(): () => void;
+    stop(): void;
+    disabled(): boolean;
+  }
+  export const LIFECYCLE_TABLE: 'lifecycle_mail';
+  export function ensureLifecycleTable(pool: LifecyclePool): Promise<void>;
+  export function lifecycle<S extends LifecycleSubject>(opts: LifecycleOptions<S>): Lifecycle;
+}
