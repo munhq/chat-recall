@@ -201,6 +201,65 @@ describe('a session split across two homes', () => {
   });
 });
 
+describe('a copy in a second home, seen by a long-running collector', () => {
+  // THE FAILURE: the walk got one ref per copy. The frozen primary and the live
+  // secondary each passed through the ledger with their own mtime, and a row
+  // that shipped nothing stamped the other copy's mtime.
+  test('listSessions returns ONE ref, with the primary path and the newest mtime', async () => {
+    const { claudeBackend } = await mods();
+    const { utimesSync } = await import('node:fs');
+    const primary = writeSession('.claude', [rec('a', 'one')]);
+    const secondary = writeSession('.claude-t2', [rec('x', 'live')]);
+    const old = new Date('2026-07-01T00:00:00Z');
+    const fresh = new Date('2026-08-02T12:00:00Z');
+    utimesSync(primary, old, old);
+    utimesSync(secondary, fresh, fresh);
+
+    const refs = claudeBackend.listSessions({ previews: false }).filter((r) => r.rawId === SID);
+    expect(refs).toHaveLength(1);
+    expect(refs[0].fullPath).toBe(primary);
+    expect(refs[0].mtime).toBe(fresh.getTime());
+  });
+
+  test('a sinceMs cutoff keeps a session whose live copy is newer than it', async () => {
+    const { claudeBackend } = await mods();
+    const { utimesSync } = await import('node:fs');
+    const primary = writeSession('.claude', [rec('a', 'one')]);
+    const secondary = writeSession('.claude-t2', [rec('x', 'live')]);
+    utimesSync(primary, new Date('2026-07-01T00:00:00Z'), new Date('2026-07-01T00:00:00Z'));
+    utimesSync(secondary, new Date('2026-08-02T12:00:00Z'), new Date('2026-08-02T12:00:00Z'));
+
+    const since = new Date('2026-08-01T00:00:00Z').getTime();
+    expect(claudeBackend.listSessions({ previews: false, sinceMs: since }).map((r) => r.rawId)).toEqual([SID]);
+  });
+
+  // THE FAILURE: a scope held open for hours (the scan worker holds one for its
+  // whole life) served an index built before the second copy existed, so the
+  // collector shipped the primary copy alone.
+  test('a copy created while a scope is open is found once the recheck interval passes', async () => {
+    const { findSessionFiles, withSessionScanScope, INDEX_RECHECK_MS } = await mods();
+    const primary = writeSession('.claude', [rec('a', 'one')]);
+    // Make the second profile a known, approved home before the scope opens.
+    mkdirSync(join(home, '.claude-t2', 'projects'), { recursive: true });
+    const { approveHome } = await import('./home-approval.js');
+    approveHome(homeRootOf('.claude-t2'));
+
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      await withSessionScanScope(async () => {
+        expect(findSessionFiles(SID).map((f) => f.path)).toEqual([primary]);
+        const secondary = writeSession('.claude-t2', [rec('x', 'live')]);
+        now += INDEX_RECHECK_MS;
+        expect(findSessionFiles(SID).map((f) => f.path)).toEqual([primary, secondary]);
+      });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
+
 describe('the single-home case is unchanged', () => {
   test('one home behaves exactly as before', async () => {
     const { findSessionFiles, resolveSessionContentGroups, readSessionGroupText, claudeBackend } = await mods();

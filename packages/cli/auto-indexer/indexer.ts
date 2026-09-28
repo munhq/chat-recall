@@ -39,6 +39,7 @@ import {
   claudeBackend, codexBackend, opencodeBackend, listAvailableBackends,
 } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
+import { claudeProjectDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { applySyncOutcome } from '@chat-recall/engine/core/collector-health.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
@@ -76,7 +77,6 @@ function ts(): string {
 // All paths come from the backend registry — env-overridable via
 // CHAT_RECALL_*_HOME. Adding a fifth tool means: register the backend in
 // `backends/index.ts` and add its watcher pair below.
-const CLAUDE_DIR = claudeBackend.projectsDir();
 const PLANS_DIR = claudeBackend.plansDir();
 const TASKS_DIR = claudeBackend.tasksDir();
 const HISTORY_PATH = claudeBackend.historyFile();
@@ -339,7 +339,13 @@ function watchWithFallback(name: string, pattern: string | string[], t: WatchTun
  */
 const WATCH_WINDOW_MS = Math.max(1, Number(process.env.CHAT_RECALL_WATCH_WINDOW_DAYS) || 14) * 24 * 60 * 60 * 1000;
 
-const sessionWatcher = watchWithFallback('sessions', `${CLAUDE_DIR}/**/*.jsonl`, {
+// Every Claude home, not only the primary. A session resumed under a second
+// profile (CLAUDE_CONFIG_DIR pointing at another ~/.claude-* home) is written
+// there, and with the primary alone watched those writes fired no event:
+// session 8da8d72b grew in a second home for ten hours and the daemon journal
+// holds no event for it.
+const CLAUDE_SESSION_ROOTS = claudeProjectDirs();
+const sessionWatcher = watchWithFallback('sessions', CLAUDE_SESSION_ROOTS.map((root) => `${root}/**/*.jsonl`), {
   ignored: (p: string, stats?: Stats) => {
     if (/agent-/.test(p) || /^\./.test(basename(p))) return true;
     // stats is absent for some entries during the initial scan; stat then, so
@@ -420,7 +426,7 @@ const opencodeWatcher = chokidar.watch(
 // 9. Per-project agent memory files (Claude Code ~/.claude/projects/<hash>/memory/*.md).
 // Agents write reference/feedback/project-state notes here between sessions —
 // the richest cross-session knowledge surface, now indexed + synced.
-const agentMemoryWatcher = chokidar.watch(`${CLAUDE_DIR}/*/memory/*.md`, {
+const agentMemoryWatcher = chokidar.watch(CLAUDE_SESSION_ROOTS.map((root) => `${root}/*/memory/*.md`), {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 100 },
@@ -484,14 +490,14 @@ for (const [name, watcher] of Object.entries(watchers)) {
 
 // ── Startup banner ──────────────────────────────────────────────────
 daemonLog.info(`chat-recall ship daemon started (thin collector — no local index)`);
-daemonLog.info(`  Watching sessions: ${CLAUDE_DIR}`);
+daemonLog.info(`  Watching sessions: ${CLAUDE_SESSION_ROOTS.join(', ')}`);
 daemonLog.info(`  Watching plans:    ${PLANS_DIR}`);
 daemonLog.info(`  Watching tasks:    ${TASKS_DIR}`);
 daemonLog.info(`  Watching history:  ${HISTORY_PATH}`);
 daemonLog.info(`  Watching diary:    ${DIARY_DIR}`);
 daemonLog.info(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
 daemonLog.info(`  Watching opencode: ${OPENCODE_DB_DIR}`);
-daemonLog.info(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
+daemonLog.info(`  Watching agent memory: ${CLAUDE_SESSION_ROOTS.map((root) => `${root}/*/memory/`).join(', ')}`);
 daemonLog.info(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
 daemonLog.info(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);
 daemonLog.info(`  Ready for changes...`);

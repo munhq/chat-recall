@@ -106,6 +106,9 @@ export function detectTool(sessionId: string): AiTool {
  *
  * A sync walk is exactly such a window: it snapshots its list of sessions up
  * front, so a session appearing mid-walk was never part of that walk anyway.
+ * The index inside a scope still checks its directories every
+ * INDEX_RECHECK_MS (see sessionFileIndex), because a scope can stay open far
+ * longer than one walk.
  *
  * Nesting is counted, so an inner scope does not drop an outer one's index.
  *
@@ -162,20 +165,60 @@ export interface LocatedSessionFile {
  * matters because corpus size only ever grows.
  *
  * ── Freshness ────────────────────────────────────────────────────────────
- * A short TTL, plus `invalidateSessionFileIndex()` for callers that must not
- * miss a file they just created. A stale entry can only ever mean "a session
- * created in the last few seconds is not listed yet"; paths never change under
- * a session, and content reads use the path, not the index. The sync walk
- * snapshots its ref list up front anyway, so a session appearing mid-walk was
- * never part of that walk.
+ * A scope can stay open for hours: the scan worker holds one for its whole
+ * life, and a daemon's walks can overlap. An index frozen for that long missed
+ * a copy that appeared later. Session 8da8d72b was resumed under a second
+ * profile at 22:14 and the collector shipped only the primary copy until the
+ * daemon restarted ten hours later; a fresh process built the full union.
+ *
+ * So the index checks itself. At most every INDEX_RECHECK_MS it compares the
+ * mtime of every root and every project directory with the values it was built
+ * from. Creating or removing a transcript changes its directory's mtime, so a
+ * new copy is visible within INDEX_RECHECK_MS. The check is one stat per
+ * directory (about 1 ms for 237 directories), and an unchanged tree keeps the
+ * index. Appends change no directory, and they need no rebuild: the index holds
+ * paths, and content reads go to the path.
  */
-let indexCache: Map<string, LocatedSessionFile[]> | null = null;
+interface SessionFileIndexCache {
+  byId: Map<string, LocatedSessionFile[]>;
+  /** Roots and project directories the index was built from, with their mtimes. */
+  dirs: Map<string, number>;
+  roots: string[];
+  checkedAt: number;
+}
+let indexCache: SessionFileIndexCache | null = null;
+
+/** How long an index is served before its directories are checked again. */
+export const INDEX_RECHECK_MS = 1000;
 
 /** Drop the index so the next lookup rebuilds it. */
 export function invalidateSessionFileIndex(): void { indexCache = null; }
 
+const dirMtime = (p: string): number => {
+  try { return statSync(p).mtimeMs; } catch { return -1; }
+};
+
+function indexStillValid(cache: SessionFileIndexCache): boolean {
+  const roots = claudeProjectDirs();
+  if (roots.length !== cache.roots.length || roots.some((r, i) => r !== cache.roots[i])) return false;
+  for (const [dir, mtime] of cache.dirs) {
+    if (dirMtime(dir) !== mtime) return false;
+  }
+  return true;
+}
+
 function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
-  if (indexCache) return indexCache;
+  if (indexCache) {
+    const now = Date.now();
+    if (now - indexCache.checkedAt < INDEX_RECHECK_MS) return indexCache.byId;
+    if (indexStillValid(indexCache)) {
+      indexCache.checkedAt = now;
+      return indexCache.byId;
+    }
+    indexCache = null;
+  }
+  const dirs = new Map<string, number>();
+  const roots = claudeProjectDirs();
   const byId = new Map<string, LocatedSessionFile[]>();
   const seenRoots = new Set<string>();
   // resolveProjectDirName lists real directories at every level of the path it
@@ -191,14 +234,18 @@ function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
   // Home order is preserved so the FIRST entry stays the primary home's copy —
   // findSessionFile()'s original contract, and what project grouping and
   // titles rely on.
-  for (const root of claudeProjectDirs()) {
+  for (const root of roots) {
     if (seenRoots.has(root) || !existsSync(root)) continue;
     seenRoots.add(root);
+    // Stat BEFORE listing, so a file created between the two shows up as a
+    // changed mtime at the next check.
+    dirs.set(root, dirMtime(root));
     let entries;
     try { entries = readdirSync(root, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = join(root, entry.name);
+      dirs.set(dir, dirMtime(dir));
       let names: string[];
       try { names = readdirSync(dir); } catch { continue; }
       for (const name of names) {
@@ -214,7 +261,7 @@ function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
       }
     }
   }
-  if (scanScopeDepth > 0) indexCache = byId;
+  if (scanScopeDepth > 0) indexCache = { byId, dirs, roots, checkedAt: Date.now() };
   return byId;
 }
 
