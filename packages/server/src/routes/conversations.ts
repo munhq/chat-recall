@@ -53,6 +53,7 @@ import { TenantTtlCache } from '../util/tenant-cache.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
 import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { SESSION_ID_PREFIXES } from '@chat-recall/engine/core/resume-command.js';
 
 const log = createLogger('conversations');
 
@@ -100,6 +101,21 @@ export async function expandSessionId(
     [tenant, id],
   );
   if (exact.rows.length) return { resolved: id };
+  // The id the tool itself shows. `opencode -s ses_…`, `codex resume <uuid>`
+  // and the rest take the raw id, and resumeCommandFor prints it that way, so
+  // an agent that copied it asked for `ses_f1810a…`, got a 404 for a session
+  // the server held as `opencode_ses_f1810a…`, and started a full re-index to
+  // find it. Same primary key, one probe for every tool prefix.
+  const prefixed = Object.values(SESSION_ID_PREFIXES)
+    .filter((p) => !id.startsWith(p))
+    .map((p) => p + id);
+  const tagged = (await tenantQuery(
+    pool, tenant,
+    `SELECT id FROM memory_metadata WHERE tenant=$1 AND source_type='session' AND id = ANY($2::text[])`,
+    [tenant, prefixed],
+  )).rows as Array<{ id: string }>;
+  if (tagged.length === 1) return { resolved: tagged[0].id };
+  if (tagged.length > 1) return { ambiguous: tagged.map((r) => r.id) };
   // Prefix fallback. `id LIKE 'prefix%'` with the prefix's LIKE metacharacters
   // (`\` `%` `_`) escaped — session ids legitimately contain `_` (tool prefixes
   // like `opencode_`), so leaving it unescaped would treat it as a wildcard and

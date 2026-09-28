@@ -63,6 +63,12 @@ function session(id: string): MemoryItem {
     expect(await expandSessionId(tenant, 'abc_def')).toEqual({ resolved: UND_ });
   });
 
+  test('the raw id a tool shows resolves to its prefixed row', async () => {
+    // `opencode -s ses_130643791` is how OpenCode names this session, and what
+    // resumeCommandFor prints. The server stores it as `opencode_ses_130643791`.
+    expect(await expandSessionId(tenant, OPENCODE.slice('opencode_'.length))).toEqual({ resolved: OPENCODE });
+  });
+
   test('unknown prefix returns null', async () => {
     expect(await expandSessionId(tenant, 'zzzz-nope')).toBeNull();
   });
