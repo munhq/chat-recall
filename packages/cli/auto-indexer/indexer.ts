@@ -56,7 +56,7 @@ import { orderByStaleness, noteIndexed, pruneCursor, readCursor, workspaceFinger
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { daemonLog } from '../src/daemon-log.js';
 import { record, flush } from '../src/telemetry.js';
-import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
+import { codeFingerprint, checkSelfRestart, EXIT_CODE_CODE_CHANGED } from '../src/self-restart.js';
 import { rotateLogIfLarge } from '../src/log-rotate.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
 
@@ -65,7 +65,7 @@ declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
 import { existsSync, readFileSync, statSync, type Stats } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
-import { readCollectorHealth, writeCollectorHealth, updateCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
+import { readCollectorHealth, writeCollectorHealth, updateCollectorHealth, collectorHealthPath, crashesAtBoot, recentCrashes, markCleanExit, CRASHLOOP_RESTARTS, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -599,28 +599,22 @@ if (BOOT_CODE) {
 const PROC_START = Date.now();
 const targetHealth: Record<string, TargetHealth> = {};
 
-/** Recent process starts, so a crash loop is visible as a count. */
-function recentStarts(): number[] {
-  const prior = readCollectorHealth() as unknown as { starts?: number[] } | null;
-  const cutoff = Date.now() - 3_600_000;
-  return [...(prior?.starts ?? []), PROC_START]
-    .filter((t) => typeof t === 'number' && t > cutoff)
-    .filter((t, i, a) => a.indexOf(t) === i)
-    .sort((a, b) => a - b)
-    .slice(-20);
-}
+// Decided once: after the first publish the file describes THIS process, so a
+// later read cannot tell whether the one before it crashed.
+const BOOT_CRASHES = crashesAtBoot(readCollectorHealth(), PROC_START);
 
 function publishHealth(): void {
-  const starts = recentStarts();
+  const crashes = recentCrashes(BOOT_CRASHES);
   // MERGE, do not overwrite. The sync walk writes `progress` into this same
   // file; a plain write from the heartbeat would erase it every 60 seconds.
+  // `starts` held every start, clean ones included, and is dropped here.
   updateCollectorHealth(Object.assign({
     v: 1 as const,
     updatedAt: Date.now(),
     startedAt: PROC_START,
-    restartsLastHour: starts.length,
+    restartsLastHour: crashes.length,
     targets: targetHealth,
-  }, { starts }));
+  }, { crashes, cleanExitAt: undefined, starts: undefined }));
 }
 
 // ── Shadow retention ────────────────────────────────────────────────────
@@ -709,9 +703,9 @@ export function noteSyncOutcome(server: string, ok: boolean, err?: string, accep
 
 publishHealth();
 {
-  const n = recentStarts().length;
-  if (n >= 3) {
-    daemonLog.error(`WARNING: this collector has restarted ${n} times in the last hour.`
+  const n = recentCrashes(BOOT_CRASHES).length;
+  if (n >= CRASHLOOP_RESTARTS) {
+    daemonLog.error(`WARNING: this collector crashed ${n} times in the last hour.`
       + ` Sync is probably falling behind. Health: ${collectorHealthPath()}`);
   }
 }
@@ -1057,4 +1051,10 @@ if (process.platform === 'win32') {
 }
 // Last line of defence on every platform: flush the ledger even if we are
 // leaving for a reason nobody handled.
-process.on('exit', () => { try { flushLedger(); } catch { /* leaving anyway */ } });
+// Exit 0 is a stop and EXIT_CODE_CODE_CHANGED is the restart onto a new bundle;
+// the next start counts anything else as a crash. A heap abort or a SIGKILL
+// never reaches this handler, which is what makes it the right place.
+process.on('exit', (code) => {
+  try { flushLedger(); } catch { /* leaving anyway */ }
+  if (code === 0 || code === EXIT_CODE_CODE_CHANGED) markCleanExit();
+});

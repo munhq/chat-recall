@@ -94,8 +94,16 @@ export interface CollectorHealth {
   updatedAt: number;
   /** Epoch ms the current daemon process started. */
   startedAt: number;
-  /** Process starts seen in the last hour. A crash loop shows up here. */
+  /** Starts in the last hour that followed a crash. A crash loop shows up here. */
   restartsLastHour: number;
+  /** Epoch ms of each start that followed a crash, newest last. */
+  crashes?: number[];
+  /**
+   * Epoch ms the process that wrote this file left on purpose: a stop, a
+   * reboot, or a restart onto a new bundle. The next start reads it to tell
+   * those apart from a crash.
+   */
+  cleanExitAt?: number;
   /** Per sync target, keyed by server URL. */
   targets: Record<string, TargetHealth>;
   /** Progress of the walk in flight, when one is. */
@@ -167,8 +175,8 @@ export function updateCollectorHealth(patch: Partial<CollectorHealth>): void {
   //     silence between. `chat-recall doctor` reported "no server has answered
   //     yet" on a machine whose server had answered and been forgotten.
   //
-  //   starts — the restart history recentStarts() reads to count restarts in
-  //     the last hour, which is how a crash loop is supposed to be visible.
+  //   crashes — the history crashesAtBoot() reads to count crashes in the
+  //     last hour, which is how a crash loop is supposed to be visible.
   //
   // Naming fields here means every field added to CollectorHealth is silently
   // dropped until someone remembers this function. Spreading makes the default
@@ -201,9 +209,37 @@ export function reportWalkProgress(p: WalkProgress): void {
   updateCollectorHealth({ progress: p });
 }
 
+/**
+ * The crash history the new process carries, decided once at boot.
+ *
+ * Every start used to count. A boot, an upgrade and the self-restart onto the
+ * new bundle are three starts inside a few minutes, so an ordinary install put
+ * "chat-recall is not syncing: it restarted 3 times in the last hour" in front
+ * of a user whose sync was current. A start counts only when the process before
+ * it did not record a clean exit after it started: a heap abort, a SIGKILL or
+ * an uncaught error leaves no mark.
+ */
+export function crashesAtBoot(prior: CollectorHealth | null, procStart: number): number[] {
+  const history = (prior?.crashes ?? []).filter((t) => typeof t === 'number');
+  if (!prior) return history;
+  const leftOnPurpose = typeof prior.cleanExitAt === 'number' && prior.cleanExitAt >= prior.startedAt;
+  return leftOnPurpose ? history : [...history, procStart];
+}
+
+/** The crashes inside the last hour, oldest first, capped so the file stays small. */
+export function recentCrashes(crashes: number[], now: number = Date.now()): number[] {
+  const cutoff = now - 3_600_000;
+  return [...new Set(crashes.filter((t) => t > cutoff))].sort((a, b) => a - b).slice(-20);
+}
+
+/** Record that this process is leaving on purpose. Called from the exit path. */
+export function markCleanExit(now: number = Date.now()): void {
+  updateCollectorHealth({ cleanExitAt: now });
+}
+
 /** How stale a sync has to be before we say something, in ms. */
 export const STALE_AFTER_MS = 30 * 60_000;
-/** Restarts in an hour that mean "crash loop" rather than "a deploy happened". */
+/** Crashes in an hour that mean "crash loop". */
 export const CRASHLOOP_RESTARTS = 3;
 
 export interface HealthVerdict {
@@ -226,7 +262,7 @@ const ago = (ms: number): string => {
  * Three things are worth interrupting a user for, and nothing else is:
  *   1. the daemon is not running (or has not written for a long time),
  *   2. it is running but nothing has reached a server in a long time,
- *   3. it is restarting over and over, which is how the OOM presented.
+ *   3. it is crashing over and over, which is how the OOM presented.
  */
 export function judgeHealth(h: CollectorHealth | null, now: number = Date.now()): HealthVerdict {
   if (!h) return { ok: true, summary: null, reasons: [] };
@@ -240,7 +276,7 @@ export function judgeHealth(h: CollectorHealth | null, now: number = Date.now())
   }
 
   if (h.restartsLastHour >= CRASHLOOP_RESTARTS) {
-    reasons.push(`it restarted ${h.restartsLastHour} times in the last hour`);
+    reasons.push(`it crashed ${h.restartsLastHour} times in the last hour`);
   }
 
   const targets = Object.entries(h.targets ?? {});
