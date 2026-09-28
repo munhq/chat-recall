@@ -76,7 +76,7 @@ import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/lo
 import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requestContext, attachTenantToContext, logContext } from './middleware/request-context.js';
 import { httpObservability } from './middleware/http-observability.js';
-import { funnelTelemetry } from './middleware/funnel.js';
+import { loadProductKit } from './util/product-kit.js';
 import {
   summarySweepsTotal, summariesGeneratedTotal, summariesFailedTotal, summariesSkippedTotal,
   summaryConcurrency, vectorSweepsTotal, vectorsEmbeddedTotal,
@@ -375,16 +375,17 @@ if (!ssoAllowed(authProviderName(), { hosted: billingEnabled(), licensed: licenc
 // excluded from the JSON parsers above (the handler reads its own body).
 // Boot-time migrations create/upgrade the auth tables in the same Postgres —
 // same fail-fast contract as ensurePgSchema() below.
+// The fleet kit (growth, mail, the auth funnel) loads before the auth instance
+// exists, because the funnel is a better-auth plugin and the plugin list is fixed
+// when the instance is built.
+await loadProductKit();
+
 if (authProviderName() === 'better-auth') {
   const {
     authHandler, oauthAuthorizationServerHandler, oauthProtectedResourceHandler, runAuthMigrations,
     mcpUserinfoFor,
   } = await import('./auth/better-auth.js');
   await runAuthMigrations();
-  // Funnel telemetry sits IN FRONT of the auth handler, so it sees the requests
-  // a user makes before they have succeeded at anything — a sign-up, a
-  // verification code, a CLI login prompt. It reads only the path and the
-  // response status; never a body, an email, a code or a token.
   // The JWKS the discovery documents ADVERTISE, which nothing served.
   //
   // better-auth's MCP plugin publishes `jwks_uri: <baseURL>/mcp/jwks` in both
@@ -445,7 +446,7 @@ if (authProviderName() === 'better-auth') {
   // attacker-controlled and we fetch it.
   app.get('/api/auth/mcp/authorize', mcpCimdResolver());
 
-  app.all('/api/auth/*', funnelTelemetry, authHandler());
+  app.all('/api/auth/*', authHandler());
 
   // OAuth discovery, at the ROOT and not under /api/auth.
   //

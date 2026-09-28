@@ -1,253 +1,33 @@
 /**
- * Growth events — install / activate / convert into the shared `metrics` database.
+ * Growth events and mail records.
  *
- * THE CONTRACT IS ONE INSERT, NOT AN SDK. The services writing to this table are
- * not all written in the same language, so there is deliberately no shared
- * library to depend on — each one writes a single row with its own Postgres
- * client, and none of them needs another's release cycle to record a number.
- * This file is the reference implementation.
- *
- * THREE EVENTS, AND ONLY THREE. A CHECK constraint on the table enforces it.
- *   install   it exists   — the tenant was created
- *   activate  it worked   — the first successful sync. THE ONLY ONE THAT
- *                           PREDICTS RETENTION; install without activate is a
- *                           number that flatters you.
- *   convert   it earned   — the Stripe webhook said paid
- *
- * FIRE AND FORGET, ALWAYS. Measurement must never be able to fail a user's
- * request, so every call here returns immediately, swallows every error, and is
- * never awaited on a request path. A growth table that is down has to be
- * invisible; the alternative is a metrics outage becoming a product outage.
- *
- * THE CREDENTIAL CAN ONLY INSERT. metrics_writer has INSERT on one table and no
- * SELECT — verified in-cluster. So this module cannot read anything back, which
- * is why de-duplication happens at READ time (see below) rather than here.
- *
- * DUPLICATES ARE EXPECTED AND FINE. `activate` may fire more than once if a
- * process restarts, and there is no unique constraint to stop it. Funnel queries
- * therefore take the FIRST occurrence per tenant:
- *
- *   SELECT product, event, count(DISTINCT tenant)
- *   FROM events GROUP BY 1, 2;
- *
- *   -- or, for a time-ordered funnel:
- *   SELECT tenant, event, min(ts) FROM events GROUP BY 1, 2;
- *
- * Guarding here would need a SELECT this role does not have, and a local cache
- * would be wrong across replicas. Counting distinct tenants is correct, cheap,
- * and immune to a restart.
+ * The insert, its pool and its fire-and-forget contract live in
+ * `@munhq/product-kit`, which every product in the fleet shares; see its
+ * `growth.ts` for the reasons behind each rule. This module keeps the names
+ * the server already calls, and makes every call a no-op on a build without
+ * the kit, such as the public self-host image.
  */
-import { Pool } from 'pg';
-import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { productKit } from './product-kit.js';
+import type { GrowthEvent, GrowthProps, MailSent } from '@munhq/product-kit';
 
-const log = createLogger('growth');
+export type { GrowthEvent, GrowthProps, MailSent };
 
-export type GrowthEvent =
-  | 'install'   // a workspace was created — the user got past login
-  | 'activate'  // first sync — the product actually did something for them
-  | 'convert'   // paid
-  // The steps a user can FAIL at. The three above all fire AFTER success, so
-  // the funnel could only ever show people who made it — and every question
-  // worth asking is about the ones who did not. See middleware/funnel.ts.
-  | 'funnel'
-  | 'funnel_fail';
-
-export interface GrowthProps {
-  /** The tenant this is about. Always set it — it is the funnel's join key. */
-  tenant?: string | null;
-  /** Normalised channel, from tenants.signup_source. */
-  source?: string | null;
-  campaign?: string | null;
-  /** Pre-signup identity, for stitching a web session to an activation. */
-  anonId?: string | null;
-  /** Anything else. Keep it small; this is not a log. */
-  extra?: Record<string, unknown>;
-  /**
-   * Collapse repeats: at most one row per tenant per UTC day, per process.
-   *
-   * REQUIRED for anything fired from a hot path. `activate` on every successful
-   * sync measured at ~1,200 rows per day for ONE tenant in production — for a
-   * fact that only ever needs to be "did this tenant ever activate". At a
-   * hundred tenants that is tens of millions of identical rows a year, held for
-   * the full retention window.
-   *
-   * Per-process, so N replicas can emit up to N rows a day rather than one.
-   * That is deliberate: a shared counter would need either a read this
-   * credential does not have or a round trip on a hot path, and N rows a day
-   * instead of 1,200 is the entire win. Funnel queries count DISTINCT tenant,
-   * so the exact number of duplicates never mattered — only the volume did.
-   */
-  oncePerDay?: boolean;
-}
-
-const PRODUCT = process.env.METRICS_PRODUCT ?? '';
-
-/**
- * WHY THIS NO LONGER SENDS TO ANALYTICS.
- *
- * It used to post every event to Umami as well as the table, so the funnel would
- * be visible in a dashboard instead of only in SQL. That was wrong, and it
- * corrupted the very numbers it was meant to show.
- *
- * Umami counts a session per client. A server-side event carries no session, so
- * Umami minted a NEW ONE FOR EVERY EVENT — and because the sender presented a
- * browser User-Agent to get past Umami's bot filter, each of those sessions
- * looked like a person. The dashboard reported 26 visitors, 52 visits and 174
- * views in a day when the true figures were 96 fake sessions from inside the
- * cluster and, in the entire dataset, ONE real browser pageview.
- *
- * The bot filter was not an obstacle to work around. It was correctly
- * identifying this traffic as not-a-browser, and the spoof defeated the one
- * check that would have prevented this.
- *
- * The division is now clean, and it follows what each side can actually observe:
- *
- *   Umami         browser traffic - visits, referrers, campaigns. The server
- *                 cannot see any of it, and must not invent it.
- *   events table  what the server knows - installs, activations, payments and
- *                 the funnel steps in between. Durable, cross-product, ours.
- *
- * Joining them is a read-time problem, on the anonymous id the marketing page
- * mints. It is not a reason to write into the other side's store.
- */
-const ENABLED = process.env.METRICS_ENABLED === 'true' && !!process.env.METRICS_DSN && !!PRODUCT;
-
-/**
- * Its own pool, small on purpose: this is a different database from the app's,
- * and growth events must never contend for a connection the product needs to
- * serve a request. Two connections is plenty for three events per tenant
- * lifetime.
- */
-/**
- * Seen-today set for `oncePerDay`. Bounded so a long-lived process with many
- * tenants cannot grow it without limit — at the cap it is cleared wholesale,
- * which costs at most one extra row per tenant and never leaks.
- */
-const seen = new Map<string, number>();
-const SEEN_MAX = 20_000;
-function alreadySentToday(event: GrowthEvent, tenant: string | null | undefined): boolean {
-  if (!tenant) return false;               // no key to throttle on; let it through
-  const key = `${event}:${tenant}`;
-  const day = Math.floor(Date.now() / 86_400_000);
-  if (seen.get(key) === day) return true;
-  if (seen.size >= SEEN_MAX) seen.clear();
-  seen.set(key, day);
-  return false;
-}
-
-let pool: Pool | null = null;
-function getPool(): Pool | null {
-  if (!ENABLED) return null;
-  if (pool) return pool;
-  try {
-    pool = new Pool({
-      connectionString: process.env.METRICS_DSN,
-      max: 2,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 3_000,
-      // A growth insert that cannot connect in 3s is not worth retrying — the
-      // event is already lost and holding the pool open helps nobody.
-      allowExitOnIdle: true,
-    });
-    // An error on an idle client must not become an unhandled rejection that
-    // takes the process down. This is the whole reason the pool is separate.
-    pool.on('error', (err) => log.debug({ err }, 'growth pool idle error (ignored)'));
-  } catch (err) {
-    log.debug({ err }, 'growth pool could not be created (measurement disabled)');
-    pool = null;
-  }
-  return pool;
-}
-
-/**
- * Record one event. Returns immediately; never throws; never rejects.
- *
- * Do NOT await this on a request path. It is `void` by design — an await would
- * put a growth database on the critical path of a user's request, which is
- * exactly the coupling this whole design avoids.
- */
+/** Record one growth event. Returns at once; never throws. */
 export function growth(event: GrowthEvent, props: GrowthProps = {}): void {
-  if (!ENABLED) return;
-  if (props.oncePerDay && alreadySentToday(event, props.tenant)) return;
-  const p = getPool();
-  if (!p) return;
-
-  // Detached on purpose. queueMicrotask rather than awaiting, so the caller's
-  // request finishes regardless of what Postgres does.
-  queueMicrotask(() => {
-    p.query(
-      `INSERT INTO events (product, event, tenant, source, campaign, anon_id, props)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        PRODUCT,
-        event,
-        props.tenant ?? null,
-        props.source ?? null,
-        props.campaign ?? null,
-        props.anonId ?? null,
-        JSON.stringify(props.extra ?? {}),
-      ],
-    ).catch((err) => {
-      // debug, not warn: a growth event that fails is worth nothing and must not
-      // page anybody or fill a log. If the table is down it is down.
-      log.debug({ err, event, product: PRODUCT }, 'growth event dropped');
-    });
-  });
+  try { productKit()?.growth(event, props); } catch { /* measurement never fails a request */ }
 }
 
-/** One mail handed to the mail server. */
-export interface MailSent {
-  /** The copy-pack id, e.g. `trial.setup.final`. */
-  kind: string;
-  recipient: string;
-  /** The account the mail is about, when the sender knows it. */
-  tenant?: string | null;
-  /** The id SES assigned, which its delivery and bounce events carry. */
-  messageId?: string | null;
-}
-
-/**
- * Record that a mail went out. Same contract as `growth`: returns immediately,
- * never throws, never awaited.
- *
- * Its own table, `mail_sent`, beside `events` in the metrics database. SES keeps
- * no record of each message, so a trial reminder or a verification code left no
- * trace anywhere except the recipient's inbox. The cockpit reads this table to
- * show what each person was sent, and joins it on `message_id` to the SES events
- * that say whether it arrived.
- */
+/** Record that a mail went out. */
 export function recordMailSent(m: MailSent): void {
-  if (!ENABLED) return;
-  const p = getPool();
-  if (!p) return;
-  queueMicrotask(() => {
-    p.query(
-      `INSERT INTO mail_sent (product, kind, tenant, recipient, message_id)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [
-        PRODUCT,
-        m.kind.slice(0, 80),
-        m.tenant ?? null,
-        m.recipient.trim().toLowerCase().slice(0, 254),
-        m.messageId ?? null,
-      ],
-    ).catch((err) => {
-      log.debug({ err, kind: m.kind, product: PRODUCT }, 'mail record dropped');
-    });
-  });
+  try { productKit()?.recordMailSent(m); } catch { /* measurement never fails a request */ }
 }
 
-/** Test-only: forget the oncePerDay state. */
-export function __resetGrowthThrottle(): void { seen.clear(); }
-
-/** For tests and for `chat-recall doctor` — is measurement actually on? */
+/** For `chat-recall doctor` and tests: is measurement on? */
 export function growthEnabled(): boolean {
-  return ENABLED;
+  return productKit()?.growthEnabled() ?? false;
 }
 
-/** Close the pool on shutdown so a drain does not hang on an idle client. */
+/** Close the pool on shutdown. */
 export async function closeGrowth(): Promise<void> {
-  const p = pool;
-  pool = null;
-  if (p) { try { await p.end(); } catch { /* shutting down anyway */ } }
+  await productKit()?.closeGrowth();
 }

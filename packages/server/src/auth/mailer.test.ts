@@ -13,6 +13,12 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { sendMail, mailerConfigured } from './mailer.js';
+import { loadProductKit, productKit } from '../util/product-kit.js';
+
+// The kit is an optional private package: the hosted build has it, and the
+// public CI and the self-host image do not. The transport test needs it.
+await loadProductKit();
+const hasKit = productKit() !== null;
 
 const saved: Record<string, string | undefined> = {};
 const ENV = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_SECURE', 'MAIL_FROM'];
@@ -49,8 +55,18 @@ describe('unconfigured — the self-host path', () => {
   });
 });
 
+describe('configured, on a build without the kit', () => {
+  test.skipIf(hasKit)('says it cannot send, and does not throw', async () => {
+    process.env.SMTP_HOST = 'smtp.example.com';
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await sendMail({ to: 'ada@example.com', subject: 'Reset', text: 'body' });
+    expect(r).toEqual({ sent: false, reason: 'send-failed' });
+    expect(String(err.mock.calls[0]?.[0])).toContain('@munhq/product-kit');
+  });
+});
+
 describe('configured but failing', () => {
-  test('a transport error is swallowed, not raised', async () => {
+  test.skipIf(!hasKit)('a transport error is swallowed, not raised', async () => {
     process.env.SMTP_HOST = '127.0.0.1';
     // Port 1 is reserved and nothing listens there, so this is a real failure
     // rather than a mocked one — it exercises the catch, not a stub of it.
