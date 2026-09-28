@@ -4,6 +4,15 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.9] — 2026-09-28
+
+### Fixed
+- **A clean restart counted as a crash.** One boot and two restarts for an
+  upgrade put "chat-recall is not syncing: it restarted 3 times in the last
+  hour" over a sync that was current. The collector now counts a start only
+  when the process before it did not exit cleanly, and the warning says
+  "crashed".
+
 ## [0.7.8] — 2026-09-28
 
 ### Fixed
