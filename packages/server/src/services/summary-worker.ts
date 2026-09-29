@@ -141,7 +141,7 @@ const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
  */
 export interface CachedEnvelope {
   v?: number;
-  messages?: Array<{ role?: string; content?: string }>;
+  messages?: Array<{ role?: string; content?: string; origin?: string }>;
   subagents?: unknown[];
 }
 
@@ -172,6 +172,7 @@ export function envelopeToSessionContent(
     const text = typeof m.content === 'string' ? m.content : '';
     if (!text) continue;
     if (m.role === 'user') {
+      if (m.origin) continue; // harness text is not the person's request
       if (!firstPrompt) firstPrompt = text;
       userMessages.push({ text, lineNumber: line, contentType: 'user' });
     } else if (m.role === 'assistant') {

@@ -24,6 +24,8 @@ export interface ShowMessage {
   line: number;
   role: string;
   content: string;
+  /** Set on a user message the harness wrote, such as 'task-notification'. */
+  origin?: string;
   thinking?: string;
   toolCalls?: ShowToolCall[];
 }
@@ -121,7 +123,11 @@ export function renderShowMessages(messages: ShowMessage[], opts: RenderShowOpti
     // Claude Code writes thinking blocks with the text removed, so a turn that
     // held only one has nothing to show.
     if (!text.trim() && !thinking.trim() && !calls.length && msg.thinking !== undefined) continue;
-    out.push(`**${msg.role}** (line ${msg.line})`);
+    // Harness text is stored as a user record, and the reader must not take
+    // it for something the person said.
+    out.push(msg.origin
+      ? `**${msg.role}** (line ${msg.line}, written by the harness: ${msg.origin})`
+      : `**${msg.role}** (line ${msg.line})`);
     if (thinking.trim()) out.push(`_(thinking)_\n${thinking}`);
     if (text.trim()) out.push(text);
     for (const tc of calls) out.push(renderToolCall(tc, msg.line, opts));

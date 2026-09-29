@@ -14,6 +14,7 @@ import { currentTenant, currentAuthor, runUnrestricted } from './tenant-context.
 import { gzipSync, gunzipSync } from 'zlib';
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
+import { markersVersion } from '../session-sentiment.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
 import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery, tenantQueryRo, tenantTx, bulkInsert } from './pg-pool.js';
 
@@ -98,6 +99,11 @@ export function markersPromptCount(data: unknown): number | null {
  * Escape hatch: `invalidateCompute(sessionId)` deletes the rows, after which any
  * payload lands. `chat-recall repair` is the intended way to make a session
  * fuller — like the raw guard, this one only ever blocks a REDUCTION.
+ *
+ * Counts compare within one MARKERS_VERSION only. A newer version replaces an
+ * older one whatever its count, because it counts a different set of prompts;
+ * an older version never replaces a newer one. A payload with no prompts never
+ * replaces one that has prompts, whatever the versions.
  */
 export async function computeShrinkRefused(
   kind: string,
@@ -109,7 +115,14 @@ export async function computeShrinkRefused(
   if (incoming === null) return false;
   const existing = await readStale(kind);
   const stored = existing ? markersPromptCount(existing.data) : null;
-  return stored !== null && incoming < stored;
+  if (stored === null) return false;
+  if (incoming === 0 && stored > 0) return true;
+  // Counts compare within one version only: a newer version counts a
+  // different set of prompts, and an older one must never replace it.
+  const incomingVersion = markersVersion(data);
+  const storedVersion = markersVersion(existing!.data);
+  if (incomingVersion !== storedVersion) return incomingVersion < storedVersion;
+  return incoming < stored;
 }
 
 /**

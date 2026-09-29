@@ -9,7 +9,7 @@ import type { SourceType } from '../imports.js';
 import { classifyChunk } from '../imports.js';
 
 export interface SessionTurn {
-  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'harness';
   text: string;
 }
 
@@ -58,6 +58,17 @@ function windowText(text: string): string[] {
   return out;
 }
 
+/**
+ * The chunk role for one envelope message. A user message the harness wrote
+ * (a task notification, hook feedback, a subagent's task prompt) is indexed
+ * as `harness`: searchable, ranked like a tool result, and kept out of the
+ * classifier that tags the person's decisions and preferences.
+ */
+export function chunkRole(m: { role: string; origin?: unknown }): SessionTurn['role'] {
+  if (m.role === 'user') return m.origin ? 'harness' : 'user';
+  return m.role as SessionTurn['role'];
+}
+
 export function chunksFromTurns(
   sessionId: string,
   turns: SessionTurn[],
@@ -69,9 +80,13 @@ export function chunksFromTurns(
   firstPrompt?: string,
 ): SessionChunk[] {
   const TOOL_RESULT_CAP = 60;
+  // Harness text has its own cap, so a session full of task notifications
+  // cannot push its tool results out of the index.
+  const HARNESS_CAP = 60;
   const out: SessionChunk[] = [];
   let i = 0;
   let toolResults = 0;
+  let harness = 0;
 
   // A human-readable descriptor so an isolated search hit says what it is,
   // instead of showing a blank title (C3): "<opening prompt> · <date> · <project>".
@@ -96,20 +111,25 @@ export function chunksFromTurns(
   if (fp) push('first_prompt', fp.slice(0, MAX_CHARS), 'first_prompt');
 
   for (const t of turns) {
-    let base: 'user_context' | 'assistant' | 'tool_result';
+    let base: 'user_context' | 'assistant' | 'tool_result' | 'harness';
     if (t.role === 'user') base = 'user_context';
     else if (t.role === 'assistant') base = 'assistant';
     else if (t.role === 'tool_result') {
       if (toolResults >= TOOL_RESULT_CAP) continue;
       base = 'tool_result';
+    } else if (t.role === 'harness') {
+      if (harness >= HARNESS_CAP) continue;
+      base = 'harness';
     } else continue; // tool_use (the call input) is noise; only results are indexed
     if (!t.text?.trim()) continue;
     if (base === 'tool_result') toolResults++;
+    if (base === 'harness') harness++;
     for (const text of windowText(t.text)) {
       let chunkType: string = base;
-      // Raw tool output isn't a decision/preference — don't run the classifier
-      // on it (it would mislabel command output as a "milestone", etc.).
-      if (base !== 'tool_result') {
+      // Tool output and harness text are not the person's decisions or
+      // preferences, and the classifier mislabels command output as a
+      // "milestone", so neither is classified.
+      if (base !== 'tool_result' && base !== 'harness') {
         const cls = classifyChunk(text);
         if (cls.memoryType !== 'general') chunkType = `${base}:${cls.memoryType}:imp${cls.importance}`;
       }

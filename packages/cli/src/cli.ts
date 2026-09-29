@@ -1044,6 +1044,7 @@ program
           const label = chunk.chunkType === 'assistant' ? 'Discussed' :
                         chunk.chunkType === 'user_context' ? 'Asked about' :
                         chunk.chunkType === 'tool_result' ? 'Tool result' :
+                        chunk.chunkType === 'harness' ? 'Harness message' :
                         'Context';
           let text = chunk.text.replace(/\n/g, ' ').trim();
           if (text.length > 150) text = text.slice(0, 150) + '...';

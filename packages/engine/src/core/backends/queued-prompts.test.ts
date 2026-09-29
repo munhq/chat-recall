@@ -167,3 +167,82 @@ describe('repetition is not duplication', () => {
     expect(parsed.userMessages).toHaveLength(1);
   });
 });
+
+/**
+ * Harness text is stored as `user` records, and a prompt typed while the agent
+ * works reaches the transcript as a `queued_command` attachment. In one real
+ * session, 6 prompts existed only as that attachment, and recall_show did not
+ * have them; about 20 of 45 "user prompts" were harness text.
+ */
+const record = (text: string, extra: Record<string, unknown>) => JSON.stringify({
+  uuid: `r-${text.slice(0, 8)}`, type: 'user', timestamp: '2026-08-21T09:02:00.000Z',
+  message: { role: 'user', content: text }, ...extra,
+});
+const delivered = (prompt: string, origin: Record<string, unknown> = { kind: 'human' }) => JSON.stringify({
+  uuid: `a-${prompt.slice(0, 8)}`, type: 'attachment', timestamp: '2026-08-21T09:03:00.000Z',
+  attachment: { type: 'queued_command', prompt, commandMode: 'prompt', origin, humanTurn: origin.kind === 'human' },
+});
+
+describe('harness records and delivered prompts', () => {
+  const session = () => writeSession([
+    userRec('the opening ask, typed between turns'),
+    record('<task-notification>\n<task-id>b1</task-id>\n</task-notification>', { origin: { kind: 'task-notification' } }),
+    record('Stop hook feedback:\nanswer these questions', { isMeta: true }),
+    record('Another Claude session sent a message:\n<agent-message from="a1">', { isMeta: true, origin: { kind: 'peer' } }),
+    enqueue('show me the flow before and after as a diagram'),
+    delivered('show me the flow before and after as a diagram'),
+    enqueue('let them finish, then implement everything'),
+    record('let them finish, then implement everything', { origin: { kind: 'human' } }),
+    delivered('<agent-message from="a2">\nreport', { kind: 'peer' }),
+  ]);
+
+  test('THE FAILURE: the event stream holds only the person, each prompt once', async () => {
+    session();
+    const { claudeBackend } = await import('./index.js');
+    const users = claudeBackend.readEvents(SID).filter((e) => e.kind === 'user');
+    expect(users.map((u) => [u.line, u.text])).toEqual([
+      [1, 'the opening ask, typed between turns'],
+      [6, 'show me the flow before and after as a diagram'],
+      [8, 'let them finish, then implement everything'],
+    ]);
+  });
+
+  test('a subagent transcript contributes no prompts', async () => {
+    const main = session();
+    const subDir = join(main.slice(0, -'.jsonl'.length), 'subagents');
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(join(subDir, 'agent-a1.jsonl'),
+      record('Repo: /home/user/code/example. Read-only. Map the code.', { isSidechain: true }) + '\n');
+    const { claudeBackend } = await import('./index.js');
+    const texts = claudeBackend.readEvents(SID).filter((e) => e.kind === 'user').map((u) => u.text);
+    expect(texts).not.toContain('Repo: /home/user/code/example. Read-only. Map the code.');
+    expect(texts).toHaveLength(3);
+  });
+
+  test('the transcript view shows the delivered prompt and labels harness text', async () => {
+    const file = session();
+    const { readFileSync } = await import('node:fs');
+    const { parseClaudeTranscriptText } = await import('../../transcript/claude.js');
+    const users = parseClaudeTranscriptText(readFileSync(file, 'utf8')).filter((m) => m.role === 'user');
+    expect(users.map((m) => [m.line, m.origin ?? 'person'])).toEqual([
+      [1, 'person'],
+      [2, 'task-notification'],
+      [3, 'meta'],
+      [4, 'peer'],
+      [6, 'person'],
+      [8, 'person'],
+      [9, 'peer'],
+    ]);
+  });
+
+  test('the search parser records only the person', async () => {
+    const file = session();
+    const { parseSessionFile } = await import('../../parsers/session.js');
+    const parsed = await parseSessionFile(file);
+    expect(parsed.userMessages.map((m) => m.text)).toEqual([
+      'the opening ask, typed between turns',
+      'show me the flow before and after as a diagram',
+      'let them finish, then implement everything',
+    ]);
+  });
+});

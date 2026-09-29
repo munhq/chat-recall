@@ -29,8 +29,9 @@ import {
   type SourceType,
 } from '../imports.js';
 import { replayFromEvents } from '@chat-recall/engine/core/generic-engine.js';
-import { chunksFromTurns, subagentChunks, type EnvSubagent } from './session-chunks.js';
+import { chunksFromTurns, chunkRole, subagentChunks, type EnvSubagent } from './session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 
 const log = createLogger('self-heal');
 
@@ -138,7 +139,7 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     // 0. Metadata row — recreate the item when the archive exists but its
     //    memory_metadata row was hard-deleted (restores listing + grouping).
     if (metadataMissing) {
-      const healFirst = parsed.messages.find((m) => m.role === 'user' && m.content?.trim())?.content || '';
+      const healFirst = parsed.messages.find((m) => isPersonMessage(m) && m.content?.trim())?.content || '';
       await store.setItem({
         id: sessionId, sourceType: 'session' as SourceType, title: healFirst.slice(0, 100),
         projectPath, projectId, contentPreview: healFirst.slice(0, 200), filePath: '', mtime,
@@ -159,8 +160,8 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     if (envelopeDamaged || chunksMissing) {
       const textSource = parsed.messages
         .filter((m) => m.content?.trim())
-        .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.content! }));
-      const healFirstPrompt = parsed.messages.find((m) => m.role === 'user' && m.content?.trim())?.content;
+        .map((m) => ({ role: chunkRole(m), text: m.content! }));
+      const healFirstPrompt = parsed.messages.find((m) => isPersonMessage(m) && m.content?.trim())?.content;
       const cks = chunksFromTurns(sessionId, textSource, projectPath, mtime, projectId, healFirstPrompt);
       const subs = subagentChunks(sessionId, (parsed.subagents ?? []) as unknown as EnvSubagent[], projectPath, mtime);
       const all = subs.length > 0 ? [...cks, ...subs] : cks;

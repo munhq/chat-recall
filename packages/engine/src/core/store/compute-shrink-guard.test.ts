@@ -58,3 +58,25 @@ describe('computeShrinkRefused', () => {
     expect(await computeShrinkRefused('markers', markers(0), reader(markers(67)))).toBe(true);
   });
 });
+
+describe('computeShrinkRefused across markers versions', () => {
+  const v2 = (n: number) => ({ ...markers(n), v: 2 });
+
+  test('THE FAILURE: a version 2 row with fewer prompts replaces a version 1 row', async () => {
+    // Version 1 counted harness text as prompts: 45 stored, 25 are the person's.
+    expect(await computeShrinkRefused('markers', v2(25), reader(markers(45)))).toBe(false);
+  });
+
+  test('a version 1 row never replaces a version 2 row', async () => {
+    expect(await computeShrinkRefused('markers', markers(45), reader(v2(25)))).toBe(true);
+  });
+
+  test('within version 2 the count rule holds', async () => {
+    expect(await computeShrinkRefused('markers', v2(3), reader(v2(25)))).toBe(true);
+    expect(await computeShrinkRefused('markers', v2(26), reader(v2(25)))).toBe(false);
+  });
+
+  test('zero prompts cannot wipe a populated row of an older version', async () => {
+    expect(await computeShrinkRefused('markers', v2(0), reader(markers(45)))).toBe(true);
+  });
+});

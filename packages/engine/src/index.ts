@@ -171,6 +171,10 @@ export {
 export {
   markPrompt,
   summarizeMarkers,
+  markersFromTurns,
+  pickMarkersPayload,
+  MARKERS_VERSION,
+  type MarkersPayload,
   type PromptMarker,
   type MarkedPrompt,
   type SessionMarkerCounts,

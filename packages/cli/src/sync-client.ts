@@ -31,6 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
+import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
@@ -2555,7 +2556,7 @@ export async function buildConversationSync(
   // "sessions" were these internal calls; indexing them buries the real
   // conversation list. Anchored to the first user message so a real chat that
   // merely quotes the prompt is not dropped.
-  const firstUser = textMessages.find((m) => m.role === 'user');
+  const firstUser = textMessages.find(isPersonMessage);
   if (isInternalToolPrompt(firstUser?.content)) return null;
 
   // Trim payload bodies (tool inputs/results, thinking — raw replay never
@@ -2575,7 +2576,7 @@ export async function buildConversationSync(
   const meta: Record<string, unknown> = { messageCount: textMessages.length };
   // Single-prompt invocations (batch/bot runs) carry a flag so the UI can
   // badge them and lists can de-emphasize them.
-  if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
+  if (textMessages.filter(isPersonMessage).length <= 1) meta.oneShot = true;
   // Real project path: the cwd read live from inside the transcript wins over
   // the decoded dir name (`chat-recall` → `chat/recall` mangling).
   try {
@@ -2760,7 +2761,7 @@ export async function buildConversationSync(
       envelope,
       raw_b64,
       raw_size,
-      first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
+      first_prompt: (envTexts.find(isPersonMessage)?.content as string | undefined)?.slice(0, 200),
       // Byte offset this FULL sync is synced THROUGH (file size at build time,
       // or the end of the bounded tail for an oversized session). The server
       // stores it as the envelope's `o`; the ledger records the SAME value
@@ -2841,7 +2842,7 @@ export async function buildConversationTail(
 
   // Skip chat-recall's OWN internal prompts in the tail (same gate as the
   // full builder). A tail that is ONLY an internal prompt ships nothing.
-  const firstUser = textMessages.find((m) => m.role === 'user');
+  const firstUser = textMessages.find(isPersonMessage);
   if (isInternalToolPrompt(firstUser?.content)) return null;
 
   // Trim + redact the tail envelope only (not the whole transcript).

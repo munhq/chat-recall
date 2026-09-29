@@ -38,6 +38,7 @@ import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
 import { readTailFromOffset, type TailRead } from './tail-read.js';
 import { resolveProjectDirName } from '../project-dir-name.js';
+import { originFromText, queuedCommandPrompt, userRecordOrigin } from '../claude-prompt-origin.js';
 import {
   extractTurnsFromEvents,
   liveScanEditsFromEvents,
@@ -357,6 +358,18 @@ export class ClaudeBackend implements ToolBackend {
 
   private appendEventsFromText(events: CanonicalEvent[], raw: string, mtime: number, startLine: number): number {
     let lineNum = startLine;
+    // A prompt typed while the agent works is written twice: first as a
+    // queue-operation enqueue, then as the record that delivers it (a user
+    // record or a queued_command attachment). The delivering record is the one
+    // the transcript view shows, so its line is kept and the enqueue dropped.
+    const queued = new Map<string, CanonicalEvent[]>();
+    const superseded = new Set<CanonicalEvent>();
+    const pushPrompt = (e: CanonicalEvent): void => {
+      const pending = queued.get(e.text!);
+      const earlier = pending?.shift();
+      if (earlier) superseded.add(earlier);
+      events.push(e);
+    };
     {
       for (const line of raw.split('\n')) {
         lineNum++;
@@ -371,11 +384,21 @@ export class ClaudeBackend implements ToolBackend {
           // 'enqueue' holds the text the person typed; 'remove' is the dequeue
           // half and carries the same string, so only 'enqueue' is read.
           if (obj.operation === 'enqueue' && typeof obj.content === 'string') {
-            const queued = stripReminders(obj.content);
-            if (queued && !queued.startsWith('<task-notification')) {
-              events.push({ kind: 'user', ts, tsIso, line: lineNum, text: queued });
+            const text = stripReminders(obj.content);
+            if (text && originFromText(text) === 'human') {
+              const e: CanonicalEvent = { kind: 'user', ts, tsIso, line: lineNum, text };
+              events.push(e);
+              const list = queued.get(text);
+              if (list) list.push(e); else queued.set(text, [e]);
             }
           }
+          continue;
+        }
+
+        const delivered = queuedCommandPrompt(obj);
+        if (delivered) {
+          const text = stripReminders(delivered.text);
+          if (text && delivered.origin === 'human') pushPrompt({ kind: 'user', ts, tsIso, line: lineNum, text });
           continue;
         }
 
@@ -411,7 +434,9 @@ export class ClaudeBackend implements ToolBackend {
           // A reminder is APPENDED to a real prompt: strip the block, keep the
           // words. Dropping the whole record threw the prompt away with it.
           const spoken = stripReminders(text);
-          if (spoken) events.push({ kind: 'user', ts, tsIso, line: lineNum, text: spoken });
+          if (spoken && userRecordOrigin(obj, spoken) === 'human') {
+            pushPrompt({ kind: 'user', ts, tsIso, line: lineNum, text: spoken });
+          }
           for (const tr of toolResults) {
             events.push({
               kind: 'tool_result', ts, tsIso, line: lineNum,
@@ -452,6 +477,11 @@ export class ClaudeBackend implements ToolBackend {
           }
         }
       }
+    }
+    if (superseded.size > 0) {
+      let w = 0;
+      for (const e of events) if (!superseded.has(e)) events[w++] = e;
+      events.length = w;
     }
     return lineNum;
   }

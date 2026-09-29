@@ -7,6 +7,7 @@ import { open, readdir, readFile, stat } from 'fs/promises';
 import { dirname, join, basename } from 'path';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
+import { queuedCommandPrompt, userRecordOrigin } from '../core/claude-prompt-origin.js';
 
 const log = createLogger('transcript-claude');
 
@@ -122,7 +123,16 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
       if (!text.trim()) continue; // tool_result-only user messages are attached to the preceding assistant
       const cleaned = stripBanners(text);
       if (!cleaned) continue; // was ONLY banners / local-command plumbing → drop it
-      messages.push({ line, role: 'user', content: cleaned, timestamp });
+      const origin = userRecordOrigin(obj, cleaned);
+      messages.push({ line, role: 'user', content: cleaned, timestamp, ...(origin === 'human' ? {} : { origin }) });
+    } else if (obj.type === 'attachment') {
+      // A prompt typed while the agent works reaches the transcript only as
+      // this attachment, so without it the prompt is missing from the view.
+      const queued = queuedCommandPrompt(obj);
+      if (!queued) continue;
+      const cleaned = stripBanners(queued.text);
+      if (!cleaned) continue;
+      messages.push({ line, role: 'user', content: cleaned, timestamp, ...(queued.origin === 'human' ? {} : { origin: queued.origin }) });
     } else if (obj.type === 'assistant') {
       const blocks = Array.isArray(obj.message?.content) ? obj.message.content : [];
       const thinkingBlock = blocks.find((c: any) => c?.type === 'thinking');

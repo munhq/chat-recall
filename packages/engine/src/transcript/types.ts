@@ -20,6 +20,9 @@ export interface TranscriptMessage {
   line: number;
   role: 'user' | 'assistant' | 'summary';
   content: string;
+  /** Set on a user message the harness wrote (a task notification, hook
+   *  feedback, a subagent's task prompt). Absent on text the person typed. */
+  origin?: string;
   thinking?: string;
   toolCalls?: ToolCall[];
   timestamp?: string;

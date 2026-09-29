@@ -3138,7 +3138,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // rebuild the ConversationContext dump. Live-FS-only bits
         // (liveScanModifiedFiles) don't exist server-side — filesModified
         // comes from the metadata telemetry instead.
-        const convo = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string }>; total: number }>(
+        const convo = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string; origin?: string }>; total: number }>(
           `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
         if (!convo.data || convo.data.messages.length === 0) {
           return { content: [{ type: 'text', text: convo.message || `Session not found: ${params.session_id}` }] };
@@ -3167,6 +3167,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         const assistantWork: string[] = [];
         for (const msg of convo.data.messages) {
           const clipped = msg.content.length > 240 ? msg.content.slice(0, 240) + '…' : msg.content;
+          if (msg.role === 'user' && msg.origin) continue;
           if (msg.role === 'user') {
             userInputs.push(clipped.replace(/\n/g, ' '));
           } else {
