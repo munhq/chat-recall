@@ -130,3 +130,62 @@ export function renderShowMessages(messages: ShowMessage[], opts: RenderShowOpti
   }
   return out;
 }
+
+export interface ShowWindowOptions {
+  /** Centre the window on the message nearest to this transcript line. */
+  aroundLine?: number;
+  /** Return the last N messages. */
+  fromEnd?: number;
+  /** Window size for `aroundLine` and for the default window from the start. */
+  maxMessages: number;
+}
+
+/**
+ * The messages recall_show returns, in session order.
+ *
+ * `aroundLine` is a transcript line. Messages are sparse over lines (a tool
+ * result or a skipped entry holds a line with no message), so the window is
+ * centred on the nearest message and extends by message count on each side.
+ * It is clamped at both ends of the session, so it always holds
+ * min(maxMessages, messages.length) messages.
+ */
+export function selectShowWindow(messages: ShowMessage[], opts: ShowWindowOptions): ShowMessage[] {
+  if (messages.length === 0) return [];
+  if (opts.fromEnd !== undefined) {
+    const n = Math.max(1, Math.min(Math.floor(opts.fromEnd), messages.length));
+    return messages.slice(-n);
+  }
+  const size = Math.max(1, Math.min(Math.floor(opts.maxMessages), messages.length));
+  if (opts.aroundLine === undefined) return messages.slice(0, size);
+
+  const centre = nearestIndex(messages, opts.aroundLine);
+  const start = Math.max(0, Math.min(centre - Math.floor((size - 1) / 2), messages.length - size));
+  return messages.slice(start, start + size);
+}
+
+/** Index of the message whose line is closest to `line`; the earlier one on a tie. */
+function nearestIndex(messages: ShowMessage[], line: number): number {
+  let best = 0;
+  for (let i = 1; i < messages.length; i++) {
+    if (Math.abs(messages[i].line - line) < Math.abs(messages[best].line - line)) best = i;
+  }
+  return best;
+}
+
+/**
+ * The lines of the messages nearest to a line that holds none, in line order.
+ * A caller that asked for a line with no message gets real lines to ask for
+ * next.
+ */
+export function nearestMessageLines(messages: ShowMessage[], line: number, count = 4): number[] {
+  return [...new Set(messages.map((m) => m.line))]
+    .sort((a, b) => Math.abs(a - line) - Math.abs(b - line) || a - b)
+    .slice(0, count)
+    .sort((a, b) => a - b);
+}
+
+/** The reply to an expand call for a line that holds no message. */
+export function noMessageAtLine(messages: ShowMessage[], line: number, sessionId: string): string {
+  const near = nearestMessageLines(messages, line);
+  return `No message at line ${line} in ${sessionId}. The nearest messages are at lines ${near.join(', ')}.`;
+}
