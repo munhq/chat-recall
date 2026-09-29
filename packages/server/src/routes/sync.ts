@@ -51,7 +51,7 @@ import { isEntitled, syncAdmission, recordSyncUsage, recordSyncPresence } from '
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
 import { tenantIngestConcurrency } from '../middleware/rate-limit.js';
-import { chunksFromTurns, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
+import { chunksFromTurns, chunkRole, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { growth } from '../util/growth.js';
 
@@ -324,7 +324,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           ? [{ role: 'assistant', text: cv.redacted_text }]
           : [];
     const textSource: Array<{ role: string; text: string }> = envelope
-      ? envelope.messages.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }))
+      ? envelope.messages.filter((m) => m.content?.trim()).map((m) => ({ role: chunkRole(m), text: m.content! }))
       : turns.filter((t) => t.role === 'user' || t.role === 'assistant').map((t) => ({ role: t.role, text: t.text }));
     const firstPrompt = (cv.first_prompt
       || textSource.find((t) => t.role === 'user')?.text
@@ -421,6 +421,8 @@ interface SyncEnvelopeMessage {
   line?: number;
   role: 'user' | 'assistant' | 'summary';
   content?: string;
+  /** Set on a user message the harness wrote. */
+  origin?: string;
   thinking?: string;
   toolCalls?: Array<{ name: string; input?: unknown; result?: unknown; isError?: boolean }>;
   timestamp?: string;

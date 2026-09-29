@@ -22,7 +22,7 @@
 import { withSessionReadCache } from '@chat-recall/engine/core/live-session-scan.js';
 import { replaySessionAny, extractTurnsAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
-import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
+import { markersFromTurns } from '@chat-recall/engine/core/session-sentiment.js';
 import { redactDeep } from './redact-deep.js';
 
 /** Which compute rows a session ships. */
@@ -66,10 +66,7 @@ export function collectDerivedRows(
         // Analysis-only use of the turns extractor (R4) — markers need
         // per-prompt line/ts, not render fidelity.
         const turns = extractTurnsAny(id, { maxTurns: 50_000 });
-        const prompts = turns.turns
-          .filter((t) => t.kind === 'user' && t.text)
-          .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-        data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
+        data = markersFromTurns(id, turns.turns);
       }
     } catch { data = null; }
     if (data === null) continue;

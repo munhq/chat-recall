@@ -431,7 +431,8 @@ export class PgVectorStore implements VectorStore {
     const maxTrivialOut = Math.max(0, Number(
       process.env.EMBED_TRIVIAL_MAX_OUTPUT_TOKENS ?? process.env.SUMMARY_TRIVIAL_MAX_OUTPUT_TOKENS) || 2000);
     // Item 5 — embed-less policy. Plain `assistant` chatter (~64% of chunks) and
-    // `subagent:*` internal fan-out (~8%) are low-signal for semantic recall and
+    // `subagent:*` internal fan-out (~8%) are low-signal for semantic recall, and
+    // so is `harness` text the tool wrote into the transcript. They
     // stay fully keyword-searchable via FTS, so we DON'T vectorize them: ~72%
     // fewer vectors with ~zero semantic-recall loss. CLASSIFIED assistant chunks
     // (assistant:decision:impN, …) and user_context are high-value and kept.
@@ -439,7 +440,7 @@ export class PgVectorStore implements VectorStore {
     // A/B recall). No new bind params — the predicate is literal.
     const chunkFilter = process.env.EMBED_INCLUDE_ALL_CHUNKS
       ? ''
-      : `AND NOT (c.chunk_type = 'assistant' OR c.chunk_type LIKE 'subagent%')`;
+      : `AND NOT (c.chunk_type = 'assistant' OR c.chunk_type = 'harness' OR c.chunk_type LIKE 'subagent%')`;
     return tenantTx(this.pool, this.t, async (client: any) => {
       const rows: any[] = (await client.query(
         `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
@@ -622,7 +623,7 @@ export class PgVectorStore implements VectorStore {
                    FROM cand
                   ORDER BY (1/(1+(embedding <=> $2::vector)))
                            * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55
-                                   WHEN chunk_type LIKE 'tool_result%' THEN 0.5
+                                   WHEN chunk_type LIKE 'tool_result%' OR chunk_type = 'harness' THEN 0.5
                                    ELSE 1.0 END)
                            + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
                            + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC

@@ -26,6 +26,7 @@
  * session end.
  */
 
+import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { basename } from 'node:path';
 
 // ── Wire types (subset of the server responses we read) ─────────────────────
@@ -34,6 +35,8 @@ export interface ConvoMessage {
   line?: number;
   role: string;
   content: string;
+  /** Set on a user message the harness wrote. */
+  origin?: string;
 }
 
 export interface SessionOutcome {
@@ -129,7 +132,7 @@ export function extractCorrections(messages: ConvoMessage[], cap = 5): string[] 
   const seen = new Set<string>();
   let userTurns = 0;
   for (const msg of messages) {
-    if (msg.role !== 'user') continue;
+    if (!isPersonMessage(msg)) continue;
     userTurns++;
     if (userTurns === 1) continue; // the initial prompt is the task, not feedback
     if (isNoiseUserMessage(msg.content)) continue;

@@ -4,6 +4,7 @@
 
 import express from 'express';
 import { getRecentSessions, getSessionPath, getSessionPaths, getRelatedItems, getSessionMetadata, getSessionIndex, hydrateSessions } from '../services/sessions.js';
+import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import type { SessionIndexEntry } from '../services/sessions.js';
 import { getConversation, getOpenCodeConversation, getOpenCodeSubagents, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
@@ -22,6 +23,9 @@ import {
   computeOutcome,
   markPrompt,
   summarizeMarkers,
+  markersFromTurns,
+  pickMarkersPayload,
+  type MarkersPayload,
   findCodexSessionFile,
   codexBackend,
   extractTurnsAny,
@@ -714,12 +718,7 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
           }
         } else if (kind === 'markers') {
           const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
-          if (turns.found) {
-            const prompts = turns.turns
-              .filter(t => t.kind === 'user' && t.text)
-              .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-            await heavyCacheSet(`markers:${sessionId}`, mtime, { sessionId, prompts, summary: summarizeMarkers(prompts) });
-          }
+          if (turns.found) await heavyCacheSet(`markers:${sessionId}`, mtime, markersFromTurns(sessionId, turns.turns));
         } else if (kind === 'turns') {
           const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
           if (turns.found) await heavyCacheSet(`turns:${sessionId}`, mtime, turns);
@@ -1218,7 +1217,6 @@ router.post('/outcome/badges', async (req, res) => {
 // — `kind: 'markers'` rows in `compute_cache`, mtime-keyed, persistent.
 // The `getCachedMarkers` / `setCachedMarkers` shims keep the call sites
 // readable while delegating to the shared helpers.
-type MarkersPayload = { sessionId: string; prompts: unknown[]; summary: unknown };
 function getCachedMarkers(id: string, mtime: number): Promise<MarkersPayload | null> {
   return heavyCacheGet<MarkersPayload>(`markers:${id}`, mtime);
 }
@@ -1264,7 +1262,7 @@ router.get('/:id/markers', async (req, res) => {
     // archive refused the downgrade (putRawSession is shrink-protected) while
     // the derived markers row accepted it in the very same sync.
     if (isServerMode()) {
-      const candidates: MarkersPayload[] = [];
+      const candidates: Parameters<typeof pickMarkersPayload>[1] = [];
 
       // 1. The synced markers row — what this route used to return
       //    unconditionally. Both the mtime-fresh row and the latest-by-any-mtime
@@ -1272,11 +1270,11 @@ router.get('/:id/markers', async (req, res) => {
       let rowCount = 0;
       if (resolved) {
         const fresh = await getCachedMarkers(id, resolved.mtime);
-        if (fresh?.prompts?.length) { candidates.push(fresh); rowCount = fresh.prompts.length; }
+        if (fresh?.prompts?.length) { candidates.push({ source: 'markers', data: fresh }); rowCount = fresh.prompts.length; }
       }
       const stale = await getStaleHeavy<MarkersPayload>(id, 'markers');
       const staleCount = stale?.data?.prompts?.length ?? 0;
-      if (staleCount > 0) { candidates.push(stale!.data); rowCount = Math.max(rowCount, staleCount); }
+      if (staleCount > 0) { candidates.push({ source: 'markers', data: stale!.data }); rowCount = Math.max(rowCount, staleCount); }
 
       const store = await createStore();
       try {
@@ -1288,10 +1286,10 @@ router.get('/:id/markers', async (req, res) => {
         if (snapshot) {
           try {
             const parsed = JSON.parse(snapshot.content) as {
-              messages?: Array<{ line?: number; role?: string; content?: string; timestamp?: string }>;
+              messages?: Array<{ line?: number; role?: string; content?: string; timestamp?: string; origin?: string }>;
             };
             const prompts = (parsed.messages ?? [])
-              .filter((m) => m.role === 'user' && m.content && m.content.trim())
+              .filter((m) => isPersonMessage(m) && m.content && m.content.trim())
               .map((m, i) => {
                 const parsedTs = m.timestamp ? Date.parse(m.timestamp) : NaN;
                 return {
@@ -1302,7 +1300,7 @@ router.get('/:id/markers', async (req, res) => {
                 };
               });
             if (prompts.length > 0) {
-              candidates.push({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+              candidates.push({ source: 'envelope', data: { sessionId: id, prompts, summary: summarizeMarkers(prompts) } });
               gotEnvelope = true;
             }
           } catch { /* corrupt envelope row — fall through to chunks */ }
@@ -1322,17 +1320,17 @@ router.get('/:id/markers', async (req, res) => {
             .filter((c) => c.chunk_type.startsWith('user') && c.text && c.text.trim())
             .map((c, i) => ({ line: i + 1, ts: 0, tsIso: undefined, ...markPrompt(c.text) }));
           if (prompts.length > 0) {
-            candidates.push({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+            candidates.push({ source: 'chunks', data: { sessionId: id, prompts, summary: summarizeMarkers(prompts) } });
           }
         }
       } finally {
         await store.close();
       }
 
-      if (candidates.length === 0) {
+      const best = pickMarkersPayload(id, candidates);
+      if (!best) {
         return res.status(404).json({ error: 'No synced markers for this session' });
       }
-      const best = candidates.reduce((a, b) => (b.prompts.length > a.prompts.length ? b : a));
       // Promote a rebuild into the mtime-keyed cache so the next read is cheap.
       // Only when it actually beats every stored row — never cache a downgrade.
       // (setCompute enforces the same rule independently; this just avoids a
@@ -1345,10 +1343,7 @@ router.get('/:id/markers', async (req, res) => {
 
     const turns = extractTurnsAny(id, { maxTurns: 50_000 });
     if (!turns.found) return res.status(404).json({ error: 'Session not found' });
-    const prompts = turns.turns
-      .filter(t => t.kind === 'user' && t.text)
-      .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-    const payload: MarkersPayload = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
+    const payload = markersFromTurns(id, turns.turns);
 
     if (resolved) await setCachedMarkers(id, resolved.mtime, payload);
     res.json(payload);
@@ -1700,8 +1695,9 @@ router.get('/:id', async (req, res) => {
         }
         const messages = chunks.map((c, i) => ({
           line: i + 1,
-          role: c.chunk_type.startsWith('user') ? 'user' : 'assistant',
+          role: c.chunk_type.startsWith('user') || c.chunk_type === 'harness' ? 'user' : 'assistant',
           content: c.text,
+          ...(c.chunk_type === 'harness' ? { origin: 'harness' } : {}),
         }));
         const etag = buildETag([id, 'messages-chunks', mtime, messages.length, offset, limit]);
         if (maybeSendNotModified(req, res, etag)) return;

@@ -42,7 +42,7 @@ const CLASSIFICATION_SUFFIX = /:(?:decision|preference|milestone|problem|discove
  */
 export function reclassifyChunkType(chunkType: string, text: string): string {
   const base = chunkType.replace(CLASSIFICATION_SUFFIX, '');
-  if (base.startsWith('subagent') || base === 'tool_result') return chunkType;
+  if (base.startsWith('subagent') || base === 'tool_result' || base === 'harness') return chunkType;
   const cls = classifyChunk(text);
   return cls.memoryType !== 'general' ? `${base}:${cls.memoryType}:imp${cls.importance}` : base;
 }

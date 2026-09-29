@@ -175,3 +175,14 @@ describe('large bodies', () => {
     expect(text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });
+
+describe('harness messages', () => {
+  test('a user message the harness wrote is labelled with its origin', () => {
+    const text = render([
+      { line: 176, role: 'user', content: '<task-notification>done</task-notification>', origin: 'task-notification' },
+      { line: 177, role: 'user', content: 'show me a diagram' },
+    ]);
+    expect(text).toContain('**user** (line 176, written by the harness: task-notification)');
+    expect(text).toContain('**user** (line 177)\n');
+  });
+});

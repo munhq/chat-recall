@@ -15,6 +15,8 @@
  * went sideways before the user gave up.
  */
 
+import { originFromText } from './claude-prompt-origin.js';
+
 export type PromptMarker =
   | 'interrupt'
   | 'frustrated'
@@ -151,4 +153,81 @@ export function summarizeMarkers(marked: MarkedPrompt[]): SessionMarkerCounts {
     }
   }
   return counts;
+}
+
+/**
+ * Version of the prompt set a markers payload holds. A payload with no `v` is
+ * version 1.
+ *
+ * 2: the prompts are the person's only. Version 1 also held background-task
+ *    notifications, hook feedback, subagent hand-backs and subagent task
+ *    prompts, and missed prompts delivered as queued_command attachments.
+ *
+ * Prompt counts compare only within one version, so a version 2 payload with
+ * fewer prompts replaces a version 1 payload of the same session.
+ */
+export const MARKERS_VERSION = 2;
+
+export interface MarkersPrompt extends MarkedPrompt {
+  line: number;
+  ts: number;
+  tsIso?: string;
+}
+
+export interface MarkersPayload {
+  v?: number;
+  sessionId: string;
+  prompts: MarkersPrompt[];
+  summary: SessionMarkerCounts;
+}
+
+export function markersVersion(data: unknown): number {
+  const v = (data as { v?: unknown } | null | undefined)?.v;
+  return typeof v === 'number' && Number.isFinite(v) ? v : 1;
+}
+
+/** The markers payload for a session's extracted turns. */
+export function markersFromTurns(
+  sessionId: string,
+  turns: Array<{ kind: string; line: number; ts: number; tsIso?: string; text?: string }>,
+): MarkersPayload {
+  const prompts = turns
+    .filter((t) => t.kind === 'user' && t.text)
+    .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
+  return { v: MARKERS_VERSION, sessionId, prompts, summary: summarizeMarkers(prompts) };
+}
+
+/**
+ * The payload the markers route returns, from every stored candidate.
+ *
+ * A version 1 candidate keeps only the prompts whose text shows no harness
+ * prefix. When a current-version payload exists, older markers payloads are
+ * dropped, because they count text the current one excludes. Of what is left,
+ * the candidate with the most prompts wins, so a truncated transcript cannot
+ * mask a fuller source.
+ */
+export function pickMarkersPayload(
+  sessionId: string,
+  candidates: Array<{ source: 'markers' | 'envelope' | 'chunks'; data: MarkersPayload }>,
+): MarkersPayload | null {
+  const hasCurrent = candidates.some((c) => c.source === 'markers' && markersVersion(c.data) >= MARKERS_VERSION);
+  let best: MarkersPayload | null = null;
+  for (const c of candidates) {
+    const current = markersVersion(c.data) >= MARKERS_VERSION;
+    if (c.source === 'markers' && hasCurrent && !current) continue;
+    const data = current ? c.data : legacyPersonOnly(sessionId, c.data);
+    if (data.prompts.length === 0) continue;
+    if (!best || data.prompts.length > best.prompts.length) best = data;
+  }
+  return best;
+}
+
+/**
+ * A version 1 payload with the harness text its prefixes show removed. It
+ * stays version 1: subagent task prompts carry no prefix, so it can still hold
+ * some.
+ */
+function legacyPersonOnly(sessionId: string, data: MarkersPayload): MarkersPayload {
+  const prompts = (data.prompts ?? []).filter((p) => typeof p.text === 'string' && originFromText(p.text) === 'human');
+  return { sessionId, prompts, summary: summarizeMarkers(prompts) };
 }

@@ -1221,7 +1221,7 @@ export class PgStore implements StorageDriver {
                  ) s
                  ORDER BY (rank / NULLIF(max(rank) OVER (), 0))
                           * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.4
-                                  WHEN chunk_type LIKE 'tool_result%' THEN 0.5
+                                  WHEN chunk_type LIKE 'tool_result%' OR chunk_type = 'harness' THEN 0.5
                                   ELSE 1.0 END)
                           + 0.15 * exp(-LEAST(GREATEST($${nowParam}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
                           -- Importance prior: the classifier tags decisions/milestones as
@@ -1385,7 +1385,7 @@ export class PgStore implements StorageDriver {
       for (;;) {
         const rows = await this.qr(
           `SELECT chunk_id, chunk_type, text FROM memory_chunks
-           WHERE tenant=$1 AND chunk_id > $2 AND chunk_type NOT LIKE 'subagent%' AND chunk_type <> 'tool_result'
+           WHERE tenant=$1 AND chunk_id > $2 AND chunk_type NOT LIKE 'subagent%' AND chunk_type NOT IN ('tool_result', 'harness')
            ORDER BY chunk_id LIMIT $3`, [this.t, lastId, batch]);
         if (rows.length === 0) break;
         const changed: Array<[string, string]> = [];
