@@ -26,6 +26,8 @@ export interface ShowMessage {
   content: string;
   /** Set on a user message the harness wrote, such as 'task-notification'. */
   origin?: string;
+  /** ISO time the message was written, when the transcript records it. */
+  timestamp?: string;
   thinking?: string;
   toolCalls?: ShowToolCall[];
 }
@@ -194,4 +196,28 @@ export function nearestMessageLines(messages: ShowMessage[], line: number, count
 export function noMessageAtLine(messages: ShowMessage[], line: number, sessionId: string): string {
   const near = nearestMessageLines(messages, line);
   return `No message at line ${line} in ${sessionId}. The nearest messages are at lines ${near.join(', ')}.`;
+}
+
+/** Everything a reader can search for in one message: its text, thinking, tool inputs and results. */
+function searchableText(m: ShowMessage): string {
+  const parts = [m.content ?? '', m.thinking ?? ''];
+  for (const tc of m.toolCalls ?? []) {
+    parts.push(tc.name);
+    parts.push(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? ''));
+    if (tc.result !== undefined) parts.push(resultText(tc.result));
+  }
+  return parts.join('\n');
+}
+
+/**
+ * The messages that contain `query`, case-insensitive, in session order.
+ *
+ * An agent that knows what was said, and not where, gets the lines here and
+ * reads around them. Without it, the agent guessed line numbers or read the
+ * raw transcript.
+ */
+export function findShowMessages(messages: ShowMessage[], query: string): ShowMessage[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  return messages.filter((m) => searchableText(m).toLowerCase().includes(needle));
 }

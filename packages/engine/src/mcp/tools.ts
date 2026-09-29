@@ -11,7 +11,9 @@ import { resumeCommandFor } from '../core/resume-command.js';
 import { detectStackAt, evidenceLine, type StackEvidence } from '../core/stack-detect.js';
 import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
 import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
-import { renderShowMessages, selectShowWindow, noMessageAtLine, type ShowMessage } from './show-render.js';
+import { renderShowMessages, selectShowWindow, findShowMessages, noMessageAtLine, type ShowMessage } from './show-render.js';
+import { unsyncedLocalMessages, localTranscript, newestTimestamp } from './show-freshness.js';
+import { SERVER_INSTRUCTIONS } from './server-instructions.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
 import {
   canonArea, isKnownArea, decisionSubject, DECISION_AREAS, parseDecisionSubject,
@@ -447,11 +449,13 @@ const RecallIndexSchema = z.object({
 const RecallShowSchema = z.object({
   session_id: z.string().describe('Session ID from search results'),
   around_line: z.number().optional().describe('Transcript line to centre on. Returns max_messages messages around the message nearest to it.'),
-  max_messages: z.number().optional().default(10).describe('Messages to return with around_line, or from the start of the session. from_end sets its own count.'),
+  max_messages: z.number().optional().default(10).describe('Messages to return with around_line or query, or from the start of the session. from_end sets its own count.'),
   from_end: z.number().optional()
     .describe('Return the last N messages of the session. Mutually exclusive with around_line.'),
   expand_line: z.number().optional()
     .describe('Return only the message at this line, with every tool input and result whole.'),
+  query: z.string().optional()
+    .describe('Return the messages that contain this text (case-insensitive), with their lines. Searches message text, tool inputs and tool results.'),
 });
 
 const RecallRecentSchema = z.object({
@@ -1146,7 +1150,7 @@ export function createMcpServer(): Server {
     // them regardless of what is advertised, and an unregistered method answers
     // -32601, which every directory scan logs as a failure of a server that is
     // working correctly. See the handlers in attachHandlers.
-    { capabilities: { tools: {}, resources: {}, prompts: {} } },
+    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: SERVER_INSTRUCTIONS },
   );
   attachHandlers(s);
   return s;
@@ -1376,7 +1380,11 @@ Use this after recall_search to get full context from a session. Also accepts a
 plan id (the plan filename without .md, as returned by
 recall_memory_search(source_types:['plan'])) and renders the complete plan text.
 
-Set \`from_end: N\` to fetch the last N messages (no line-number guessing).
+Four ways to reach a message:
+1. \`query\` finds the messages that contain a text and gives their lines.
+2. \`around_line\` returns max_messages messages centred on a line.
+3. \`from_end: N\` returns the last N messages.
+4. \`expand_line\` returns one message whole.
 Message text and commands come back in full. Tool calls come with their inputs
 and results; a body over 2000 characters shows its first and last 100 and the
 line to pass as \`expand_line\` to get it whole.`,
@@ -1385,9 +1393,10 @@ line to pass as \`expand_line\` to get it whole.`,
           properties: {
             session_id:    { type: 'string', description: 'Session ID from search results, or a plan id (filename without .md)' },
             around_line:   { type: 'number', description: 'Transcript line to centre on. Returns max_messages messages around the message nearest to it.' },
-            max_messages:  { type: 'number', default: 10, description: 'Messages to return with around_line, or from the start of the session. from_end sets its own count.' },
+            max_messages:  { type: 'number', default: 10, description: 'Messages to return with around_line or query, or from the start of the session. from_end sets its own count.' },
             from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
             expand_line:   { type: 'number', description: 'Return only the message at this line, with every tool input and result whole.' },
+            query:         { type: 'string', description: 'Return the messages that contain this text (case-insensitive), with their lines. Searches message text, tool inputs and tool results.' },
           },
           required: ['session_id'],
         },
@@ -2988,6 +2997,28 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           return { content: [{ type: 'text', text: out.join('\n') }] };
         }
 
+        // Said before any window, so a missing message is never read as one
+        // that was never written.
+        const unsynced = await unsyncedLocalMessages(messagesList, localTranscript(params.session_id));
+        const syncNote = unsynced
+          ? `Sync is behind: this machine's transcript has ${unsynced} message(s) newer than the server's newest (${new Date(newestTimestamp(messagesList)).toISOString()}). Run recall_index, then call recall_show again.`
+          : null;
+
+        if (params.query !== undefined) {
+          const hits = findShowMessages(messagesList, params.query);
+          const shown = hits.slice(0, params.max_messages);
+          const out = [`Session: ${params.session_id}`];
+          if (syncNote) out.push(syncNote);
+          if (hits.length === 0) {
+            out.push(`No message contains "${params.query}". The session has ${messagesList.length} messages, lines ${messagesList[0].line} to ${messagesList[messagesList.length - 1].line}.`);
+          } else {
+            out.push(`${hits.length} message(s) contain "${params.query}", at lines ${hits.map((m) => m.line).join(', ')}.`);
+            if (hits.length > shown.length) out.push(`Showing the first ${shown.length}. Pass around_line to read the others in context.`);
+            out.push('', ...renderShowMessages(shown, { expandHint }));
+          }
+          return { content: [{ type: 'text', text: out.join('\n') }] };
+        }
+
         const displayMessages = selectShowWindow(messagesList, {
           aroundLine: params.around_line,
           fromEnd: params.from_end,
@@ -2995,6 +3026,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         });
 
         const output = [`Session: ${params.session_id}`];
+        if (syncNote) output.push(syncNote);
         const lastMsg = messagesList[messagesList.length - 1];
         output.push(`Total messages: ${messagesList.length} (max line: ${lastMsg ? lastMsg.line : 0})`);
         if (params.from_end !== undefined) {

@@ -47,7 +47,9 @@ Once you have a session id:
 - `mcp__chat-recall__recall_context` — structured context (requests, decisions,
   files, tools).
 - `mcp__chat-recall__recall_show` — raw slice; `from_end: N` for the last N
-  messages. Each message comes back in full, code and commands included, with
+  messages, `query` to find a message by its words and get its line,
+  `around_line` to read around that line. If the reply says that sync is
+  behind, run `recall_index` before you read the transcript file. Each message comes back in full, code and commands included, with
   its tool results. A body over 2000 characters shows its ends; pass
   `expand_line` to get it whole. It
   returns 10 messages unless you raise `max_messages`, so don't read a partial
