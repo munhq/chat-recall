@@ -74,7 +74,7 @@ directly.
 Every `recall_*` tool. `packages/cli/src/skills-catalog.test.ts` fails when a
 tool is registered and never named here, so adding a tool means placing it.
 
-**Resume / cold start** — `recall_smart_resume` (structured resume bundle; needs a session id), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context` (structured dump of one session), `recall_show` (raw slice — returns 10 messages unless you raise `max_messages`), `recall_summary` (AI summary + outcome).
+**Resume / cold start** — `recall_smart_resume` (structured resume bundle; needs a session id), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context` (structured dump of one session), `recall_show` (raw slice — `query` finds a message and its line, `around_line` reads around it; returns 10 messages unless you raise `max_messages`), `recall_summary` (AI summary + outcome).
 **Search** — `recall_search` (sessions; `include_outcome`, `like_session`), `recall_memory_search` (every memory type), `recall_memory_item` (read ONE item found by search, or browse a source type), `recall_user_prompts` (what the user actually typed), `recall_subagent_search` (inside subagent transcripts, whose work never reaches the main conversation), `recall_redundant_files` (before writing a new file, check you have not written one like it already).
 **Project** — `recall_project_context` (rich dump), `recall_weekly_digest`, `recall_analytics_summary`, `recall_outcome_summary` (how many recent sessions actually shipped), `recall_code_findings` / `recall_code_actions` / `recall_code_projects` / `recall_code_index` / `recall_recommendations`.
 

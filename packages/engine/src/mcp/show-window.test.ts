@@ -12,7 +12,7 @@
  * agent guessed the next line number and missed again.
  */
 import { describe, test, expect } from 'vitest';
-import { selectShowWindow, nearestMessageLines, noMessageAtLine, type ShowMessage } from './show-render.js';
+import { selectShowWindow, nearestMessageLines, noMessageAtLine, findShowMessages, type ShowMessage } from './show-render.js';
 
 /** A dense session: messages on most lines, with the gaps a tool result or a skipped entry leaves. */
 function denseSession(count: number): ShowMessage[] {
@@ -101,5 +101,27 @@ describe('expand_line on a line with no message', () => {
 
   test('a line past the end names the last lines', () => {
     expect(nearestMessageLines(session, 9000, 2)).toEqual([1776, 2556]);
+  });
+});
+
+describe('query', () => {
+  const session: ShowMessage[] = [
+    { line: 1762, role: 'user', content: 'show me a diagram of the flow, before and after' },
+    { line: 1765, role: 'assistant', content: '', toolCalls: [{ name: 'Bash', input: { command: 'git log' }, result: 'commit 57314ec1 one plan per work item' }] },
+    { line: 1773, role: 'assistant', content: 'BEFORE:\n  goal → task\nAFTER:\n  goal → one task per work item' },
+  ];
+
+  test('finds messages by their text, case-insensitive', () => {
+    expect(lines(findShowMessages(session, 'DIAGRAM'))).toEqual([1762]);
+  });
+
+  test('finds text inside tool inputs and results', () => {
+    expect(lines(findShowMessages(session, 'git log'))).toEqual([1765]);
+    expect(lines(findShowMessages(session, '57314ec1'))).toEqual([1765]);
+  });
+
+  test('returns every match in session order, and nothing for a blank query', () => {
+    expect(lines(findShowMessages(session, 'work item'))).toEqual([1765, 1773]);
+    expect(findShowMessages(session, '   ')).toEqual([]);
   });
 });

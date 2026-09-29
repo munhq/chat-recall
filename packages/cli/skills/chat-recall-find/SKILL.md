@@ -39,8 +39,10 @@ description: >-
 
 Every tool here takes a NAMED `session_id` (not a positional argument).
 
-- `mcp__chat-recall__recall_show` — read the session slice (`around_line`,
-  `from_end`). Each message comes back in full, with its tool calls and
+- `mcp__chat-recall__recall_show` — read the session slice. To find one
+  message, pass `query` with words from it: the reply gives the line of each
+  match. Then pass that line as `around_line`, or read the newest messages with
+  `from_end`. Do not guess line numbers. Each message comes back in full, with its tool calls and
   results. A body over 2000 characters shows its ends and the `expand_line`
   that returns it whole. It returns **10 messages
   by default**: raise `max_messages` before telling the user what a session
