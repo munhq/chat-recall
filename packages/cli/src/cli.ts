@@ -4,7 +4,7 @@
  */
 
 import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
-import { renderShowMessages, type ShowMessage } from '@chat-recall/engine/mcp/show-render.js';
+import { renderShowMessages, noMessageAtLine, type ShowMessage } from '@chat-recall/engine/mcp/show-render.js';
 import type { McpClientId } from '@chat-recall/engine/core/mcp-clients.js';
 import { config } from 'dotenv';
 import { Command } from 'commander';
@@ -1143,8 +1143,7 @@ program
         const line = parseInt(options.line, 10);
         const hit = messagesList.find((m) => m.line === line);
         if (!hit) {
-          const lines = messagesList.map((m) => m.line);
-          console.log(chalk.yellow(`No message at line ${options.line}. Its lines run from ${Math.min(...lines)} to ${Math.max(...lines)}.`));
+          console.log(chalk.yellow(noMessageAtLine(messagesList, line, sessionId)));
           process.exit(1);
         }
         console.log(renderShowMessages([hit], { full: true }).join('\n'));

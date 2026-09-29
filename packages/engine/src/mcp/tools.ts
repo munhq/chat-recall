@@ -11,7 +11,7 @@ import { resumeCommandFor } from '../core/resume-command.js';
 import { detectStackAt, evidenceLine, type StackEvidence } from '../core/stack-detect.js';
 import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
 import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
-import { renderShowMessages, type ShowMessage } from './show-render.js';
+import { renderShowMessages, selectShowWindow, noMessageAtLine, type ShowMessage } from './show-render.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
 import {
   canonArea, isKnownArea, decisionSubject, DECISION_AREAS, parseDecisionSubject,
@@ -446,8 +446,8 @@ const RecallIndexSchema = z.object({
 
 const RecallShowSchema = z.object({
   session_id: z.string().describe('Session ID from search results'),
-  around_line: z.number().optional().describe('Optional line number to show context around'),
-  max_messages: z.number().optional().default(10).describe('Maximum messages to return'),
+  around_line: z.number().optional().describe('Transcript line to centre on. Returns max_messages messages around the message nearest to it.'),
+  max_messages: z.number().optional().default(10).describe('Messages to return with around_line, or from the start of the session. from_end sets its own count.'),
   from_end: z.number().optional()
     .describe('Return the last N messages of the session. Mutually exclusive with around_line.'),
   expand_line: z.number().optional()
@@ -1384,8 +1384,8 @@ line to pass as \`expand_line\` to get it whole.`,
           type: 'object',
           properties: {
             session_id:    { type: 'string', description: 'Session ID from search results, or a plan id (filename without .md)' },
-            around_line:   { type: 'number', description: 'Optional line number to show context around' },
-            max_messages:  { type: 'number', default: 10, description: 'Maximum messages to return' },
+            around_line:   { type: 'number', description: 'Transcript line to centre on. Returns max_messages messages around the message nearest to it.' },
+            max_messages:  { type: 'number', default: 10, description: 'Messages to return with around_line, or from the start of the session. from_end sets its own count.' },
             from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
             expand_line:   { type: 'number', description: 'Return only the message at this line, with every tool input and result whole.' },
           },
@@ -2982,39 +2982,25 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.expand_line !== undefined) {
           const hit = messagesList.find((m) => m.line === params.expand_line);
           if (!hit) {
-            const lines = messagesList.map((m) => m.line);
-            return { content: [{ type: 'text', text: `No message at line ${params.expand_line} in ${params.session_id}. Its lines run from ${Math.min(...lines)} to ${Math.max(...lines)}.` }] };
+            return { content: [{ type: 'text', text: noMessageAtLine(messagesList, params.expand_line, params.session_id) }] };
           }
           const out = [`Session: ${params.session_id}`, `Line ${hit.line}, whole.`, '', ...renderShowMessages([hit], { full: true })];
           return { content: [{ type: 'text', text: out.join('\n') }] };
         }
 
-        // Filter messages
-        let displayMessages = messagesList;
-
-        if (params.from_end !== undefined) {
-          // Last N messages — no line-number guessing required.
-          const n = Math.max(1, Math.min(params.from_end, messagesList.length));
-          displayMessages = messagesList.slice(-n);
-        } else if (params.around_line) {
-          const window = Math.floor(params.max_messages / 2);
-          const filtered = messagesList.filter(msg => Math.abs(msg.line - params.around_line!) <= window * 10);
-          if (filtered.length > 0) {
-            displayMessages = filtered.slice(0, params.max_messages);
-          } else {
-            displayMessages = messagesList.filter(msg => msg.line <= params.around_line! + 50).slice(-params.max_messages);
-          }
-        } else {
-          displayMessages = messagesList.slice(0, params.max_messages);
-        }
+        const displayMessages = selectShowWindow(messagesList, {
+          aroundLine: params.around_line,
+          fromEnd: params.from_end,
+          maxMessages: params.max_messages,
+        });
 
         const output = [`Session: ${params.session_id}`];
         const lastMsg = messagesList[messagesList.length - 1];
         output.push(`Total messages: ${messagesList.length} (max line: ${lastMsg ? lastMsg.line : 0})`);
         if (params.from_end !== undefined) {
           output.push(`Showing last ${displayMessages.length} message(s).`);
-        } else if (params.around_line) {
-          output.push(`Showing ${displayMessages.length} around line ${params.around_line}.`);
+        } else if (params.around_line !== undefined && displayMessages.length > 0) {
+          output.push(`Showing ${displayMessages.length} message(s) around line ${params.around_line}, lines ${displayMessages[0].line} to ${displayMessages[displayMessages.length - 1].line}.`);
         }
         output.push('');
 
