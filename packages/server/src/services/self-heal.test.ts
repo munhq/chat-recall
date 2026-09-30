@@ -208,6 +208,107 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  // A session synced before MARKERS_VERSION 2: its prompt row and its view
+  // were parsed by a reader that took harness text for the person's prompts
+  // and did not read queued_command attachments. The archive holds the same
+  // messages, so only a version check can find it.
+  test('rebuilds a prompt row written before version 2, and the view with it', async () => {
+    const { createStore, createMetadataCache, buildRawContainer, gzipContainer, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const { MARKERS_VERSION } = await import('@chat-recall/engine/core/session-sentiment.js');
+    const store = await createStore();
+    const metaCache = await createMetadataCache();
+    const id = 'heal-prompts-1';
+    const mtime = 1760000400000;
+    const person = 'please fix the login redirect loop quorbly';
+    const queued = 'also check the logout path while you are there';
+    const notice = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>';
+    const lines = [
+      { type: 'user', uuid: 'p1', timestamp: '2026-09-01T10:00:00.000Z', origin: { kind: 'human' }, message: { role: 'user', content: person } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'p1', timestamp: '2026-09-01T10:00:05.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'on it' }] } },
+      { type: 'attachment', uuid: 'q1', parentUuid: 'a1', timestamp: '2026-09-01T10:00:09.000Z', attachment: { type: 'queued_command', prompt: queued } },
+      { type: 'user', uuid: 'n1', parentUuid: 'q1', timestamp: '2026-09-01T10:00:20.000Z', origin: { kind: 'task-notification' }, message: { role: 'user', content: notice } },
+      { type: 'assistant', uuid: 'a2', parentUuid: 'n1', timestamp: '2026-09-01T10:00:25.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n';
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(lines, 'utf-8') }] });
+    const { gz, size } = gzipContainer(container);
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+    await store.setItem({
+      id, sourceType: 'session', title: person, projectPath: '/home/user/code/example',
+      contentPreview: person, filePath: '', mtime, extra: { tool: 'claude', synced: true },
+    } as Parameters<typeof store.setItem>[0]);
+
+    // The view the old reader stored: the notification reads as a prompt, and
+    // the queued prompt is absent. It has as many messages as the archive
+    // parses to, so the truncation check alone calls it healthy.
+    const { parseTranscriptFromContainer } = await import('../imports.js');
+    const current = parseTranscriptFromContainer(container).messages;
+    const oldView = current.map(({ origin: _origin, ...m }) => m);
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: oldView, subagents: [], o: 777 }));
+    await metaCache.setCompute(id, 'markers', mtime, {
+      sessionId: id,
+      prompts: [{ line: 1, ts: 0, text: person }, { line: 4, ts: 0, text: notice }],
+      summary: {},
+    });
+
+    const dry = await healSessionFromArchive(store, id, { dryRun: true, metaCache });
+    expect(dry).toMatchObject({ damaged: true, healed: false, prompts: true });
+
+    const r = await healSessionFromArchive(store, id, { metaCache });
+    expect(r).toMatchObject({ damaged: true, healed: true, prompts: true });
+
+    const row = (await metaCache.getComputeStale<{ v: number; prompts: Array<{ text: string }> }>(id, 'markers'))!.data;
+    expect(row.v).toBe(MARKERS_VERSION);
+    expect(row.prompts.map((p) => p.text)).toEqual([person, queued]);
+
+    const env = JSON.parse((await store.getCachedContentStale(id, 'session'))!.content);
+    expect(env.o).toBe(777);
+    expect(env.messages.find((m: { content?: string }) => m.content === notice).origin).toBe('task-notification');
+
+    const chunks = await store.listChunksByItem('session', id);
+    expect(chunks.some((c) => c.chunk_type === 'harness' && c.text.includes('task-notification'))).toBe(true);
+    expect(chunks.some((c) => c.chunk_type.startsWith('user') && c.text.includes('task-notification'))).toBe(false);
+
+    // Idempotent: the row is current now.
+    const again = await healSessionFromArchive(store, id, { metaCache });
+    expect(again).toMatchObject({ healed: false, reason: 'healthy' });
+
+    await metaCache.close();
+    await store.close();
+  });
+
+  // Appends do not update the archive, so a view can hold messages the archive
+  // lacks. Rebuilding it from that archive would drop them.
+  test('an archive with fewer messages than the view leaves the prompt row and the view alone', async () => {
+    const { createStore, createMetadataCache, buildRawContainer, gzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const store = await createStore();
+    const metaCache = await createMetadataCache();
+    const id = 'heal-prompts-behind';
+    const mtime = 1760000500000;
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(jsonl(6), 'utf-8') }] });
+    const archived = parseTranscriptFromContainer(container).messages;
+    const { gz, size } = gzipContainer(container);
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+    await store.setItem({
+      id, sourceType: 'session', title: 'message 0 zorptext', projectPath: '/home/user/code/example',
+      contentPreview: 'message 0', filePath: '', mtime, extra: { tool: 'claude', synced: true },
+    } as Parameters<typeof store.setItem>[0]);
+    const view = [...archived, { line: 99, role: 'user', content: 'an appended prompt the archive lacks' }];
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: view, subagents: [], o: 0 }));
+    await store.addChunksFTS([{ chunkId: `${id}:sync:0`, itemId: id, sourceType: 'session', chunkType: 'user', text: 'message 0 zorptext', title: 't', projectPath: '/home/user/code/example', filePath: '', mtime } as Parameters<typeof store.addChunksFTS>[0][0]]);
+    const oldRow = { sessionId: id, prompts: [{ line: 1, ts: 0, text: 'message 0 zorptext' }], summary: {} };
+    await metaCache.setCompute(id, 'markers', mtime, oldRow);
+
+    const r = await healSessionFromArchive(store, id, { metaCache });
+    expect(r).toMatchObject({ healed: false, reason: 'healthy' });
+    expect(JSON.parse((await store.getCachedContentStale(id, 'session'))!.content).messages).toHaveLength(view.length);
+    expect((await metaCache.getComputeStale<unknown>(id, 'markers'))!.data).toEqual(oldRow);
+
+    await metaCache.close();
+    await store.close();
+  });
+
   // The HTTP route has a gateway deadline; the background sweep does not. An
   // unbounded pass costs ~150ms per session, so the route's own default —
   // "scan everything" — took 125s on a real tenant and returned 524 every

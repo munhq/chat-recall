@@ -4,6 +4,19 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **Sessions synced before 0.7.10 kept the wrong prompts.** A client sends a
+  session again only when its file changes, so a finished session kept the
+  prompt list the old reader made. On one machine, 692 of 10 280 sessions
+  counted harness text as your prompts or missed a prompt you typed while the
+  agent worked. The server now rebuilds these sessions from its own archive
+  of each transcript, with no client action. `chat-recall index --force` is
+  not needed.
+- **Command output and messages from other sessions counted as your
+  prompts.** Claude Code writes the output of a `!` or slash command, a
+  cross-session message and the `/loop` sentinel with no author field. They
+  are harness text now. The command you typed and an interrupt stay prompts.
+
 ## [0.7.11] — 2026-09-30
 
 ### Fixed

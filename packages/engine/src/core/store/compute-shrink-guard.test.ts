@@ -76,7 +76,13 @@ describe('computeShrinkRefused across markers versions', () => {
     expect(await computeShrinkRefused('markers', v2(26), reader(v2(25)))).toBe(false);
   });
 
-  test('zero prompts cannot wipe a populated row of an older version', async () => {
-    expect(await computeShrinkRefused('markers', v2(0), reader(markers(45)))).toBe(true);
+  // A subagent transcript: version 1 counted its task prompt, and the current
+  // reader finds no prompt of the person in it.
+  test('a newer version with zero prompts replaces an older populated row', async () => {
+    expect(await computeShrinkRefused('markers', v2(0), reader(markers(1)))).toBe(false);
+  });
+
+  test('within one version, zero prompts cannot wipe a populated row', async () => {
+    expect(await computeShrinkRefused('markers', v2(0), reader(v2(45)))).toBe(true);
   });
 });

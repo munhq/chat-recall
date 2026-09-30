@@ -102,8 +102,8 @@ export function markersPromptCount(data: unknown): number | null {
  *
  * Counts compare within one MARKERS_VERSION only. A newer version replaces an
  * older one whatever its count, because it counts a different set of prompts;
- * an older version never replaces a newer one. A payload with no prompts never
- * replaces one that has prompts, whatever the versions.
+ * an older version never replaces a newer one. Within one version, a payload
+ * with no prompts never replaces one that has prompts.
  */
 export async function computeShrinkRefused(
   kind: string,
@@ -116,12 +116,16 @@ export async function computeShrinkRefused(
   const existing = await readStale(kind);
   const stored = existing ? markersPromptCount(existing.data) : null;
   if (stored === null) return false;
-  if (incoming === 0 && stored > 0) return true;
   // Counts compare within one version only: a newer version counts a
-  // different set of prompts, and an older one must never replace it.
+  // different set of prompts, and an older one must never replace it. A
+  // subagent transcript holds no prompt of the person, so its current payload
+  // has none, and it must still replace a version 1 row that counted the
+  // subagent's task prompt. The markers route skips an empty payload and
+  // serves the envelope, so an empty row never hides prompts.
   const incomingVersion = markersVersion(data);
   const storedVersion = markersVersion(existing!.data);
   if (incomingVersion !== storedVersion) return incomingVersion < storedVersion;
+  if (incoming === 0 && stored > 0) return true;
   return incoming < stored;
 }
 

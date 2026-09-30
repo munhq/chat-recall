@@ -9,9 +9,11 @@
  * Claude Code 2.1.20x resume-truncation caused, and this is its automatic,
  * customer-action-free cure.
  *
- * Invariant: heal ONLY when the archive is strictly fuller (more messages) than
- * the current view. It can only ever GROW a conversation, never shrink it, and
- * it rebuilds from the session's OWN archived bytes — nothing is fabricated.
+ * Invariant: rebuild the view ONLY when the archive is strictly fuller (more
+ * messages) than the current view, or holds as many and the view was parsed by
+ * an older prompt reader. It can only ever GROW a conversation, never shrink
+ * it, and it rebuilds from the session's OWN archived bytes — nothing is
+ * fabricated.
  *
  * Two complementary mechanisms:
  *   - ingest shrink-guard (routes/sync.ts) PREVENTS new damage: a truncated
@@ -28,7 +30,8 @@ import {
   getBackend,
   type SourceType,
 } from '../imports.js';
-import { replayFromEvents } from '@chat-recall/engine/core/generic-engine.js';
+import { replayFromEvents, extractTurnsFromEvents } from '@chat-recall/engine/core/generic-engine.js';
+import { markersFromTurns, markersVersion, MARKERS_VERSION, type MarkersPayload } from '@chat-recall/engine/core/session-sentiment.js';
 import { chunksFromTurns, chunkRole, subagentChunks, type EnvSubagent } from './session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
@@ -48,6 +51,7 @@ export interface HealResult {
   healed: boolean;   // we actually rebuilt (damaged && !dryRun && wrote)
   from: number;      // message count before
   to: number;        // message count after / would-be (archive count)
+  prompts?: boolean; // the prompt row predates MARKERS_VERSION and is rebuilt
   reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'deleted' | 'error';
 }
 
@@ -132,9 +136,36 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     }
     const diffDamaged = newDiff !== null;
 
-    const damaged = envelopeDamaged || diffDamaged || chunksMissing || metadataMissing;
+    // ── Prompt row: a Claude session synced before the current MARKERS_VERSION
+    // counted harness text as the person's prompts, and a client sends a session again
+    // only when its file changes. On one tenant 11 126 of 11 138 rows were
+    // version 1, and 692 of the 10 280 that could be compared held harness
+    // text or missed a queued prompt. The archive is parsed again with the
+    // current reader, and the envelope and chunks are rebuilt with it, so the
+    // view, search and the prompt row agree. An archive with fewer messages
+    // than the view is older than the appends the view holds, and rebuilding
+    // from it would drop them, so that session is left as it is.
+    let newMarkers: MarkersPayload | null = null;
+    if (opts.metaCache && container.tool === 'claude' && archiveMsgs >= itemMsgs) {
+      let storedVersion = 0;
+      try {
+        const sm = await opts.metaCache.getComputeStale<unknown>(sessionId, 'markers');
+        if (sm) storedVersion = markersVersion(sm.data);
+      } catch { /* no stored row */ }
+      // The main transcript only: subagent records are never the person's
+      // prompts, and the client numbers the main file's lines from 1 too.
+      const main = container.files.find((f) => f.name.endsWith('.jsonl') && !f.name.includes('/'));
+      if (storedVersion < MARKERS_VERSION && main) {
+        const events = getBackend('claude').readEventsFromText?.(main.text, raw.mtime) ?? [];
+        newMarkers = markersFromTurns(sessionId, extractTurnsFromEvents(sessionId, events, { maxTurns: 50_000 }).turns);
+      }
+    }
+    const promptsStale = newMarkers !== null;
+    const viewRebuilt = envelopeDamaged || promptsStale;
+
+    const damaged = envelopeDamaged || diffDamaged || chunksMissing || metadataMissing || promptsStale;
     if (!damaged) return { sessionId, damaged: false, healed: false, from: itemMsgs, to: archiveMsgs, reason: 'healthy' };
-    if (opts.dryRun) return { sessionId, damaged: true, healed: false, from: itemMsgs, to: archiveMsgs };
+    if (opts.dryRun) return { sessionId, damaged: true, healed: false, from: itemMsgs, to: archiveMsgs, prompts: promptsStale };
 
     // 0. Metadata row — recreate the item when the archive exists but its
     //    memory_metadata row was hard-deleted (restores listing + grouping).
@@ -147,9 +178,10 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       } as Parameters<typeof store.setItem>[0]);
     }
 
-    // 1. Envelope — the viewer's source of truth. Only rebuilt when the archive
-    //    is fuller (a truncation victim); a chunks-only gap leaves it untouched.
-    if (envelopeDamaged) {
+    // 1. Envelope — the viewer's source of truth. Rebuilt when the archive is
+    //    fuller (a truncation victim) or holds as many messages and the prompt
+    //    row is stale; a chunks-only gap leaves it untouched.
+    if (viewRebuilt) {
       const envelope = { v: TRANSCRIPT_VERSION, messages: parsed.messages, subagents: parsed.subagents, o: storedOffset };
       await store.setCachedContent(sessionId, 'session', mtime, JSON.stringify(envelope));
     }
@@ -157,7 +189,7 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     // 2. FTS chunks — search. Rebuilt when the envelope grew OR when the session
     //    has none at all (the S2 orphan). Same builders the sync ingest uses;
     //    addChunksFTS deletes the item's rows first, so it replaces cleanly.
-    if (envelopeDamaged || chunksMissing) {
+    if (viewRebuilt || chunksMissing) {
       const textSource = parsed.messages
         .filter((m) => m.content?.trim())
         .map((m) => ({ role: chunkRole(m), text: m.content! }));
@@ -189,7 +221,12 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       await opts.metaCache.setCompute(sessionId, 'diff', mtime, newDiff);
     }
 
-    return { sessionId, damaged: true, healed: true, from: itemMsgs, to: archiveMsgs };
+    // 4. Prompt row — what recall_user_prompts and the markers route read.
+    if (newMarkers && opts.metaCache) {
+      await opts.metaCache.setCompute(sessionId, 'markers', mtime, newMarkers);
+    }
+
+    return { sessionId, damaged: true, healed: true, from: itemMsgs, to: archiveMsgs, prompts: promptsStale };
   } catch (err) {
     log.error({ err, session: sessionId }, 'self-heal failed for session');
     return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'error' };
@@ -258,7 +295,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     for (const r of rows) {
       scanned++;
       const res = await healSessionFromArchive(store, r.session_id, { dryRun: opts.dryRun, metaCache });
-      if (res.damaged) { damaged++; if (damagedIds.length < 200) damagedIds.push(`${r.session_id}:${res.from}->${res.to}`); }
+      if (res.damaged) { damaged++; if (damagedIds.length < 200) damagedIds.push(`${r.session_id}:${res.from}->${res.to}${res.prompts ? ':prompts' : ''}`); }
       if (res.healed) healed++;
     }
   } finally {
