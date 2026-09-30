@@ -22,6 +22,7 @@ import { writeFileSync, mkdtempSync, rmSync, readdirSync, statSync, mkdirSync } 
 import { join, dirname, sep, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 
 export interface CliRelease { version: string; sha256: string; }
 export interface Caps { edition?: string; cli?: CliRelease | null; }
@@ -166,6 +167,12 @@ export interface UpdateDeps {
   platform?: NodeJS.Platform;
   /** Version actually on disk after the install — the post-condition check. */
   verify?: () => string | null;
+  /** True once this process is shutting down: nothing is installed or restarted after that. */
+  stopping?: () => boolean;
+  /** Version on disk before the install, read once the lock is held. */
+  onDisk?: () => string | null;
+  /** Take the machine-wide update lock, or null when another process holds it. */
+  acquireLock?: () => { release(): void } | null;
 }
 
 export interface UpdateResult { updated: boolean; reason: string; from?: string; to?: string; }
@@ -196,6 +203,7 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
   const discardStaging = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } };
   const tgz = join(dir, 'chat-recall.tgz');
   writeFileSync(tgz, buf);
+  if (deps.stopping?.()) { discardStaging(); return { updated: false, reason: STOPPING_REASON }; }
   try { deps.install(tgz); }
   catch (e) { discardStaging(); return { updated: false, reason: `install failed: ${e instanceof Error ? e.message : e}` }; }
   discardStaging();
@@ -219,7 +227,11 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
     };
   }
 
-  try { deps.restart(deps.platform ?? process.platform); } catch { /* daemon will pick up new bin on its next natural restart */ }
+  // A process that is shutting down leaves the restart to the service
+  // manager, which is already stopping it; the new bundle runs on the next start.
+  if (!deps.stopping?.()) {
+    try { deps.restart(deps.platform ?? process.platform); } catch { /* daemon will pick up new bin on its next natural restart */ }
+  }
   return { updated: true, reason: `updated ${plan.from} → ${plan.to}`, from: plan.from, to: plan.to };
 }
 
@@ -368,10 +380,31 @@ function realInstall(tgz: string): void {
   try { npmInstall(npm, ['install', '-g', tgz]); }
   catch { npmInstall(npm, ['install', '-g', '--prefix', join(homedir(), '.local'), tgz]); }
 }
+function acquireUpdateLock(): { release(): void } | null {
+  // A live holder is never preempted; a dead one is taken over after the
+  // helper's short grace. 10 minutes covers a slow download and npm install.
+  return acquireIndexLock({ kind: 'auto-update', file: '.update.lock', staleAfterMs: 10 * 60_000 });
+}
+
+/**
+ * The command that restarts the watch service, per platform.
+ *
+ * Linux passes --no-block: queue the restart and return. The watch daemon runs
+ * this from inside the service, and a blocking `systemctl restart` waits for
+ * the stop phase, which waits for this process, whose event loop the wait
+ * blocks. systemd then killed it at TimeoutStopSec and the next start counted
+ * a crash.
+ */
+export function restartCommand(platform: NodeJS.Platform): { cmd: string; shell?: string } | null {
+  if (platform === 'linux') return { cmd: 'systemctl --user --no-block restart chat-recall-watch.service' };
+  if (platform === 'darwin') return { cmd: 'launchctl kickstart -k gui/$(id -u)/com.chat-recall.watch', shell: '/bin/bash' };
+  if (platform === 'win32') return { cmd: 'schtasks /End /TN chat-recall-watch & schtasks /Run /TN chat-recall-watch' };
+  return null;
+}
+
 function realRestart(platform: NodeJS.Platform): void {
-  if (platform === 'linux') execSync('systemctl --user restart chat-recall-watch.service', { stdio: 'ignore' });
-  else if (platform === 'darwin') execSync('launchctl kickstart -k gui/$(id -u)/com.chat-recall.watch', { stdio: 'ignore', shell: '/bin/bash' });
-  else if (platform === 'win32') execSync('schtasks /End /TN chat-recall-watch & schtasks /Run /TN chat-recall-watch', { stdio: 'ignore' });
+  const c = restartCommand(platform);
+  if (c) execSync(c.cmd, { stdio: 'ignore', ...(c.shell ? { shell: c.shell } : {}) });
 }
 
 
@@ -446,6 +479,19 @@ export function clearUpdateFailures(): void { writeUpdateState({}); }
 /** Servers already told "this device will not self-update", per process. */
 const reportedStandingSkip = new Set<string>();
 
+/** The reason an update gives when its process began to shut down under it. */
+export const STOPPING_REASON = 'not installed: this process is shutting down';
+/** The reason an update gives when another process holds the update lock. */
+export const LOCKED_REASON = 'another process is installing an update';
+
+let stopRequested = false;
+/**
+ * Stop this process from installing or restarting anything from now on. The
+ * watch daemon calls it when it begins to shut down: an update that started
+ * then ran `systemctl restart` against the unit that was stopping it.
+ */
+export function stopAutoUpdates(): void { stopRequested = true; }
+
 export async function runAutoUpdate(
   base: string,
   authHeaders: Record<string, string>,
@@ -507,12 +553,35 @@ export async function runAutoUpdate(
     return { updated: false, reason: `gave up installing ${plan.to} after ${GIVE_UP_AFTER} failed attempts — run \`npm install -g chat-recall\` by hand` };
   }
 
-  const result = await executeAutoUpdate(plan, {
-    download: deps?.download ?? realDownload,
-    install: deps?.install ?? realInstall,
-    restart: deps?.restart ?? realRestart,
-    platform: deps?.platform,
-  });
+  const stopping = deps?.stopping ?? (() => stopRequested);
+  if (stopping()) return { updated: false, reason: STOPPING_REASON };
+
+  // One installer per machine. The watch daemon, an MCP daemon and a CLI
+  // command each run this after a sync, and two of them installed the same
+  // release at once: one restarted the service, and the other then restarted it
+  // again from inside the stopping daemon.
+  const lock = (deps?.acquireLock ?? acquireUpdateLock)();
+  if (!lock) return { updated: false, reason: LOCKED_REASON };
+  let result: UpdateResult;
+  try {
+    // The version on disk may have changed while this process waited: the
+    // process that held the lock installed it, and restarted the service.
+    const onDisk = (deps?.onDisk ?? installedVersion)();
+    if (onDisk && plan.to && compareVersions(onDisk, plan.to) >= 0) {
+      return { updated: false, reason: `already current: ${onDisk} is on disk` };
+    }
+    result = await executeAutoUpdate(plan, {
+      download: deps?.download ?? realDownload,
+      install: deps?.install ?? realInstall,
+      restart: deps?.restart ?? realRestart,
+      platform: deps?.platform,
+      verify: deps?.verify,
+      stopping,
+    });
+  } finally {
+    lock.release();
+  }
+  if (result.reason === STOPPING_REASON) return result;
 
   // A self-update that KEEPS failing is the worst failure mode this system has:
   // the machine silently runs an old collector forever, and the only trace was a

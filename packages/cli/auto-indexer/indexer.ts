@@ -51,7 +51,7 @@ import { syncIncremental, isSyncSkip } from '../src/sync-client.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
-import { runAutoUpdate } from '../src/auto-update.js';
+import { runAutoUpdate, stopAutoUpdates } from '../src/auto-update.js';
 import { orderByStaleness, noteIndexed, pruneCursor, readCursor, workspaceFingerprint, isUnchangedSinceIndexed } from '../src/code-index-cursor.js';
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { daemonLog } from '../src/daemon-log.js';
@@ -1022,6 +1022,9 @@ if (CODE_INDEX_ON) setTimeout(() => { void collectorMigrationOnce(); }, 150_000)
 // server-side), so shutdown is just: close watchers, flush, exit.
 function shutdown(signal: string): void {
   daemonLog.info(`Received ${signal}, shutting down...`);
+  // An in-flight sync that finishes now must not install or restart anything:
+  // the service manager is already stopping this process.
+  stopAutoUpdates();
   // Coalesced ledger acks must reach disk before we go, or the next start
   // re-ships everything acked since the last flush.
   try { flushLedger(); } catch (e) { daemonLog.error(`ledger flush on shutdown failed: ${String(e)}`); }

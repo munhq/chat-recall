@@ -38,6 +38,8 @@ interface AcquireOpts {
   kind: string;
   /** Treat a lock as stale if older than this AND its PID is dead. Default 10 min. */
   staleAfterMs?: number;
+  /** Lock file name in the index dir, for a lock that must not share the sync writer's. Default `.compact.lock`. */
+  file?: string;
 }
 
 /**
@@ -47,7 +49,7 @@ interface AcquireOpts {
  * staleness window, we take it over.
  */
 export function acquireIndexLock(opts: AcquireOpts): IndexLock | null {
-  const lockPath = lockFilePath();
+  const lockPath = lockFilePath(opts.file);
   mkdirSync(dirname(lockPath), { recursive: true });
 
   // 1. Try to detect + steal a stale lock first.
@@ -92,8 +94,8 @@ export function acquireIndexLock(opts: AcquireOpts): IndexLock | null {
   };
 }
 
-function lockFilePath(): string {
-  return join(getIndexDir(), '.compact.lock');
+function lockFilePath(file = '.compact.lock'): string {
+  return join(getIndexDir(), file);
 }
 
 /** Grace before stealing from a DEAD holder. Short on purpose: a dead PID
