@@ -4,6 +4,16 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.11] — 2026-09-30
+
+### Fixed
+- **An update could hang the watch daemon for 90 seconds.** When two
+  processes updated at the same time, the daemon ran a blocking
+  `systemctl --user restart` from inside the service that was stopping it.
+  systemd killed it after 90 seconds, and the next start counted a crash.
+  The restart now uses `--no-block`. The daemon installs nothing after its
+  shutdown begins, and one process at a time installs an update.
+
 ## [0.7.10] — 2026-09-30
 
 ### Fixed
