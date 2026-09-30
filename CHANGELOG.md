@@ -4,6 +4,39 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.10] — 2026-09-30
+
+### Fixed
+- **`recall_user_prompts` counted harness text as your prompts.** In one
+  session, 20 of 45 "prompts" were task notifications, Stop-hook feedback,
+  subagent hand-backs and subagent task prompts, and hook feedback was marked
+  "frustrated". The collector now reads who wrote each record from the fields
+  Claude Code sets. The first prompt, the summary and the correction detector
+  skip harness text too. Run `chat-recall index --force` once to correct the
+  sessions you already synced.
+- **A prompt typed while the agent worked was missing from `recall_show`.**
+  Claude Code writes it as a `queued_command` attachment, and the transcript
+  parser did not read that record. It does now.
+- **`around_line` returned a window that ended before the line.** The window
+  now centres on the message nearest to the line. When `expand_line` finds no
+  message, the reply names the nearest real lines.
+- **`recall_summary`, `recall_context` and `recall_show` said "Session not
+  found" for the raw id an OpenCode session shows.** They now accept it.
+- **Every sync walk was called a first sync.** A walk of 3 changed sessions
+  put "first sync in progress … Older work may not be searchable yet" on MCP
+  answers. That line now shows only during a first sync.
+- **A server rollout could fail a sync with a deadlock.** Each boot ran the
+  full schema DDL while the old pods still took syncs. The server now records
+  the hash of the schema it applied, and it runs no DDL when the hash matches.
+
+### Added
+- **`recall_show query`.** It returns the messages that contain a text, with
+  the line of each match.
+- **A warning when sync is behind.** `recall_show` says when this machine's
+  transcript has messages that are newer than the server's newest message.
+- **Instructions in the MCP handshake.** They tell a model how to reach a
+  message in a past session, also when it does not load the skill.
+
 ## [0.7.9] — 2026-09-28
 
 ### Fixed
