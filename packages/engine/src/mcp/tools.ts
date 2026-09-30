@@ -58,7 +58,7 @@ import { statusEmoji } from '../core/outcome-display.js';
 import { sanitizeQuery } from '../core/query-sanitizer.js';
 import { getWAL } from '../core/write-ahead-log.js';
 import { isOnPath } from '../core/which.js';
-import { readCollectorHealth, judgeHealth, progressLine } from '../core/collector-health.js';
+import { readCollectorHealth, judgeHealth, progressLine, firstSyncInProgress } from '../core/collector-health.js';
 import {
   INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
   partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
@@ -2674,11 +2674,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const local = !isMultiTenant();
     const reported = local ? readCollectorHealth() : null;
     const health = local ? judgeHealth(reported) : { ok: true, summary: '' };
-    // A walk in flight is NOT a fault, so it is its own line rather than a
-    // warning. It answers the question a stale-looking answer raises during a
+    // A first sync in flight is NOT a fault, so it is its own line rather than
+    // a warning. It answers the question a stale-looking answer raises during a
     // first sync — "is this broken, or is it still loading?" — which the product
-    // previously could not answer at all.
-    const progress = local ? progressLine(reported) : null;
+    // previously could not answer at all. Later walks ship a few changed
+    // sessions and leave nothing older out of search, so they print nothing.
+    const progress = local && firstSyncInProgress(reported) ? progressLine(reported) : null;
     const state = await syncState();
     const banners = [
       health.ok ? null : `⚠ ${health.summary} Recent work may be missing from these answers.`

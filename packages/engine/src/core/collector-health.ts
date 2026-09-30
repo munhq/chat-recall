@@ -86,6 +86,12 @@ export interface WalkProgress {
   startedAt: number;
   /** True once the walk finished; a stale in-progress value means it died. */
   complete: boolean;
+  /**
+   * True when the walk began with nothing shipped to its server yet. Only then
+   * can older work be missing from search; every later walk ships the few
+   * sessions that changed.
+   */
+  first?: boolean;
 }
 
 export interface CollectorHealth {
@@ -131,7 +137,18 @@ export function progressLine(h: CollectorHealth | null): string | null {
   const p = h?.progress;
   if (!p || p.complete || p.total <= 0) return null;
   const pct = Math.min(99, Math.floor((100 * p.done) / p.total));
-  return `first sync in progress — ${p.done.toLocaleString()} of ${p.total.toLocaleString()} sessions (${pct}%)`;
+  return `${p.first ? 'first sync' : 'sync'} in progress — ${p.done.toLocaleString()} of ${p.total.toLocaleString()} sessions (${pct}%)`;
+}
+
+/**
+ * True while a first sync runs, which is the only walk that leaves older work
+ * out of search. Every incremental walk also reports progress, and a banner
+ * on those told agents "older work may not be searchable yet" about a
+ * complete index, on a walk of 3 sessions.
+ */
+export function firstSyncInProgress(h: CollectorHealth | null): boolean {
+  const p = h?.progress;
+  return !!p && p.first === true && !p.complete && p.total > 0;
 }
 
 const healthPath = (): string => join(getDataDir(), 'collector-health.json');

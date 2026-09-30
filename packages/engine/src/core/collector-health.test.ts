@@ -9,7 +9,7 @@
  * gets ignored, and then the real outage is invisible again.
  */
 import { describe, test, expect } from 'vitest';
-import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, updateCollectorHealth, readCollectorHealth, crashesAtBoot, recentCrashes, type CollectorHealth } from './collector-health.js';
+import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, updateCollectorHealth, readCollectorHealth, crashesAtBoot, recentCrashes, progressLine, firstSyncInProgress, type CollectorHealth } from './collector-health.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,5 +185,28 @@ describe('updateCollectorHealth preserves fields it does not know about', () => 
       else process.env.CHAT_RECALL_DATA_DIR = prevDir;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('progressLine and firstSyncInProgress', () => {
+  const health = (progress: Record<string, unknown> | undefined) =>
+    ({ v: 1, updatedAt: 0, startedAt: 0, restartsLastHour: 0, targets: {}, progress }) as never;
+
+  test('THE FAILURE: an incremental walk is not called a first sync', () => {
+    const h = health({ done: 3, total: 4, startedAt: 0, complete: false });
+    expect(firstSyncInProgress(h)).toBe(false);
+    expect(progressLine(h)).toBe('sync in progress — 3 of 4 sessions (75%)');
+  });
+
+  test('a first sync in flight is named and flagged', () => {
+    const h = health({ done: 2667, total: 10657, startedAt: 0, complete: false, first: true });
+    expect(firstSyncInProgress(h)).toBe(true);
+    expect(progressLine(h)).toBe('first sync in progress — 2,667 of 10,657 sessions (25%)');
+  });
+
+  test('a finished or empty walk says nothing', () => {
+    expect(firstSyncInProgress(health({ done: 4, total: 4, startedAt: 0, complete: true, first: true }))).toBe(false);
+    expect(progressLine(health({ done: 0, total: 0, startedAt: 0, complete: false, first: true }))).toBeNull();
+    expect(progressLine(health(undefined))).toBeNull();
   });
 });

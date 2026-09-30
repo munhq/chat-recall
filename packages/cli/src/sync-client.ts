@@ -1798,7 +1798,8 @@ const refs = listAvailableBackends().flatMap((b) => {
   // corpus runs for a long time, and "0 of 15,724" is the difference between a
   // user waiting and a user assuming it is broken.
   const walkStartedAt = Date.now();
-  reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false });
+  const firstWalk = (ledger ?? getSyncedRows(base)).size === 0;
+  reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false, first: firstWalk });
   walkProgressForUpload = { done: 0, total: slice.length, complete: false };
   let traceN = 0;
   // ── KEEP THE EVENT LOOP ALIVE ───────────────────────────────────────────
@@ -1854,7 +1855,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // holding done === total with complete:false forever, and the UI read that
     // as "syncing 99%" until something else happened to sync.
     const walkDone = considered >= slice.length;
-    reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: walkDone });
+    reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: walkDone, first: firstWalk });
     walkProgressForUpload = { done: considered, total: slice.length, complete: walkDone };
     if (trace && ++traceN % 500 === 0) trace(`walk ${traceN}/${slice.length} · at ${ref.prefixedId}`);
     localSessionIds.add(ref.prefixedId);
@@ -2267,7 +2268,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   // showing a frozen "8,400 of 15,724" forever — and it is also how a reader
   // tells a finished walk from a daemon that died mid-walk, which is the state
   // an in-progress value left behind means.
-  reportWalkProgress({ done: slice.length, total: slice.length, startedAt: walkStartedAt, complete: true });
+  reportWalkProgress({ done: slice.length, total: slice.length, startedAt: walkStartedAt, complete: true, first: firstWalk });
   walkProgressForUpload = { done: slice.length, total: slice.length, complete: true };
 
   return {
