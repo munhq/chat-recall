@@ -91,14 +91,29 @@ const MARKER_QUOTE = /\[REDACTED:[A-Za-z0-9_-]+\]"/g;
  * is escaped. A line is kept only if it parses in the end.
  */
 export function repairRedactedJsonl(text: string): { text: string; repaired: number } {
-  if (!text.includes('[REDACTED:')) return { text, repaired: 0 };
+  // The self-heal sweep runs this over every archive in a worker that peaks at
+  // about 400 MiB of its 512 MiB, and one pod was OOM-killed during the first
+  // repair pass. So only the lines that hold a marker are read, and the text is
+  // rebuilt only when one of them changes.
   let repaired = 0;
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const fixed = repairLine(lines[i]);
-    if (fixed !== null) { lines[i] = fixed; repaired++; }
+  const parts: string[] = [];
+  let copied = 0;
+  let at = text.indexOf('[REDACTED:');
+  while (at >= 0) {
+    const start = text.lastIndexOf('\n', at) + 1;
+    let end = text.indexOf('\n', at);
+    if (end < 0) end = text.length;
+    const fixed = repairLine(text.slice(start, end));
+    if (fixed !== null) {
+      parts.push(text.slice(copied, start), fixed);
+      copied = end;
+      repaired++;
+    }
+    at = text.indexOf('[REDACTED:', end);
   }
-  return repaired > 0 ? { text: lines.join('\n'), repaired } : { text, repaired: 0 };
+  if (repaired === 0) return { text, repaired: 0 };
+  parts.push(text.slice(copied));
+  return { text: parts.join(''), repaired };
 }
 
 function parseError(line: string): number | null {
