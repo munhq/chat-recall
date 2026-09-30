@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.12] — 2026-09-30
+
 ### Fixed
 - **Sessions synced before 0.7.10 kept the wrong prompts.** A client sends a
   session again only when its file changes, so a finished session kept the
