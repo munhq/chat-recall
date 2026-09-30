@@ -26,14 +26,29 @@ export type PromptOrigin =
   | 'task-notification'
   | 'peer'
   | 'hook'
+  | 'command-output'
   | 'meta'
   | (string & {});
 
+// Claude Code 2.1.284 still writes the output of a `!` or slash command, a
+// message from another session and the /loop sentinel with no origin, isMeta
+// or isSidechain. Across the local transcripts of one machine they were 292 of
+// the records read as prompts. The `<bash-input>` and `<command-name>` records that come before
+// the output are what the person typed, so they stay prompts. So does
+// "[Request interrupted by user]": the person pressed Esc, and the outcome's
+// `interrupted` status and interrupt blockers are read from it.
 const INJECTED_PREFIXES: Array<[string, PromptOrigin]> = [
   ['<task-notification', 'task-notification'],
   ['<agent-message', 'peer'],
+  ['<cross-session-message', 'peer'],
+  ['[Cross-session delivery notice]', 'peer'],
   ['Another Claude session sent a message:', 'peer'],
   ['Stop hook feedback:', 'hook'],
+  ['<bash-stdout>', 'command-output'],
+  ['<bash-stderr>', 'command-output'],
+  ['<local-command-stdout>', 'command-output'],
+  ['<local-command-stderr>', 'command-output'],
+  ['<<autonomous-loop', 'meta'],
 ];
 
 /** The origin a text prefix shows, or 'human' when it shows none. */
