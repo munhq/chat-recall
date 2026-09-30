@@ -112,7 +112,12 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // userinfo URL walked through in cleartext — and a `jdbc:postgresql://…`
   // prefix broke the \b anchor for the one family it did cover. Any scheme
   // followed by userinfo is a credential, so match the shape, not a list.
-  { label: 'url-password',     secret: 1, pattern: /\b[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\/[^:@\s/]{1,64}:([^@\s/]{1,256})(?=@)/g },
+  //
+  // A quote in userinfo is percent-encoded, so neither part takes a `"`. The
+  // sync redacts JSONL text, and a match that ran on through `","is_error":`
+  // to a later `@` replaced JSON structure: 4 lines on one machine stopped
+  // parsing, and their records were dropped.
+  { label: 'url-password',     secret: 1, pattern: /\b[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\/[^:@\s/"]{1,64}:([^@\s/"]{1,256})(?=@)/g },
   // Bare AWS secret-access-key VALUE: EXACTLY 40 base64 chars, word-bounded,
   // containing upper+lower+digit. This is the gitleaks heuristic — the mixed-case
   // requirement excludes 40-char lowercase-hex git SHAs, and the exact-40 bound
@@ -478,7 +483,12 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
       // Keep everything the pattern consumed BEFORE the secret. The group is
       // the trailing part of the match (RedactionRule.secret documents that),
       // so the prefix is exactly what precedes it.
-      return whole.slice(0, whole.length - secret.length) + `[REDACTED:${r.label}]`;
+      let last = args.length - 1;
+      if (typeof args[last] === 'object') last--;   // named groups
+      const source = args[last] as string;
+      const secretStart = (args[last - 1] as number) + whole.length - secret.length;
+      const head = escapeHead(source, secretStart, secret.length);
+      return whole.slice(0, whole.length - secret.length + head) + `[REDACTED:${r.label}]` + escapeKept(whole, whole.length);
     });
   }
   // Second pass: bare secret values near a context word (not caught by the
@@ -489,9 +499,43 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
   for (let i = ctx.length - 1; i >= 0; i--) {
     const { start, end } = ctx[i];
     if (opts.count) opts.count.redactions++;
-    out = out.slice(0, start) + '[REDACTED:secret-context]' + out.slice(end);
+    const head = escapeHead(out, start, end - start);
+    out = out.slice(0, start + head) + '[REDACTED:secret-context]' + escapeKept(out, end) + out.slice(end);
   }
   return out;
+}
+
+/**
+ * The backslash to put back after a marker, so the text stays valid JSON.
+ *
+ * The sync redacts a transcript's JSONL text, where a quote inside a string
+ * is written `\"`. A value class such as `[^\s"'<]` stops at the quote and
+ * takes its backslash, and the bare quote then ends the string early. The
+ * `auth-header` rule did this to a line holding `Bearer <token>\"`: the line
+ * no longer parsed, the server dropped the record, and a prompt went missing
+ * from that session. An odd run of backslashes at the end of the replaced
+ * span means its last one escapes the next character, so it is kept.
+ */
+function escapeKept(text: string, end: number): string {
+  let run = 0;
+  while (run < end && text.charCodeAt(end - 1 - run) === 92 /* \ */) run++;
+  return run % 2 === 1 ? '\\' : '';
+}
+
+/**
+ * How many characters at the start of a replaced span finish an escape that
+ * began before it, and so stay in the text.
+ *
+ * The other half of escapeKept. A rule whose match began on the `n` of `\n`
+ * left the backslash in front of the marker, and `\[` is not a JSON escape:
+ * 26 of 211 broken lines on one machine had this shape. The escape is kept
+ * whole: one character, or five for `\uXXXX`.
+ */
+function escapeHead(text: string, start: number, length: number): number {
+  let run = 0;
+  while (run < start && text.charCodeAt(start - 1 - run) === 92 /* \ */) run++;
+  if (run % 2 === 0) return 0;
+  return Math.min(text[start] === 'u' ? 5 : 1, length);
 }
 
 /** Masked finding from the in-process pattern engine. */
