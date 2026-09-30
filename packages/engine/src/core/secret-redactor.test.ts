@@ -214,6 +214,49 @@ describe('secret redactor — gaps closed 2026-08-16', () => {
     expect(r('authorization: basic dXNlcjpwYXNz')).toContain('[REDACTED:auth-header]');
   });
 
+  // The sync redacts JSONL text, where a quote in a string is `\"`. The value
+  // class stops at the quote and took its backslash, and the bare quote ended
+  // the string: the line no longer parsed and the server dropped the record.
+  test('THE FAILURE: a header value before an escaped quote keeps the JSON valid', () => {
+    const line = JSON.stringify({ type: 'user', message: { content: 'curl -H "Authorization: Bearer abc123def456ghi" https://example.com/v1' } });
+    const out = r(line);
+    expect(out).toContain('[REDACTED:auth-header]');
+    expect(out).not.toContain('abc123def456ghi');
+    expect(JSON.parse(out).message.content).toBe('curl -H "Authorization: Bearer [REDACTED:auth-header]" https://example.com/v1');
+  });
+
+  // The contextual pass took the `n` of `\n` into its token and left
+  // `\[REDACTED`, which is not a JSON escape.
+  test('a secret right after an escape keeps the escape', () => {
+    const token = 'AbCdEfGh1234567890IjKlMnOp9876543210Qr';
+    const out = r(JSON.stringify({ content: `my api token is\n${token}` }));
+    expect(out).not.toContain(token);
+    expect(JSON.parse(out).content).toBe('my api token is\n[REDACTED:secret-context]');
+  });
+
+  test('a URL password match stays inside one JSON string', () => {
+    const line = JSON.stringify({ a: 'see https://example.com', ok: false, b: 'mail admin@example.com' });
+    expect(JSON.parse(r(line))).toEqual({ a: 'see https://example.com', ok: false, b: 'mail admin@example.com' });
+    expect(r(JSON.stringify({ u: 'postgres://admin:hunter2hunter2@db.example.com/app' })))
+      .toContain('postgres://admin:[REDACTED:url-password]@db.example.com/app');
+  });
+
+  test('every rule leaves a JSON line parseable', () => {
+    const values = [
+      'Authorization: Bearer abc123def456ghi',
+      `AWS_SECRET_ACCESS_KEY=${FAKE_SECRET}`,
+      '//registry.npmjs.org/:_authToken=npmTokenValue12345',
+      'postgres://admin:hunter2hunter2@db.example.com:5432/app',
+      `token "${FAKE_SESSION}"`,
+    ];
+    for (const v of values) {
+      for (const text of [`"${v}"`, `'${v}'`, `${v}\\`, `${v}\\\\"x`, `${v}\n"next"`]) {
+        const line = JSON.stringify({ content: text });
+        expect(() => JSON.parse(r(line)), `${text} → ${r(line)}`).not.toThrow();
+      }
+    }
+  });
+
   test('.npmrc _authToken lines redact, and NPM_AUTH stays with env-secret', () => {
     expect(r('//registry.npmjs.org/:_authToken=npmTokenValue12345')).toContain('[REDACTED:npmrc-auth]');
     // The colon requirement keeps shell vars on the env-secret rule.
