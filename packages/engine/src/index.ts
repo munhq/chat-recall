@@ -266,6 +266,7 @@ export {
   // fragment that the archive's size-based shrink guard would otherwise drop.
   mergeContainer,
   mapContainerText,
+  repairContainer,
   parseTranscriptFromContainer,
   archiveRawSession,
   type RawContainer,

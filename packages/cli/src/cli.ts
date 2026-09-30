@@ -1973,7 +1973,7 @@ program
     }
     const { verifyAgainstServer, verifyTargets } = await import('./verify-deep.js');
     const { getBackend } = await import('@chat-recall/engine/core/tool-backend.js');
-    const { gzipContainer, mapContainerText } = await import('@chat-recall/engine/transcript/index.js');
+    const { gzipContainer, redactContainer } = await import('@chat-recall/engine/transcript/index.js');
     const { redactSecrets } = await import('@chat-recall/engine/core/secret-redactor.js');
     const { fetchWithTimeout } = await import('./http.js');
     const { forceFullResync } = await import('./verify-repair.js');
@@ -2025,7 +2025,7 @@ program
           // deficit that no amount of re-syncing could close: two sessions stayed
           // "stranded" through a full repair+sync cycle purely because they
           // contained secrets. Same call the sync path makes.
-          const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true }));
+          const redacted = redactContainer(container, (t) => redactSecrets(t, { force: true }));
           return gzipContainer(redacted).size;
         } catch { return null; }
       },

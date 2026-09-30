@@ -32,6 +32,7 @@ import {
   scanTextForFindings, redactSecrets, installServerRulePack,
   type ServerRuleSpec, type RedactorFinding,
 } from '@chat-recall/engine/core/secret-redactor.js';
+import { redactContainer, type RawContainer } from '@chat-recall/engine/transcript/raw.js';
 
 /** One file of a session transcript. Mirrors RawContainer.files. */
 export interface ScanFile { name: string; text: string }
@@ -105,14 +106,15 @@ function runTask(task: ScanTask): ScanResult {
   let findings: RedactorFinding[] = [];
   try { findings = scanTextForFindings(joined); } catch { /* best-effort, as before */ }
 
-  // REDACT per file, because the archive keeps its file structure.
+  // REDACT per file, because the archive keeps its file structure. A JSONL
+  // file is redacted by the text of its strings (see redactJsonLine).
   const count = { redactions: 0 };
   let rawB64: string | undefined;
   let rawSize: number | undefined;
-  const redacted = task.files.map((f) => ({
-    name: f.name,
-    text: redactSecrets(f.text, { force: true, count }),
-  }));
+  const redacted = redactContainer(
+    { v: 1, tool: task.container.tool as RawContainer['tool'], mtime: task.container.mtime, files: task.files },
+    (t) => redactSecrets(t, { force: true, count }),
+  ).files;
 
   if (task.includeRaw) {
     try {

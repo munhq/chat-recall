@@ -47,7 +47,7 @@ import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engi
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
@@ -2735,7 +2735,7 @@ export async function buildConversationSync(
     } else {
       try {
         const count2 = { redactions: 0 };
-        const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
+        const redacted = redactContainer(container, (t) => redactSecrets(t, { force: true, count: count2 }));
         count.redactions += count2.redactions;
         const { gz, size } = gzipContainer(redacted);
         if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
