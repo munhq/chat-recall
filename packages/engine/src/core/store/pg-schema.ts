@@ -1313,4 +1313,13 @@ BEGIN
     EXECUTE format('DROP POLICY IF EXISTS author_write_delete ON %I', t);
   END LOOP;
 END $$;
+
+-- The hash of the schema text last applied here. ensurePgSchema reads it and
+-- runs none of the statements above when it matches, so a boot with no schema
+-- change takes no lock on a table that serves traffic. One row, no tenant.
+CREATE TABLE IF NOT EXISTS schema_bootstrap (
+  id          SMALLINT PRIMARY KEY CHECK (id = 1),
+  schema_hash TEXT NOT NULL,
+  applied_at  TIMESTAMPTZ NOT NULL
+);
 `;

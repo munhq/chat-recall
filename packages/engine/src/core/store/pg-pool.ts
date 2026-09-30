@@ -21,6 +21,7 @@
  * traffic. The cached pool is shared; drivers must NOT end() it (their close()
  * is a no-op for pooled pg connections — see closePgPools for process shutdown).
  */
+import { createHash } from 'node:crypto';
 import { currentViewer } from './tenant-context.js';
 
 let int8ParserSet = false;
@@ -314,6 +315,22 @@ export async function applySchemaWithRetry(
   }
 }
 
+/** The hash of a schema text, as recorded in `schema_bootstrap`. */
+export function schemaHash(sql: string): string {
+  return createHash('sha256').update(sql).digest('hex');
+}
+
+/** The hash of the schema last applied to this database, or null when none is recorded. */
+async function appliedSchemaHash(client: any): Promise<string | null> {
+  try {
+    const r = await client.query('SELECT schema_hash FROM schema_bootstrap WHERE id = 1');
+    return r.rows[0]?.schema_hash ?? null;
+  } catch (err) {
+    if ((err as { code?: string })?.code === '42P01') return null; // undefined_table: never bootstrapped
+    throw err;
+  }
+}
+
 export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
   const url = databaseUrl || process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
   if (!url) return; // not a Postgres deployment — nothing to bootstrap
@@ -366,7 +383,24 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
           // (the body contains $$-quoted blocks), and the DDL is idempotent, so
           // retrying the whole thing is both correct and much simpler than
           // making the window narrower.
-          await applySchemaWithRetry((sql) => client.query(sql), PG_SCHEMA);
+          // Skip the DDL when this database already has this exact schema. Even
+          // an ALTER TABLE … ADD COLUMN IF NOT EXISTS that changes nothing takes
+          // AccessExclusiveLock, and every boot took it on raw_sessions,
+          // session_metadata and the other hot tables while the outgoing pods
+          // still ingested syncs. One rollout lost a sync to it: 40P01 between a
+          // RowExclusiveLock on session_metadata and an AccessExclusiveLock on
+          // raw_sessions, 90 s after the new pods started.
+          //
+          // To force a re-apply after a change made by hand, delete the row in
+          // schema_bootstrap.
+          const wanted = schemaHash(PG_SCHEMA);
+          if (await appliedSchemaHash(client) !== wanted) {
+            await applySchemaWithRetry((sql) => client.query(sql), PG_SCHEMA);
+            await client.query(
+              `INSERT INTO schema_bootstrap (id, schema_hash, applied_at) VALUES (1, $1, now())
+               ON CONFLICT (id) DO UPDATE SET schema_hash = EXCLUDED.schema_hash, applied_at = EXCLUDED.applied_at`,
+              [wanted]);
+          }
         } finally {
           if (held) await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
         }
