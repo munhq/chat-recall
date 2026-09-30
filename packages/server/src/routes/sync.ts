@@ -40,7 +40,7 @@ import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
-  gunzipContainer, gzipContainer, mergeContainer, parseTranscriptFromContainer,
+  gunzipContainer, gzipContainer, mergeContainer, repairContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import type { StorageDriver } from '@chat-recall/engine/core/store/driver.js';
@@ -220,13 +220,22 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
     let rawArchiveResult: 'stored' | 'shrink-protected' | 'unchanged' | null = null;
     if (cv.raw_b64) {
       try {
-        const gz = Buffer.from(cv.raw_b64, 'base64');
-        const container = gunzipContainer(gz);
+        let gz: Buffer = Buffer.from(cv.raw_b64, 'base64');
+        let container = gunzipContainer(gz);
+        let rawSize = Number(cv.raw_size) || gz.length;
         if (container) {
+          // A client before 0.7.12 redacted some lines into invalid JSON, and
+          // every reader skipped them. Repaired here, they reach the archive
+          // and the envelope below whole.
+          const rep = repairContainer(container);
+          if (rep.repaired > 0) {
+            container = rep.container;
+            ({ gz, size: rawSize } = gzipContainer(container));
+          }
           // The archive metadata came with the batch's prefetch, so this
           // no longer reads per session — `?? null` says "prefetched, and
           // there is no row", which is what stops it reading again.
-          rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length, cv.project_id || '', projectPath, priorArchive.get(cv.session_id) ?? null);
+          rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, rawSize, cv.project_id || '', projectPath, priorArchive.get(cv.session_id) ?? null);
 
           // ── Smaller is not the same as stale ────────────────────────
           // The shrink guard exists to survive a resume-truncated file,

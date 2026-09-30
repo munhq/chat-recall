@@ -277,6 +277,48 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  // A pre-0.7.12 redactor took the backslash of `\"` after a marker, the line
+  // stopped parsing, and every reader dropped that prompt.
+  test('repairs archive lines an older redactor broke, and rebuilds the view and prompts from them', async () => {
+    const { createStore, createMetadataCache, buildRawContainer, gzipContainer, gunzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const store = await createStore();
+    const metaCache = await createMetadataCache();
+    const id = 'heal-repair-1';
+    const mtime = 1760000600000;
+    const rec = (o: Record<string, unknown>) => JSON.stringify(o);
+    const first = rec({ type: 'user', uuid: 'p1', timestamp: '2026-09-01T10:00:00.000Z', message: { role: 'user', content: 'deploy the gateway please' } });
+    const reply = rec({ type: 'assistant', uuid: 'a1', parentUuid: 'p1', timestamp: '2026-09-01T10:00:05.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'deployed' }] } });
+    const broken = String.raw`{"type":"user","uuid":"p2","parentUuid":"a1","timestamp":"2026-09-01T10:01:00.000Z","message":{"role":"user","content":"why does curl -H \"Authorization: Bearer [REDACTED:auth-header]" fail"}}`;
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from([first, reply, broken].join('\n') + '\n', 'utf-8') }] });
+    const { gz, size } = gzipContainer(container);
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+    await store.setItem({
+      id, sourceType: 'session', title: 'deploy the gateway please', projectPath: '/home/user/code/example',
+      contentPreview: 'deploy the gateway please', filePath: '', mtime, extra: { tool: 'claude', synced: true },
+    } as Parameters<typeof store.setItem>[0]);
+    // The view and the prompt row as the ingest built them: without the prompt.
+    const view = parseTranscriptFromContainer(container).messages;
+    expect(view).toHaveLength(2);
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: view, subagents: [], o: 0 }));
+    await metaCache.setCompute(id, 'markers', mtime, { v: 3, sessionId: id, prompts: [{ line: 1, ts: 0, text: 'deploy the gateway please' }], summary: {} });
+
+    const r = await healSessionFromArchive(store, id, { metaCache });
+    expect(r).toMatchObject({ healed: true, from: 2, to: 3 });
+
+    const lost = 'why does curl -H "Authorization: Bearer [REDACTED:auth-header]" fail';
+    const env = JSON.parse((await store.getCachedContentStale(id, 'session'))!.content);
+    expect(env.messages.map((m: { content?: string }) => m.content)).toContain(lost);
+    const row = (await metaCache.getComputeStale<{ prompts: Array<{ text: string }> }>(id, 'markers'))!.data;
+    expect(row.prompts.map((p) => p.text)).toEqual(['deploy the gateway please', lost]);
+    const archived = gunzipContainer((await store.getRawSession(id))!.gz)!;
+    for (const l of archived.files[0].text.split('\n').filter(Boolean)) expect(() => JSON.parse(l)).not.toThrow();
+
+    expect(await healSessionFromArchive(store, id, { metaCache })).toMatchObject({ healed: false, reason: 'healthy' });
+    await metaCache.close();
+    await store.close();
+  });
+
   // Appends do not update the archive, so a view can hold messages the archive
   // lacks. Rebuilding it from that archive would drop them.
   test('an archive with fewer messages than the view leaves the prompt row and the view alone', async () => {

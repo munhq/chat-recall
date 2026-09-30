@@ -504,4 +504,36 @@ describe('POST /api/sync (ingest)', () => {
     expect(chunks.length).toBeGreaterThanOrEqual(2);
     await store.close();
   });
+
+  // A client before 0.7.12 redacted `Bearer <token>\"` into `[REDACTED]"`,
+  // the line stopped parsing, and the server dropped that record.
+  test('a raw archive line an older redactor broke is repaired at ingest', async () => {
+    const { createControlPlane, createStore, buildRawContainer, gzipContainer, gunzipContainer } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'test-laptop');
+    await cp.close();
+
+    const sessionId = '00000000-1111-2222-3333-555555555555';
+    const mtime = 1750000900000;
+    const first = JSON.stringify({ type: 'user', uuid: 'p1', timestamp: '2026-09-01T10:00:00.000Z', message: { role: 'user', content: 'set up the webhook relay' } });
+    const broken = String.raw`{"type":"user","uuid":"p2","parentUuid":"p1","timestamp":"2026-09-01T10:01:00.000Z","message":{"role":"user","content":"curl -H \"Authorization: Bearer [REDACTED:auth-header]" returns 401"}}`;
+    const { gz, size } = gzipContainer(buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${sessionId}.jsonl`, bytes: Buffer.from(`${first}\n${broken}\n`, 'utf-8') }] }));
+    const res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({ conversations: [{
+      session_id: sessionId, tool: 'claude', project_path: 'p_abcdef123456', mtime,
+      first_prompt: 'set up the webhook relay', raw_b64: gz.toString('base64'), raw_size: size,
+    }] });
+    expect(res.status).toBe(200);
+
+    const store = await createStore();
+    const env = JSON.parse((await store.getCachedContentStale(sessionId, 'session'))!.content);
+    expect(env.messages.map((m: { content?: string }) => m.content))
+      .toContain('curl -H "Authorization: Bearer [REDACTED:auth-header]" returns 401');
+    const archived = gunzipContainer((await store.getRawSession(sessionId))!.gz)!;
+    for (const l of archived.files[0].text.split('\n').filter(Boolean)) expect(() => JSON.parse(l)).not.toThrow();
+    await store.close();
+  });
 });

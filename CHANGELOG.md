@@ -12,6 +12,19 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
   agent worked. The server now rebuilds these sessions from its own archive
   of each transcript, with no client action. `chat-recall index --force` is
   not needed.
+- **Some secrets reached the server without redaction.** The sync redacted
+  the raw JSONL text of a transcript, where a quote is `\"` and a newline is
+  `\n`. So `API_KEY=\"value\"` and a key at the start of a line did not match
+  their rules. On one machine a secret went out in clear text from 582 lines
+  in 203 sessions. The sync now redacts the text that each string holds.
+  Update, and rotate any credential you pasted into a session before this
+  release.
+- **The redactor could break a transcript line, and the server dropped it.**
+  A match that took the backslash of an escaped quote, or ran across a JSON
+  quote, left a line that did not parse. On one machine that hid 211 records
+  in 75 sessions, 44 of them prompts. The redactor now keeps JSON valid, and
+  the server repairs the lines already in its archives and restores the
+  records.
 - **Command output and messages from other sessions counted as your
   prompts.** Claude Code writes the output of a `!` or slash command, a
   cross-session message and the `/loop` sentinel with no author field. They

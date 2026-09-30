@@ -26,7 +26,7 @@
  */
 import {
   createStore, createControlPlane, createMetadataCache, runWithTenant, runWithAuthor,
-  gunzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION,
+  gunzipContainer, gzipContainer, repairContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION,
   getBackend,
   type SourceType,
 } from '../imports.js';
@@ -74,8 +74,12 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     }
     const raw = await store.getRawSession(sessionId);
     if (!raw) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'no-archive' };
-    const container = gunzipContainer(raw.gz);
-    if (!container) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
+    const stored0 = gunzipContainer(raw.gz);
+    if (!stored0) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
+    // Lines a pre-0.7.12 redactor made unparseable. Every reader skipped them,
+    // so their records are absent from the view, and the repaired archive
+    // parses to more messages, which the check below rebuilds from.
+    const { container, repaired: repairedLines } = repairContainer(stored0);
 
     const parsed = parseTranscriptFromContainer(container);
     const archiveMsgs = parsed.messages.length;
@@ -155,7 +159,8 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       // The main transcript only: subagent records are never the person's
       // prompts, and the client numbers the main file's lines from 1 too.
       const main = container.files.find((f) => f.name.endsWith('.jsonl') && !f.name.includes('/'));
-      if (storedVersion < MARKERS_VERSION && main) {
+      // A fuller archive holds prompts the stored row lacks, whatever its version.
+      if ((storedVersion < MARKERS_VERSION || envelopeDamaged) && main) {
         const events = getBackend('claude').readEventsFromText?.(main.text, raw.mtime) ?? [];
         newMarkers = markersFromTurns(sessionId, extractTurnsFromEvents(sessionId, events, { maxTurns: 50_000 }).turns);
       }
@@ -224,6 +229,15 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     // 4. Prompt row — what recall_user_prompts and the markers route read.
     if (newMarkers && opts.metaCache) {
       await opts.metaCache.setCompute(sessionId, 'markers', mtime, newMarkers);
+    }
+
+    // 5. The archive itself, with its broken lines repaired. It is one byte
+    //    longer per line, so the shrink guard accepts it. An archive that is
+    //    not written here is repaired in memory again on the next pass.
+    if (repairedLines > 0) {
+      const { gz, size } = gzipContainer(container);
+      await store.putRawSession(sessionId, container.tool, raw.mtime, gz, size, raw.project_id, raw.project_path);
+      log.info({ session: sessionId, repairedLines }, 'raw archive: repaired lines an older redactor broke');
     }
 
     return { sessionId, damaged: true, healed: true, from: itemMsgs, to: archiveMsgs, prompts: promptsStale };

@@ -73,6 +73,144 @@ export function mapContainerText(c: RawContainer, fn: (text: string) => string):
   return { ...c, files: c.files.map((f) => ({ name: f.name, text: fn(f.text) })) };
 }
 
+const MARKER_QUOTE = /\[REDACTED:[A-Za-z0-9_-]+\]"/g;
+
+/**
+ * Put back the backslashes that the redactor took from JSONL lines before
+ * 0.7.12.
+ *
+ * A rule that stopped at an escaped quote (`Bearer <token>\"`) replaced the
+ * token and its backslash, so the line read `[REDACTED:auth-header]"` and no
+ * longer parsed, and every reader dropped the record. The original text had a
+ * backslash before that quote, so adding it back restores the line exactly.
+ * A rule could also begin on the letter of an escape and leave `\[REDACTED`;
+ * that backslash is removed, and the letter it escaped stays lost.
+ * A quote after a marker can also be the real end of a string, so a line is
+ * repaired one site at a time: the error JSON.parse reports lies after the
+ * quote that ended the string early, and the nearest marker quote before it
+ * is escaped. A line is kept only if it parses in the end.
+ */
+export function repairRedactedJsonl(text: string): { text: string; repaired: number } {
+  if (!text.includes('[REDACTED:')) return { text, repaired: 0 };
+  let repaired = 0;
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const fixed = repairLine(lines[i]);
+    if (fixed !== null) { lines[i] = fixed; repaired++; }
+  }
+  return repaired > 0 ? { text: lines.join('\n'), repaired } : { text, repaired: 0 };
+}
+
+function parseError(line: string): number | null {
+  try { JSON.parse(line); return null; } catch (e) {
+    const m = /position (\d+)/.exec(e instanceof Error ? e.message : '');
+    return m ? Number(m[1]) : line.length;
+  }
+}
+
+function repairLine(line: string): string | null {
+  if (!line.includes('[REDACTED:') || parseError(line) === null) return null;
+  // A match that began on the letter of an escape (`\n`) left its backslash
+  // in front of the marker. `\[` is never valid JSON, so that backslash is
+  // damage wherever it appears. The letter it escaped is gone, so the
+  // backslash goes too.
+  let out = line.replace(/(?<!\\)((?:\\\\)*)\\(\[REDACTED:)/g, '$1$2');
+  // An escaped site reads `]\"` and no longer matches MARKER_QUOTE, so each
+  // pass considers only the sites still bare.
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const at = parseError(out);
+    if (at === null) return out;
+    let site = -1;
+    for (const m of out.matchAll(MARKER_QUOTE)) {
+      const q = m.index! + m[0].length - 1;
+      if (q < at) site = q;
+    }
+    if (site < 0) return null;
+    out = out.slice(0, site) + '\\' + out.slice(site);
+  }
+  return null;
+}
+
+/**
+ * Redact one JSONL line by the text its strings hold.
+ *
+ * The raw line is not the text a rule should see. Inside a JSON string a
+ * newline is `\n` and a quote is `\"`, so `API_KEY=\"value\"` fails the
+ * env-secret rule and a key that starts a line reads as `nsk-…` to a
+ * word-bounded one. On one machine that sent a secret in clear text from 582
+ * lines in 203 sessions. So a string that holds an escape is decoded,
+ * redacted and written back when it changed. The raw pass then runs over the
+ * line for context that spans strings, such as `"API_KEY": "value"`. If that
+ * pass left the line unparseable, the line is redacted string by string, so
+ * it always stays valid JSON.
+ */
+export function redactJsonLine(line: string, redact: (text: string) => string): string {
+  if (!line.includes('"')) return redact(line);
+  try { JSON.parse(line); } catch { return redact(line); }
+  const decoded = mapJsonStrings(line, redact, true);
+  const out = redact(decoded);
+  try { JSON.parse(out); return out; } catch { return mapJsonStrings(decoded, redact, false); }
+}
+
+/**
+ * Apply `fn` to the decoded value of each JSON string token in `line`, and
+ * write a token back only when its value changed. With `escapedOnly`, a
+ * token without a backslash is skipped: its raw text is its value.
+ */
+function mapJsonStrings(line: string, fn: (value: string) => string, escapedOnly: boolean): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const q = line.indexOf('"', i);
+    if (q < 0) return out + line.slice(i);
+    let j = q + 1;
+    while (j < line.length) {
+      const c = line.charCodeAt(j);
+      if (c === 92 /* \ */) j += 2;
+      else if (c === 34 /* " */) break;
+      else j++;
+    }
+    const token = line.slice(q, j + 1);
+    out += line.slice(i, q);
+    i = j + 1;
+    const body = token.slice(1, -1);
+    const escaped = body.includes('\\');
+    if (escapedOnly && !escaped) { out += token; continue; }
+    let value = body;
+    if (escaped) {
+      try { value = JSON.parse(token) as string; } catch { out += token; continue; }
+    }
+    const next = fn(value);
+    out += next === value ? token : JSON.stringify(next);
+  }
+}
+
+/** The container with each JSONL file redacted line by line (redactJsonLine)
+ *  and every other file redacted as plain text. */
+export function redactContainer(c: RawContainer, redact: (text: string) => string): RawContainer {
+  return {
+    ...c,
+    files: c.files.map((f) => ({
+      name: f.name,
+      text: f.name.endsWith('.jsonl')
+        ? f.text.split('\n').map((l) => (l ? redactJsonLine(l, redact) : l)).join('\n')
+        : redact(f.text),
+    })),
+  };
+}
+
+/** The container with every JSONL file passed through repairRedactedJsonl. */
+export function repairContainer(c: RawContainer): { container: RawContainer; repaired: number } {
+  let repaired = 0;
+  const files = c.files.map((f) => {
+    if (!f.name.endsWith('.jsonl')) return f;
+    const r = repairRedactedJsonl(f.text);
+    repaired += r.repaired;
+    return r.repaired > 0 ? { name: f.name, text: r.text } : f;
+  });
+  return repaired > 0 ? { container: { ...c, files }, repaired } : { container: c, repaired: 0 };
+}
+
 /** Subagent kind from its filename — same heuristics as the FS path. */
 function subagentKind(id: string): Subagent['kind'] {
   return id.includes('acompact') ? 'compact'
