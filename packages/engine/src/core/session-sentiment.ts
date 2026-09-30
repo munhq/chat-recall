@@ -162,11 +162,13 @@ export function summarizeMarkers(marked: MarkedPrompt[]): SessionMarkerCounts {
  * 2: the prompts are the person's only. Version 1 also held background-task
  *    notifications, hook feedback, subagent hand-backs and subagent task
  *    prompts, and missed prompts delivered as queued_command attachments.
+ * 3: command output and messages from other sessions are not prompts either.
+ *    Version 2 counted them.
  *
- * Prompt counts compare only within one version, so a version 2 payload with
- * fewer prompts replaces a version 1 payload of the same session.
+ * Prompt counts compare only within one version, so a newer payload with
+ * fewer prompts replaces an older payload of the same session.
  */
-export const MARKERS_VERSION = 2;
+export const MARKERS_VERSION = 3;
 
 export interface MarkersPrompt extends MarkedPrompt {
   line: number;

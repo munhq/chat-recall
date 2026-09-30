@@ -27,6 +27,28 @@ describe('userRecordOrigin', () => {
     expect(userRecordOrigin({ type: 'user' }, '<agent-message from="a1">\nreport')).toBe('peer');
   });
 
+  // Claude Code 2.1.284 writes these with no origin fields.
+  test('command output and cross-session messages are not the person', () => {
+    expect(userRecordOrigin({ type: 'user' }, '<bash-stdout>(Bash completed with no output)</bash-stdout><bash-stderr></bash-stderr>')).toBe('command-output');
+    expect(userRecordOrigin({ type: 'user' }, '<bash-stderr>Command failed</bash-stderr>')).toBe('command-output');
+    expect(userRecordOrigin({ type: 'user' }, '<local-command-stdout>See ya!</local-command-stdout>')).toBe('command-output');
+    expect(userRecordOrigin({ type: 'user' }, '<local-command-stderr>Error: failed</local-command-stderr>')).toBe('command-output');
+    expect(userRecordOrigin({ type: 'user' }, '<cross-session-message from="uds:/run/user/1000/a.sock">\nhi')).toBe('peer');
+    expect(userRecordOrigin({ type: 'user' }, '[Cross-session delivery notice] Do not resend now')).toBe('peer');
+    expect(userRecordOrigin({ type: 'user' }, '<<autonomous-loop-dynamic>>')).toBe('meta');
+  });
+
+  // The person pressed Esc. The outcome's `interrupted` status reads it.
+  test('an interrupt stays human', () => {
+    expect(userRecordOrigin({ type: 'user', userType: 'external' }, '[Request interrupted by user]')).toBe('human');
+    expect(userRecordOrigin({ type: 'user' }, '[Request interrupted by user for tool use]')).toBe('human');
+  });
+
+  test('a command the person typed stays human', () => {
+    expect(userRecordOrigin({ type: 'user' }, '<bash-input>git status</bash-input>')).toBe('human');
+    expect(userRecordOrigin({ type: 'user' }, '<command-name>/exit</command-name>\n<command-message>exit</command-message>')).toBe('human');
+  });
+
   test('a prompt that quotes a prefix later in its text stays human', () => {
     expect(userRecordOrigin({ type: 'user' }, 'why did the <task-notification> say failed?')).toBe('human');
   });
