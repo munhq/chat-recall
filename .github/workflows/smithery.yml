@@ -15,17 +15,24 @@
 # a bundle that only ever reached Smithery hid the one-click install from anyone
 # reading the release page.
 #
-# It runs on the tag rather than beside the release, because the tool card is
-# captured from the artefact the release actually published, not from a rebuild.
+# The tool card is captured from the tagged source that release-npm published.
 #
 # SMITHERY_API_KEY is the bearer token from smithery.ai. Without it the Release
 # still gets its bundle; only the listing step warns and stops, because a stale
 # listing is worse than a red tag but not worth blocking a release over.
 name: smithery
 
+# AFTER release-npm, as mcp-registry does.
+#
+# This used to fire on the same tag push and poll npm for ten minutes. On
+# v0.7.11 release-npm took eleven: the poll gave up at 11:33:09, npm published
+# at 11:34:18, and the run still finished green. The Release got no bundle and
+# the listing kept describing 0.7.10. workflow_run starts this only when the
+# publish has finished, and the Release object exists by then too.
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: ['release-npm']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -34,37 +41,44 @@ permissions:
 
 jobs:
   publish:
+    # A manual run is always allowed. An automatic one only follows a release
+    # that succeeded from a tag, because release-npm also runs dry on dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     steps:
+      # workflow_run checks out the default branch, whose version may already
+      # be past the tag. head_branch is the tag that triggered release-npm.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'   # FormData and Blob in the publish script
 
-      # A listing whose install command 404s is worse than no listing. The card
-      # says `npx -p chat-recall chat-recall-mcp`, so the version must actually
-      # be on npm before anything here publishes — release-npm runs on the same
-      # tag with no ordering between them.
+      # The card says `npx -p chat-recall chat-recall-mcp`, so the version must
+      # be on npm before anything here publishes. release-npm has finished, but
+      # the registry can take a few minutes to serve a new version. If it still
+      # does not, the run fails, so a missing bundle shows as a red run.
       - name: The npm version must be live
-        id: npmlive
         run: |
           VERSION=$(node -p "require('./packages/cli/package.json').version")
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if npm view "chat-recall@$VERSION" version >/dev/null 2>&1; then
               echo "npm has $VERSION"
-              echo "live=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep 20
           done
-          echo "::warning::chat-recall@$VERSION is not on npm after ten minutes, so nothing was published."
-          echo "::warning::Re-run this workflow (workflow_dispatch) once npm serves it."
-          echo "live=false" >> "$GITHUB_OUTPUT"
+          echo "::error::chat-recall@$VERSION is not on npm after fifteen minutes, so nothing was published."
+          echo "::error::Re-run this workflow (workflow_dispatch) once npm serves it."
+          exit 1
 
       - name: Build the MCP server
-        if: steps.npmlive.outputs.live == 'true'
         run: |
           npm ci
           npm run build
@@ -73,7 +87,6 @@ jobs:
       # listing then declares the tools the shipped artefact actually answers
       # with, including the lean/full profile decision.
       - name: Capture the tool card
-        if: steps.npmlive.outputs.live == 'true'
         env:
           # A throwaway home, so the capture cannot read or write a real profile.
           CHAT_RECALL_DATA_DIR: ${{ runner.temp }}/cr-data
@@ -84,26 +97,15 @@ jobs:
           node scripts/smithery/capture-card.mjs --out card.json -- node packages/cli/dist/mcp.js
 
       - name: Build the bundle
-        if: steps.npmlive.outputs.live == 'true'
         run: node scripts/smithery/build-mcpb.mjs --out "chat-recall-$VERSION.mcpb" --card card.json
 
-      # release-npm creates the Release object at the END of its own run, on the
-      # same tag, so it may not exist yet. Wait for it rather than racing it.
+      # release-npm cuts the Release object in its last step, so it exists here.
       - name: Attach the bundle to the GitHub Release
-        if: steps.npmlive.outputs.live == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for i in $(seq 1 30); do
-            if gh release view "v$VERSION" >/dev/null 2>&1; then
-              gh release upload "v$VERSION" "chat-recall-$VERSION.mcpb" --clobber
-              echo "attached chat-recall-$VERSION.mcpb to v$VERSION"
-              exit 0
-            fi
-            sleep 20
-          done
-          echo "::warning::no GitHub Release v$VERSION after ten minutes; the bundle was NOT attached."
-          echo "::warning::Re-run this workflow (workflow_dispatch) once release-npm has finished."
+          gh release upload "v$VERSION" "chat-recall-$VERSION.mcpb" --clobber
+          echo "attached chat-recall-$VERSION.mcpb to v$VERSION"
 
       - name: Is the key present
         id: key
@@ -119,7 +121,7 @@ jobs:
           fi
 
       - name: Publish the listing
-        if: steps.npmlive.outputs.live == 'true' && steps.key.outputs.present == 'true'
+        if: steps.key.outputs.present == 'true'
         env:
           SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
         run: node scripts/smithery/publish-smithery.mjs --card card.json --bundle "chat-recall-$VERSION.mcpb"
