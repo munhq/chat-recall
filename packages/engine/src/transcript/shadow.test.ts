@@ -88,6 +88,68 @@ describe('mergeLineText', () => {
   });
 });
 
+describe('mergeLineText keeps line numbers', () => {
+  // A line's number is what readers report and what expand_line takes back.
+  const meta = (type: string, v: string) => JSON.stringify({ type, [type === 'ai-title' ? 'aiTitle' : 'mode']: v, sessionId: 's' });
+  const msg = (u: string, text = `msg-${u}`) => JSON.stringify({ type: 'user', uuid: u, message: { role: 'user', content: text } });
+
+  test('THE FAILURE: a divergent merge keeps every shadow line where it was', () => {
+    // Claude Code appends mode and ai-title lines many times, and repeats some
+    // lines exactly. The old merge dropped the first kind and collapsed the
+    // second, so every later line moved up.
+    const shadowLines = [
+      msg('a'), meta('mode', 'normal'), meta('ai-title', 'T'), meta('mode', 'normal'),
+      '{"type":"atis-latch"}', '{"type":"atis-latch"}', msg('b'), meta('mode', 'normal'),
+      msg('p', 'Where it says no'),
+    ];
+    const shadow = shadowLines.join('\n') + '\n';
+    const current = [msg('x'), meta('mode', 'normal')].join('\n') + '\n'; // a resume rewrite
+    const r = mergeLineText(shadow, current);
+    const out = r.text.trim().split('\n');
+    expect(r.recovered).toBeGreaterThan(0);
+    expect(out.slice(0, shadowLines.length)).toEqual(shadowLines);
+    expect(out.findIndex((l) => l.includes('Where it says no')) + 1).toBe(9);
+    expect(out.slice(shadowLines.length)).toEqual([msg('x')]);
+  });
+
+  test('a half-written last line in the shadow is not lost history', () => {
+    const full = [msg('a'), msg('b')];
+    const shadow = [full[0], full[1].slice(0, 20)].join('\n') + '\n';
+    const current = [...full, msg('c')].join('\n') + '\n';
+    const r = mergeLineText(shadow, current);
+    expect(r.recovered).toBe(0);
+    expect(r.text).toBe(current);
+  });
+
+  test('THE FAILURE: a half-written line left inside the shadow by an older merge', () => {
+    // Measured on a real shadow: line 1034 of 2594 was the first 906
+    // characters of a record the disk file holds whole, and the disk had 2942
+    // lines. The merge must give back the disk file.
+    const d = [msg('a'), msg('b'), meta('mode', 'm'), meta('mode', 'm'), msg('c'), msg('d')];
+    const shadow = [d[0], d[1].slice(0, 25), d[1], d[2], d[4]].join('\n') + '\n';
+    const current = d.join('\n') + '\n';
+    const r = mergeLineText(shadow, current);
+    expect(r.recovered).toBe(0);
+    expect(r.text).toBe(current);
+  });
+
+  test('a changed state line alone does not make a merge recover', () => {
+    const shadow = [msg('a'), meta('ai-title', 'OLD')].join('\n') + '\n';
+    const current = [msg('a'), meta('ai-title', 'NEW'), msg('b')].join('\n') + '\n';
+    const r = mergeLineText(shadow, current);
+    expect(r.recovered).toBe(0);
+    expect(r.text).toBe(current);
+  });
+
+  test('merging the result again adds nothing', () => {
+    const shadow = [msg('a'), meta('mode', 'm'), meta('mode', 'm'), msg('b')].join('\n') + '\n';
+    const current = [msg('x')].join('\n') + '\n';
+    const once = mergeLineText(shadow, current).text;
+    const twice = mergeLineText(once, current).text;
+    expect(twice).toBe(once);
+  });
+});
+
 describe('mergeContainer', () => {
   test('claude rewrite across the main file → rewrite-merged', () => {
     const shadow = container('claude', 's.jsonl', jsonl(['a', 'b', 'c']));

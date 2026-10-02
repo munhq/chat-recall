@@ -344,13 +344,9 @@ export function resolveSessionContentGroups(sessionId: string): SessionContentGr
  * `mtime` is the NEWEST copy's — a secondary home receiving the live writes
  * must make the session look fresh, or change detection never fires.
  *
- * NOTE, because it looks like a bug and isn't: the merged text can have FEWER
- * lines than the largest input. Message records (uuid-keyed) are always a strict
- * union, but `mergeLineText` collapses SINGLETON metadata (`mode`, `ai-title`,
- * `summary`, …) to the most recent — those describe current state, not history.
- * Verified on a real split session: primary 1082 lines / 818 uuids, secondary 83
- * lines / 61 uuids, merged 951 lines / 879 uuids — i.e. every one of the 879
- * distinct records survived and only duplicate metadata collapsed.
+ * When the copies diverge, the merged text is the first copy's lines in order,
+ * then the second copy's lines the first lacks, so the first copy's line
+ * numbers hold.
  *
  * A single copy is returned verbatim (no merge pass), so the one-home case is
  * byte-for-byte what it always was.
