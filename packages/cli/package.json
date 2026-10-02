@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.7.16",
+  "version": "0.7.17",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/munhq/chat-recall.git"
