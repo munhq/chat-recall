@@ -29,7 +29,7 @@
  *   ledgers written before versioning, a bare <syncedMtime> number (read as
  *   version 0 so every legacy row is treated as extractor-stale once).
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { extractorVersionForId } from '@chat-recall/engine/core/extractor-version.js';
@@ -76,28 +76,110 @@ const ledgerPath = (): string => join(getDataDir(), 'sync-ledger.json');
  *  editing the file that decides what gets uploaded. */
 export function ledgerFilePath(): string { return ledgerPath(); }
 
-// In-memory cache so a sync walk doesn't re-read the file per batch. Loaded
-// lazily; writes go through atomic tmp+rename so a crash mid-write can't
-// corrupt the ledger (worst case: a session re-uploads, which is safe).
+// In-memory cache so a sync walk doesn't re-read the file per batch. Writes go
+// through atomic tmp+rename so a crash mid-write can't corrupt the ledger
+// (worst case: a session re-uploads, which is safe).
+//
+// SEVERAL PROCESSES SHARE THIS FILE: the watch daemon, each MCP daemon, a
+// manual `chat-recall sync`, `verify --repair`. Each one used to load the file
+// once and later write its whole copy back, so a long-running daemon put back
+// rows another process had changed and never saw them itself. Measured on
+// 2026-10-02: `verify --repair` cleared the cursor of 23 stranded sessions,
+// and within a minute the watch daemon's write restored all 23.
+//
+// So the cache keeps `base`, each row as it was on disk when this process last
+// read or wrote the file. A row whose cached value differs from `base` is this
+// process's change; every other row takes the disk's value. load() does that
+// merge when the file changed on disk, and every write does it before writing.
 let cache: Ledger | null = null;
+/** `${server}\u0000${id}` → that row's JSON as this process last saw it on disk. */
+let base: Map<string, string> = new Map();
+/** mtime and size of the file when this process last read or wrote it. */
+let diskStamp: string | null = null;
+
+const rowKey = (server: string, id: string): string => `${server}\u0000${id}`;
+
+function stampOf(path: string): string | null {
+  try { const st = statSync(path); return `${st.mtimeMs}:${st.size}`; } catch { return null; }
+}
+
+function readDisk(path: string): Ledger {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    return parsed && typeof parsed === 'object' ? (parsed as Ledger) : {};
+  } catch {
+    return {};
+  }
+}
+
+function snapshot(data: Ledger): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [server, rows] of Object.entries(data)) {
+    for (const [id, entry] of Object.entries(rows)) out.set(rowKey(server, id), JSON.stringify(entry));
+  }
+  return out;
+}
+
+/** This process's changes (cached rows that differ from `base`) on top of `disk`. */
+function mergeOnto(disk: Ledger): Ledger {
+  const out: Ledger = {};
+  const put = (server: string, id: string, entry: LedgerEntry) => { (out[server] ??= {})[id] = entry; };
+  const mine = cache ?? {};
+  for (const [server, rows] of Object.entries(disk)) {
+    for (const [id, entry] of Object.entries(rows)) {
+      const k = rowKey(server, id);
+      const own = mine[server]?.[id];
+      const was = base.get(k);
+      if (own === undefined) {
+        // Absent here: this process deleted it only when its base held it.
+        if (was === undefined) put(server, id, entry);
+      } else {
+        put(server, id, JSON.stringify(own) === was ? entry : own);
+      }
+    }
+  }
+  for (const [server, rows] of Object.entries(mine)) {
+    for (const [id, entry] of Object.entries(rows)) {
+      if (disk[server]?.[id] !== undefined) continue;
+      // Absent on disk: another process deleted it unless this process changed it.
+      if (JSON.stringify(entry) !== base.get(rowKey(server, id))) put(server, id, entry);
+    }
+  }
+  return out;
+}
 
 function load(): Ledger {
-  if (cache) return cache;
-  try {
-    const parsed = JSON.parse(readFileSync(ledgerPath(), 'utf-8'));
-    cache = parsed && typeof parsed === 'object' ? (parsed as Ledger) : {};
-  } catch {
-    cache = {};
+  const path = ledgerPath();
+  const stamp = stampOf(path);
+  if (cache && stamp === diskStamp) return cache;
+  const disk = readDisk(path);
+  // Callers hold the per-server objects across a call, so the merged rows are
+  // written back into the existing cache objects.
+  const merged = cache ? mergeOnto(disk) : disk;
+  if (cache) {
+    for (const server of Object.keys(cache)) if (!(server in merged)) delete cache[server];
+    for (const [server, rows] of Object.entries(merged)) {
+      const target = cache[server] ?? (cache[server] = {});
+      for (const id of Object.keys(target)) if (!(id in rows)) delete target[id];
+      Object.assign(target, rows);
+    }
+  } else {
+    cache = merged;
   }
+  base = snapshot(disk);
+  diskStamp = stamp;
   return cache;
 }
 
-function persistNow(data: Ledger): void {
+function persistNow(): void {
   const path = ledgerPath();
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data));
+  load(); // merge whatever another process wrote since this one last looked
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(cache ?? {}));
   renameSync(tmp, path);
+  base = snapshot(cache ?? {});
+  diskStamp = stampOf(path);
   pendingWrite = false;
 }
 
@@ -122,12 +204,12 @@ const LEDGER_FLUSH_MS = 2000;
 let pendingWrite = false;
 let flushTimer: NodeJS.Timeout | null = null;
 
-function persist(data: Ledger): void {
+function persist(_data: Ledger): void {
   pendingWrite = true;
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    if (pendingWrite) { try { persistNow(data); } catch { /* retried on the next ack */ } }
+    if (pendingWrite) { try { persistNow(); } catch { /* retried on the next ack */ } }
   }, LEDGER_FLUSH_MS);
   // Never hold the process open for a ledger write; flushLedger() covers exit.
   flushTimer.unref?.();
@@ -180,7 +262,7 @@ export function pruneLedgerTargets(configuredServers: string[]): number {
   console.error(`[sync] tidied local bookkeeping: ${rows} already-synced marker(s) for `
     + `${names.length} server(s) you no longer sync to (${names.join(', ')}) moved to ${side}. `
     + 'Nothing was uploaded there; the file is kept so logging back in re-ships nothing.');
-  persistNow(data);
+  persistNow();
   return names.length;
 }
 
@@ -191,7 +273,7 @@ export function pruneLedgerTargets(configuredServers: string[]): number {
 export function flushLedger(): void {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   if (!pendingWrite || !cache) return;
-  persistNow(cache);
+  persistNow();
 }
 
 // ── Item-extractor versions (per server, per tool) ───────────────────────
@@ -485,6 +567,8 @@ export function _resetLedgerCacheForTests(): void {
   // file read" test exists to catch.
   flushLedger();
   cache = null;
+  base = new Map();
+  diskStamp = null;
   reconcileCache = null;
 }
 
