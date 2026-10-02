@@ -34,7 +34,12 @@ export default defineConfig({
     pool: 'forks',
     // Serialize files only when the shared Postgres is in play (see above).
     fileParallelism: !pgMode,
-    testTimeout: 15000,
+    // The timeout catches a hang. The Windows runner is up to 7x slower from
+    // one run to the next: POST /api/sync ingest took 8.7s in one green run and
+    // over 15s in the next, and a 2.4s sync-intents test also crossed 15s, with
+    // no code change between them (2026-10-02). The same timeouts failed CI on
+    // 2026-09-24 and 2026-09-28.
+    testTimeout: process.platform === 'win32' ? 60000 : 15000,
     // HOOKS GOT LESS TIME THAN THE TESTS THEY SET UP. `hookTimeout` was never
     // set, so it stayed at vitest's 10s default while tests had 15s — and these
     // hooks do real work: mkdtemp, create a SQLite database, open a driver, then
@@ -43,7 +48,7 @@ export default defineConfig({
     // OS releases the handle — see test-support/tmp-dir.ts), and one store.test
     // hook crossed the line: `Error: Hook timed out in 10000ms`, on Windows
     // only. Setup must not be given a smaller budget than the assertion.
-    hookTimeout: 30000,
+    hookTimeout: process.platform === 'win32' ? 60000 : 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],
