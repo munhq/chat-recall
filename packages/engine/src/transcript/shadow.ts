@@ -92,27 +92,26 @@ export function writeShadowContainer(tool: AiTool, rawId: string, container: Raw
  *  SQLite each time. Line-unioning either would resurrect superseded turns. */
 const WHOLE_FILE_TOOLS = new Set<AiTool>(['cursor']);
 
-/** Record types Claude Code writes as singletons and rewrites in place
- *  (title/mode/etc.). When both sides have one, the CURRENT value wins — we
- *  must not accumulate stale copies. */
-const SINGLETON_META = new Set(['mode', 'permission-mode', 'ai-title', 'last-prompt', 'pr-link', 'summary']);
+/** Record types that describe the session's current state (title, mode, …).
+ *  Claude Code appends a new one each time the value changes. One that only
+ *  the shadow holds is not lost history, so it never makes a merge recover. */
+const STATE_META = new Set(['mode', 'permission-mode', 'ai-title', 'last-prompt', 'pr-link', 'summary']);
 
 function sha1(s: string): string {
   return createHash('sha1').update(s).digest('hex');
 }
 
 /**
- * Dedup key for one transcript line. Message records carry a stable `uuid`;
- * singleton-meta records dedup by type (current wins); anything else dedups by
- * content hash so identical lines collapse but differing ones are both kept.
+ * Identity of one transcript line. Message records carry a stable `uuid`;
+ * any other line is its exact content.
  */
-function lineKey(line: string): { key: string; singleton: boolean } {
+function lineKey(line: string): { key: string; meta: boolean; json: boolean } {
   try {
     const o = JSON.parse(line);
-    if (typeof o?.uuid === 'string' && o.uuid) return { key: `u:${o.uuid}`, singleton: false };
-    if (typeof o?.type === 'string' && SINGLETON_META.has(o.type)) return { key: `m:${o.type}`, singleton: true };
+    if (typeof o?.uuid === 'string' && o.uuid) return { key: `u:${o.uuid}`, meta: false, json: true };
+    return { key: `h:${sha1(line)}`, meta: typeof o?.type === 'string' && STATE_META.has(o.type), json: true };
   } catch { /* non-JSON line — hash it */ }
-  return { key: `h:${sha1(line)}`, singleton: false };
+  return { key: `h:${sha1(line)}`, meta: false, json: false };
 }
 
 export interface LineMergeResult {
@@ -123,16 +122,28 @@ export interface LineMergeResult {
   totalRecords: number;
 }
 
+/** True when some current line starts with this non-JSON line: the shadow
+ *  caught the line while the tool was still writing it. A later merge can
+ *  leave such a line inside the text, so any line is checked. */
+function isHalfWritten(line: string, currentLines: readonly string[]): boolean {
+  return currentLines.some((c) => c.length > line.length && c.startsWith(line));
+}
+
 /**
  * Union two line-oriented transcripts. `recovered` counts records the shadow
  * has that the current text lost — the fingerprint of a rewrite.
  *
- * Ordering: whichever side is a superset owns the ordering (its records ARE the
- * full set, already in the right order). Only on true divergence — each side
- * has records the other lacks — do we splice shadow-first then current-appended,
- * which yields old→new because the parser emits messages in file order. This
- * distinction matters: a partial local shadow merged with a fuller server copy
- * must adopt the server's order, not prepend the local fragment.
+ * A line's number in the merged text is what every reader reports as its
+ * `line`, and agents pass it back to `recall_show expand_line`. So the merge
+ * keeps one side's lines whole and in order:
+ * - Current holds every record of the shadow: the merge is the current text.
+ * - Each side holds records the other lacks: the merge is every shadow line
+ *   in its order, repeats included, then the current lines the shadow lacks.
+ *   The shadow's numbering is the file's numbering before the rewrite.
+ *
+ * The merge used to drop the shadow's state lines and collapse repeated
+ * lines. On one session that took 509 lines out before a prompt, which moved
+ * from line 3047 to line 2538.
  */
 export function mergeLineText(shadowText: string, currentText: string): LineMergeResult {
   const shadowLines = shadowText.split('\n').filter((l) => l.trim());
@@ -140,11 +151,18 @@ export function mergeLineText(shadowText: string, currentText: string): LineMerg
 
   const currentKeys = new Set<string>();
   for (const l of currentLines) currentKeys.add(lineKey(l).key);
-  const shadowKeys = new Set<string>();
-  for (const l of shadowLines) shadowKeys.add(lineKey(l).key);
 
-  let recovered = 0;
-  for (const k of shadowKeys) if (!currentKeys.has(k)) recovered++;
+  const kept: string[] = [];
+  const keptKeys = new Set<string>();
+  const counted = new Set<string>();
+  for (const l of shadowLines) {
+    const { key, meta, json } = lineKey(l);
+    if (!json && isHalfWritten(l, currentLines)) continue;
+    kept.push(l);
+    keptKeys.add(key);
+    if (!meta && !currentKeys.has(key)) counted.add(key);
+  }
+  const recovered = counted.size;
 
   // Current holds everything the shadow did (normal append, seed-from-fuller,
   // or identical) → current is authoritative; adopt it verbatim.
@@ -152,17 +170,10 @@ export function mergeLineText(shadowText: string, currentText: string): LineMerg
     return { text: currentText.endsWith('\n') ? currentText : currentText + '\n', recovered: 0, totalRecords: currentKeys.size };
   }
 
-  // Divergence (incl. pure truncation): keep every shadow record, then append
-  // current records the shadow lacks. Singleton-meta defers to the current one.
-  const out: string[] = [];
-  const emitted = new Set<string>();
-  for (const l of shadowLines) {
-    const { key, singleton } = lineKey(l);
-    if (singleton && currentKeys.has(key)) continue;
-    if (emitted.has(key)) continue;
-    out.push(l);
-    emitted.add(key);
-  }
+  // Divergence (incl. pure truncation): every shadow line in place, then the
+  // current lines the shadow lacks.
+  const out = [...kept];
+  const emitted = keptKeys;
   for (const l of currentLines) {
     const { key } = lineKey(l);
     if (emitted.has(key)) continue;

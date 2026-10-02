@@ -4,6 +4,19 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **Line numbers moved after an archive merge.** When the local copy of a
+  session and the file on disk differed, the merge dropped every repeated
+  `mode`, `ai-title` and `last-prompt` line and collapsed identical lines. On
+  one session that removed 509 lines before a prompt, and the prompt moved
+  from line 3047 to line 2538. `recall_show` then reported lines the file does
+  not have, and an `expand_line` could point to the wrong message. The merge
+  now keeps each line where it was.
+- **A half-written line made a session look rewritten.** A snapshot taken
+  while Claude Code was writing a line held the first part of that line. The
+  next merge took it for lost history. The merge now ignores such a line when
+  the file holds it whole.
+
 ## [0.7.13] — 2026-10-02
 
 ### Fixed
