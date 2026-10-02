@@ -4,6 +4,23 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **`recall_user_prompts` returned the oldest prompts.** It said "newest
+  first", but it kept the first `limit` prompts in line order. On a session
+  with 80 prompts, `limit: 30` missed the latest 12. It now lists the newest
+  first, also across sessions.
+- **Prompts were cut at 240 characters.** Each prompt now prints whole up to
+  2000 characters. A longer one prints its start, its end and the
+  `recall_show` `expand_line` call that returns all of it.
+- **Prompts over 1200 characters lost their end.** The CLI built the synced
+  prompt list from text cut for the conversation view. It now syncs each
+  prompt whole, and the server restores the whole text for rows an older CLI
+  already synced.
+
+### Added
+- `recall_user_prompts` takes `query`: it returns only the prompts that
+  contain that text, so "did I say X?" is one call.
+
 ## [0.7.12] — 2026-09-30
 
 ### Fixed

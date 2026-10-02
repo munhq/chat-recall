@@ -221,7 +221,30 @@ export function pickMarkersPayload(
     if (data.prompts.length === 0) continue;
     if (!best || data.prompts.length > best.prompts.length) best = data;
   }
-  return best;
+  const envelope = candidates.find((c) => c.source === 'envelope');
+  return best && envelope && best !== envelope.data ? withWholeText(best, envelope.data) : best;
+}
+
+/** Turn options for a markers compute: every turn, and each prompt whole. */
+export const MARKERS_TURN_OPTS = { maxTurns: 50_000, userMax: Number.POSITIVE_INFINITY } as const;
+
+/**
+ * The payload with each cut prompt replaced by the whole text the envelope
+ * holds at the same line. An older CLI built the markers row from
+ * turns cut at 1200 characters and an ellipsis, and that row wins a tie on
+ * prompt count, so the cut text reached the reader.
+ */
+function withWholeText(data: MarkersPayload, envelope: MarkersPayload): MarkersPayload {
+  const byLine = new Map(envelope.prompts.map((p) => [p.line, p]));
+  let restored = 0;
+  const prompts = data.prompts.map((p) => {
+    if (typeof p.text !== 'string' || !p.text.endsWith('…')) return p;
+    const whole = byLine.get(p.line);
+    if (!whole || whole.text.length < p.text.length || !whole.text.startsWith(p.text.slice(0, -1))) return p;
+    restored++;
+    return { ...p, text: whole.text, markers: whole.markers, intensity: whole.intensity };
+  });
+  return restored ? { ...data, prompts, summary: summarizeMarkers(prompts) } : data;
 }
 
 /**

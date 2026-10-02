@@ -8,7 +8,7 @@
  * tool-agnostic itself (routes through the registry internally).
  */
 
-import { getBackendForId } from './tool-backend.js';
+import { getBackendForId, type ExtractTurnsOpts } from './tool-backend.js';
 import { memoInSessionScope } from './live-session-scan.js';
 // Side-effect: ensure backends are registered. live-session-scan already
 // triggers this transitively, but the explicit import documents intent.
@@ -22,7 +22,7 @@ import type { SessionDiffResult } from './session-replay.js';
  */
 export function extractTurnsAny(
   sessionId: string,
-  opts: { maxTurns?: number; assistantMax?: number } = {},
+  opts: ExtractTurnsOpts = {},
 ): ExtractedTurns {
   const backend = getBackendForId(sessionId);
   if (!backend) return { sessionId, found: false, turns: [], startMs: 0, endMs: 0 };
@@ -30,7 +30,7 @@ export function extractTurnsAny(
   // the answer: assistantMax 2000 for the outcome and maxTurns 50000 for the
   // markers are two different extractions of the same file.
   return memoInSessionScope(
-    `turns:${sessionId}:${opts.maxTurns ?? ''}:${opts.assistantMax ?? ''}`,
+    `turns:${sessionId}:${opts.maxTurns ?? ''}:${opts.assistantMax ?? ''}:${opts.userMax ?? ''}`,
     () => backend.extractTurns(sessionId, opts),
   );
 }

@@ -55,16 +55,25 @@ function safeSlice(s: string, start: number, end: number): string {
   return s.slice(lo, hi);
 }
 
-function body(text: string, line: number, opts: RenderShowOptions): string {
-  if (opts.full || text.length <= BODY_LIMIT) return indent(text);
+/**
+ * A text up to BODY_LIMIT, whole. A longer one as its first and last EDGE
+ * characters around one line that says how much was cut and, with `how`, the
+ * call that returns it whole. Returns the parts unindented.
+ */
+export function headTail(text: string, how?: string): string[] {
+  if (text.length <= BODY_LIMIT) return [text];
   const lines = text.split('\n').length;
   const cut = text.length - 2 * EDGE;
-  const how = opts.expandHint ? ` ${opts.expandHint(line)}` : '';
   return [
-    indent(safeSlice(text, 0, EDGE)),
-    `${INDENT}… ${cut} characters cut (${text.length} in all, ${lines} lines).${how} …`,
-    indent(safeSlice(text, text.length - EDGE, text.length)),
-  ].join('\n');
+    safeSlice(text, 0, EDGE),
+    `… ${cut} characters cut (${text.length} in all, ${lines} lines).${how ? ` ${how}` : ''} …`,
+    safeSlice(text, text.length - EDGE, text.length),
+  ];
+}
+
+function body(text: string, line: number, opts: RenderShowOptions): string {
+  if (opts.full) return indent(text);
+  return headTail(text, opts.expandHint?.(line)).map(indent).join('\n');
 }
 
 /** Tool results arrive as a string or as content blocks. */

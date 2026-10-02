@@ -12,6 +12,7 @@ import { detectStackAt, evidenceLine, type StackEvidence } from '../core/stack-d
 import { resolveProjectId, resolveWorkspaceId } from '../core/project-resolver.js';
 import { formatDigest, crossProjectNote, type RecentRow } from './resume-digest.js';
 import { renderShowMessages, selectShowWindow, findShowMessages, noMessageAtLine, type ShowMessage } from './show-render.js';
+import { selectPrompts, collectAcrossSessions, renderPrompts, type PromptRow, type FeedSession } from './prompts-render.js';
 import { unsyncedLocalMessages, localTranscript, newestTimestamp } from './show-freshness.js';
 import { SERVER_INSTRUCTIONS } from './server-instructions.js';
 // Pure string helpers, no I/O — safe for the lean collector import list below.
@@ -854,7 +855,8 @@ const RecallImprovementsSchema = z.object({
 const RecallUserPromptsSchema = z.object({
   session_id: z.string().optional().describe('If set, only that session\'s prompts'),
   since_days: z.number().optional().default(7).describe('When session_id is omitted, look back this many days'),
-  limit: z.number().optional().default(50).describe('Maximum prompts to return'),
+  limit: z.number().optional().default(50).describe('Maximum prompts to return, newest first'),
+  query: z.string().optional().describe('Keep only the prompts that contain this text (no case)'),
   with_markers: z.boolean().optional().default(true)
     .describe('Tag each prompt with sentiment / corrective markers (interrupt, frustrated, correction, approval, …). Set false to revert to legacy text-only output.'),
 });
@@ -2117,15 +2119,18 @@ write.`,
       // ── User-prompts / decision-record ──
       {
         name: 'recall_user_prompts',
-        description: `List the human-typed prompts from a session (or recent sessions). Tool results
-and system banners are stripped — you get only what the user actually wrote. Useful for "what was
-I asking yesterday?" or "what did I tell the agent in this session?".`,
+        description: `List the human-typed prompts from a session (or recent sessions), newest first.
+Tool results and system banners are stripped — you get only what the user actually wrote. Useful for
+"what was I asking yesterday?" or "what did I tell the agent in this session?". Pass \`query\` for
+"did I say X?": it keeps only the prompts that contain that text. Each prompt prints whole up to 2000
+characters; a longer one prints its start and end and the recall_show expand_line call for the rest.`,
         inputSchema: {
           type: 'object',
           properties: {
             session_id: { type: 'string', description: 'If set, only that session\'s prompts' },
             since_days: { type: 'number', default: 7, description: 'How far back to look, in days.' },
             limit: { type: 'number', default: 50, description: 'Maximum prompts to return, newest first.' },
+            query: { type: 'string', description: 'Keep only the prompts that contain this text. Case and runs of whitespace are ignored.' },
           },
         },
       },
@@ -4771,20 +4776,13 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // machine ships at sync time. Each prompt already carries its
         // sentiment `markers`, so `with_markers` is rendered from the server's
         // data (no local markPrompt re-run needed).
-        type MarkerPrompt = { line: number; ts?: number; tsIso?: string; markers: string[]; text: string };
+        type MarkerPrompt = { line: number; ts?: number; tsIso?: string; markers?: string[]; text: string };
         type MarkersResp = { prompts: MarkerPrompt[]; summary: unknown };
-
-        const renderPrompts = (rows: Array<{ sessionId: string; line: number; tsIso?: string; markers: string[]; text: string }>): string => {
-          const lines = [`# User prompts (${rows.length})\n`];
-          for (const p of rows) {
-            const t = p.tsIso?.slice(0, 16).replace('T', ' ') || '';
-            const snippet = p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text;
-            const markerSuffix = params.with_markers && p.markers.length ? ` _[${p.markers.join(', ')}]_` : '';
-            lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}${markerSuffix}`);
-            lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
-          }
-          return lines.join('\n');
-        };
+        const toRows = (sessionId: string, prompts: MarkerPrompt[]): PromptRow[] =>
+          prompts.map(p => ({ sessionId, line: p.line, ts: p.ts, tsIso: p.tsIso, markers: p.markers || [], text: p.text }));
+        const select = { limit: params.limit, query: params.query };
+        const render = (rows: PromptRow[]) => renderPrompts(rows, { withMarkers: params.with_markers, query: params.query });
+        const none = params.query ? `No user prompts contain "${params.query.trim()}".` : 'No user prompts found.';
 
         // Single-session lookup — one markers call.
         if (params.session_id) {
@@ -4792,42 +4790,32 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           if (!soft.data) {
             return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session ${params.session_id} not found.` : `Prompts not synced yet for ${params.session_id}.`) }] };
           }
-          const rows = soft.data.prompts
-            .filter(p => p.text && p.text.trim())
-            .slice(0, params.limit)
-            .map(p => ({ sessionId: params.session_id!, line: p.line, tsIso: p.tsIso, markers: p.markers || [], text: p.text }));
-          if (rows.length === 0) {
-            return { content: [{ type: 'text', text: 'No user prompts found.' }] };
-          }
-          return { content: [{ type: 'text', text: renderPrompts(rows) }] };
+          const rows = selectPrompts(toRows(params.session_id, soft.data.prompts), select);
+          return { content: [{ type: 'text', text: rows.length ? render(rows) : none }] };
         }
 
-        // Cross-session mode — pull the recent feed inside the time window,
-        // then fan markers per session (newest first) until we hit the limit.
+        // Cross-session mode — the recent feed inside the time window, newest
+        // session first, merged into one newest-first list.
         const sinceHours = params.since_days * 24;
-        const recent = await remoteGetQS<{ sessions: Array<{ sessionId: string }> }>(
+        const recent = await remoteGetQS<{ sessions: Array<{ sessionId: string; modified?: string; fileMtime?: number }> }>(
           '/api/conversations/recent', { limit: 200, since_hours: sinceHours });
-        const sessionIds = (recent.sessions || []).map(s => s.sessionId);
-        if (sessionIds.length === 0) {
-          return { content: [{ type: 'text', text: 'No user prompts found.' }] };
+        const feed: FeedSession[] = (recent.sessions || []).map(s => ({
+          sessionId: s.sessionId,
+          modifiedMs: s.fileMtime || (s.modified ? Date.parse(s.modified) : 0) || 0,
+        }));
+        if (feed.length === 0) {
+          return { content: [{ type: 'text', text: none }] };
         }
 
-        const collected: Array<{ sessionId: string; line: number; tsIso?: string; markers: string[]; text: string }> = [];
-        for (const sid of sessionIds) {
-          if (collected.length >= params.limit) break;
+        const collected = await collectAcrossSessions(feed, async (sid) => {
           const soft = await remoteGetSoft<MarkersResp>(`/api/conversations/${encodeURIComponent(sid)}/markers`);
-          if (!soft.data) continue; // not synced yet / 404 — skip
-          for (const p of soft.data.prompts) {
-            if (!p.text || !p.text.trim()) continue;
-            collected.push({ sessionId: sid, line: p.line, tsIso: p.tsIso, markers: p.markers || [], text: p.text });
-            if (collected.length >= params.limit) break;
-          }
-        }
+          return soft.data ? toRows(sid, soft.data.prompts) : null; // not synced yet / 404 — skip
+        }, select);
 
         if (collected.length === 0) {
-          return { content: [{ type: 'text', text: 'No user prompts found (none of the recent sessions have synced markers yet).' }] };
+          return { content: [{ type: 'text', text: params.query ? none : 'No user prompts found (none of the recent sessions have synced markers yet).' }] };
         }
-        return { content: [{ type: 'text', text: renderPrompts(collected) }] };
+        return { content: [{ type: 'text', text: render(collected) }] };
       }
 
       // ── Decision recording ────────────────────────────────────

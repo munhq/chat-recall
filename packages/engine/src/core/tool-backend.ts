@@ -149,6 +149,8 @@ export interface ListSessionsOpts {
 export interface ExtractTurnsOpts {
   maxTurns?: number;
   assistantMax?: number;
+  /** Characters kept of each user prompt. Default 1200. */
+  userMax?: number;
 }
 
 /** Shape returned by `liveScanSessionEdits` — kept in sync with that helper. */
