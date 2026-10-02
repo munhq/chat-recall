@@ -31,6 +31,9 @@ export interface RawContainer {
    *  byte-identical (mtime bumped but nothing changed). Absent on freshly
    *  exported containers and on legacy shadows. See containerSrcHash. */
   srcHash?: string;
+  /** SHADOW_MERGE_VERSION of the merge that wrote this shadow. The srcHash
+   *  fast path trusts a stored merge only at the current version. */
+  mergeVersion?: number;
 }
 
 export function buildRawContainer(exp: RawSessionExport): RawContainer {

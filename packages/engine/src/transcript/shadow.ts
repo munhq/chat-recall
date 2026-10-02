@@ -245,6 +245,15 @@ export function mergeContainer(shadow: RawContainer, current: RawContainer): Sha
 
 // ── Orchestration ────────────────────────────────────────────────────
 
+/**
+ * Version of mergeLineText's output. The srcHash fast path returns a stored
+ * shadow without merging again, so a shadow that an older merge wrote stayed
+ * as that merge left it while the file was unchanged. Version 1 dropped lines
+ * (see mergeLineText): one shadow held 2594 lines of a 2942-line file, and
+ * every sync shipped it. Raise this whenever the merge's output changes.
+ */
+export const SHADOW_MERGE_VERSION = 2;
+
 export interface ShadowUpdate {
   status: ShadowStatus;
   sessionId: string;
@@ -301,6 +310,7 @@ export function updateShadow(
 
   if (!prior) {
     current.srcHash = curHash;
+    current.mergeVersion = SHADOW_MERGE_VERSION;
     try { writeShadowContainer(tool, rawId, current); } catch { /* disk full etc. — ship live anyway */ }
     return { status: 'created', sessionId, tool, container: current, recovered: 0, path };
   }
@@ -311,7 +321,7 @@ export function updateShadow(
   // is the hot path for a resume-truncated session re-evaluated repeatedly (the
   // disk stays truncated, the shadow stays full — every tick re-recovered the
   // same 1500 records before this gate) and for any mtime-only touch.
-  if (prior.srcHash && prior.srcHash === curHash) {
+  if (prior.srcHash && prior.srcHash === curHash && prior.mergeVersion === SHADOW_MERGE_VERSION) {
     return { status: 'unchanged', sessionId, tool, container: prior, recovered: 0, path };
   }
 
@@ -320,8 +330,9 @@ export function updateShadow(
   // record the current srcHash (first time on a legacy shadow, or identical
   // content whose hash we hadn't stored yet) so the next tick can fast-path.
   // After that one write, an unchanged session never touches disk again.
-  if (merged.status !== 'unchanged' || prior.srcHash !== curHash) {
+  if (merged.status !== 'unchanged' || prior.srcHash !== curHash || prior.mergeVersion !== SHADOW_MERGE_VERSION) {
     merged.container.srcHash = curHash;
+    merged.container.mergeVersion = SHADOW_MERGE_VERSION;
     try { writeShadowContainer(tool, rawId, merged.container); } catch { /* ship merged in-memory regardless */ }
   }
   return {

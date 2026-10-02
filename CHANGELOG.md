@@ -10,6 +10,10 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
   hides, and refused the write: `new row violates row-level security policy
   "author_visibility" for table "content_cache"`. The new copy now lives in
   the session's own row until it replaces the stored copy.
+- **A shadow that the old merge shortened stayed short.** When the file had
+  not changed, the sync reused the stored shadow without merging again, so the
+  0.7.14 merge fix never reached it. Each shadow now records the merge version
+  that wrote it, and an older one is merged again.
 
 ## [0.7.16] — 2026-10-02
 
