@@ -68,8 +68,6 @@ interface ConvContext {
   priorContent: Map<string, { content: string; mtime: number }>;
   priorChunkIdx: Map<string, number>;
   priorArchive: Map<string, { size: number; mtime: number; project_id: string }>;
-  /** Staged rebuilds of chunked sessions (REBUILD_SOURCE rows), prefetched. */
-  priorRebuild: Map<string, { content: string; mtime: number }>;
   /** Appended to, never written — the handler flushes the batch once. */
   itemBatch: MemoryItem[];
   chunkBatch: MemoryChunk[];
@@ -88,7 +86,8 @@ interface ConvContext {
 }
 
 /**
- * Where a chunked session is rebuilt before it replaces the stored copy.
+ * A chunked session is rebuilt in the `rebuild` field of its own envelope row,
+ * and replaces the stored copy when the rebuild is complete.
  *
  * A session too large to build at once ships as a head chunk (a FULL sync) and
  * then appends. The head always holds fewer messages than a stored copy, so the
@@ -96,12 +95,21 @@ interface ConvContext {
  * with gaps kept them for good. Measured on 2026-10-02: five sessions lacked 7
  * to 29 messages that the file holds, and no re-send could restore them.
  *
- * The head goes to this row instead, the appends extend it, and the final
+ * The head goes to the `rebuild` field, the appends extend it, and the final
  * append promotes it when it holds at least as many messages as the stored
  * copy. Readers keep the stored copy until then, so an append that never
- * arrives costs nothing.
+ * arrives costs nothing. The field lives in the envelope row because the row's
+ * RLS policy requires a metadata row of the same source type, which a separate
+ * staging row never has: `new row violates row-level security policy
+ * "author_visibility" for table "content_cache"`.
  */
-const REBUILD_SOURCE = 'session_rebuild';
+interface StoredEnvelope {
+  v?: number;
+  messages?: EnvelopeMessage[];
+  subagents?: unknown[];
+  o?: number;
+  rebuild?: { messages?: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
+}
 
 /**
  * A tail's messages with the file's line numbers. The client's tail parser
@@ -157,7 +165,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
   const {
     store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
     itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch, sessionMetaBatch,
-    touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, priorRebuild, tally,
+    touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, tally,
   } = ctx;
     if (!cv.session_id) return;
     if (deadSet.has(cv.session_id)) return; // deleted — never resurrect
@@ -183,13 +191,14 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         fullResyncNeeded.push(cv.session_id);
         return;
       }
-      // A staged rebuild that this tail continues takes it, and the live
-      // envelope is left for readers until the rebuild is complete.
-      const stagedRow = priorRebuild.get(cv.session_id);
-      if (stagedRow?.content) {
+      // A rebuild that this tail continues takes it, and the stored messages
+      // stay for readers until the rebuild is complete.
+      const row = priorContent.get(cv.session_id);
+      if (row?.content) {
         try {
-          const st = JSON.parse(stagedRow.content) as { messages?: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
-          if (typeof st.o === 'number' && st.o === (cv.base_offset ?? -1) && Array.isArray(st.messages)) {
+          const env = JSON.parse(row.content) as StoredEnvelope;
+          const st = env.rebuild;
+          if (st && typeof st.o === 'number' && st.o === (cv.base_offset ?? -1) && Array.isArray(st.messages)) {
             const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
             const rebuilt = {
               v: PARSER_VERSION,
@@ -198,21 +207,16 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
               o: cv.from_offset ?? st.o,
             };
             tally.appendConv++;
+            const { rebuild: _done, ...stored } = env;
             if (!cv.final) {
-              cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: JSON.stringify(rebuilt) });
+              cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime: row.mtime, content: JSON.stringify({ ...stored, rebuild: rebuilt }) });
               return;
             }
-            // The rebuild is done; this row never matches an offset again.
-            cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: '{}' });
-            let storedCount = 0;
-            try {
-              const live = priorContent.get(cv.session_id);
-              const msgs = live?.content ? (JSON.parse(live.content) as { messages?: unknown[] }).messages : undefined;
-              storedCount = Array.isArray(msgs) ? msgs.length : 0;
-            } catch { /* corrupt stored copy — the rebuild replaces it */ }
+            const storedCount = Array.isArray(stored.messages) ? stored.messages.length : 0;
             if (rebuilt.messages.length < storedCount) {
               // The file holds fewer messages than the stored copy: an
               // in-place truncation. The stored copy stays.
+              cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime: row.mtime, content: JSON.stringify(stored) });
               log.warn({ session: cv.session_id, storedCount, rebuiltCount: rebuilt.messages.length }, 'rebuild: kept the fuller stored conversation');
               return;
             }
@@ -226,7 +230,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
             log.info({ session: cv.session_id, storedCount, rebuiltCount: rebuilt.messages.length }, 'rebuild: replaced the stored conversation');
             return;
           }
-        } catch { /* corrupt staged row — the live path below decides */ }
+        } catch { /* corrupt stored row — the live path below decides */ }
       }
       // Read the existing envelope from content_cache (stale read —
       // the stored mtime may be older than the incoming append's mtime;
@@ -388,7 +392,8 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
             (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
           if (suspectedShrink && cv.chunk_head === true) {
             const headOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
-            cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: JSON.stringify({ ...envelope, o: headOffset }) });
+            const { rebuild: _prior, ...kept } = prevEnv as StoredEnvelope;
+            cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime: stored.mtime, content: JSON.stringify({ ...kept, rebuild: { ...envelope, o: headOffset } }) });
             rebuildStagedIds.push(cv.session_id);
             log.info({ session: cv.session_id, storedCount, incomingCount }, 'rebuild: staged a chunked head');
             return;
@@ -853,13 +858,12 @@ router.post('/', async (req, res) => {
           const priorContent = await store.getCachedContentStaleMany('session', convIds);
           const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
           const priorArchive = await store.rawSessionMetaMany(convIds);
-          const priorRebuild = await store.getCachedContentStaleMany(REBUILD_SOURCE, convIds);
 
           const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
           for (const cv of conversations) {
             await ingestConversation(cv, {
               store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
-              deadSet, priorContent, priorChunkIdx, priorArchive, priorRebuild,
+              deadSet, priorContent, priorChunkIdx, priorArchive,
               itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
               sessionMetaBatch, touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, tally,
             });
