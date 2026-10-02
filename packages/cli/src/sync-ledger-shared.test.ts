@@ -115,4 +115,16 @@ describe('several processes share the ledger', () => {
     const onDisk = JSON.parse(readFileSync(join(dataDir, 'sync-ledger.json'), 'utf-8'));
     expect(onDisk[SRV]).toEqual({ late: { m: 5, v: 1 } });
   });
+
+  test('THE FAILURE: verify --repair’s edit is on disk before the command exits', async () => {
+    const { markSynced, flushLedger } = await import('./sync-ledger.js');
+    const { forceFullResync } = await import('./verify-repair.js');
+    markSynced(SRV, [{ id: 'stranded', mtime: 1000, offset: 500, size: 500, acked: true }]);
+    flushLedger();
+    expect(forceFullResync(SRV, ['stranded'])).toBe(1);
+    // No flush: the CLI calls process.exit here.
+    const onDisk = JSON.parse(readFileSync(join(dataDir, 'sync-ledger.json'), 'utf-8'));
+    expect(onDisk[SRV].stranded.o).toBeUndefined();
+    expect(onDisk[SRV].stranded.m).toBeUndefined();
+  });
 });
