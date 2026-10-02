@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.17] — 2026-10-02
+
 ### Fixed
 - **The first chunk of a large session failed with HTTP 500 on 0.7.16.** The
   server wrote the new copy to a row that the database's row-level security
