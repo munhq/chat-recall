@@ -174,6 +174,7 @@ export {
   markersFromTurns,
   pickMarkersPayload,
   MARKERS_VERSION,
+  MARKERS_TURN_OPTS,
   type MarkersPayload,
   type PromptMarker,
   type MarkedPrompt,

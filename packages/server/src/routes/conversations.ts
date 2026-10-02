@@ -24,6 +24,7 @@ import {
   markPrompt,
   summarizeMarkers,
   markersFromTurns,
+  MARKERS_TURN_OPTS,
   pickMarkersPayload,
   type MarkersPayload,
   findCodexSessionFile,
@@ -717,7 +718,7 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
             await heavyCacheSet(`commits:${sessionId}`, mtime, result);
           }
         } else if (kind === 'markers') {
-          const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
+          const turns = extractTurnsAny(sessionId, MARKERS_TURN_OPTS);
           if (turns.found) await heavyCacheSet(`markers:${sessionId}`, mtime, markersFromTurns(sessionId, turns.turns));
         } else if (kind === 'turns') {
           const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
@@ -1341,7 +1342,7 @@ router.get('/:id/markers', async (req, res) => {
       return res.json(best);
     }
 
-    const turns = extractTurnsAny(id, { maxTurns: 50_000 });
+    const turns = extractTurnsAny(id, MARKERS_TURN_OPTS);
     if (!turns.found) return res.status(404).json({ error: 'Session not found' });
     const payload = markersFromTurns(id, turns.turns);
 

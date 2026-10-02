@@ -31,7 +31,7 @@ import {
   type SourceType,
 } from '../imports.js';
 import { replayFromEvents, extractTurnsFromEvents } from '@chat-recall/engine/core/generic-engine.js';
-import { markersFromTurns, markersVersion, MARKERS_VERSION, type MarkersPayload } from '@chat-recall/engine/core/session-sentiment.js';
+import { markersFromTurns, markersVersion, MARKERS_VERSION, MARKERS_TURN_OPTS, type MarkersPayload } from '@chat-recall/engine/core/session-sentiment.js';
 import { chunksFromTurns, chunkRole, subagentChunks, type EnvSubagent } from './session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
@@ -162,7 +162,7 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       // A fuller archive holds prompts the stored row lacks, whatever its version.
       if ((storedVersion < MARKERS_VERSION || envelopeDamaged) && main) {
         const events = getBackend('claude').readEventsFromText?.(main.text, raw.mtime) ?? [];
-        newMarkers = markersFromTurns(sessionId, extractTurnsFromEvents(sessionId, events, { maxTurns: 50_000 }).turns);
+        newMarkers = markersFromTurns(sessionId, extractTurnsFromEvents(sessionId, events, MARKERS_TURN_OPTS).turns);
       }
     }
     const promptsStale = newMarkers !== null;

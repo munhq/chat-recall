@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest';
-import { markPrompt, summarizeMarkers, pickMarkersPayload, markersFromTurns, markersVersion, MARKERS_VERSION } from './session-sentiment.js';
+import { markPrompt, summarizeMarkers, pickMarkersPayload, markersFromTurns, markersVersion, MARKERS_VERSION, MARKERS_TURN_OPTS } from './session-sentiment.js';
+import { extractTurnsFromEvents } from './generic-engine.js';
 
 describe('markPrompt', () => {
   test('flags an "[Request interrupted by user]" marker as interrupt', () => {
@@ -96,5 +97,54 @@ describe('pickMarkersPayload', () => {
     expect(out.v).toBe(MARKERS_VERSION);
     expect(out.prompts.map((x) => x.line)).toEqual([1]);
     expect(markersVersion({ prompts: [] })).toBe(1);
+  });
+});
+
+/**
+ * A prompt longer than 1200 characters reached recall_user_prompts as its
+ * first 1200 and an ellipsis. The CLI built the markers row from turns cut for
+ * the conversation view, and the server took that row over the whole envelope
+ * because both held the same number of prompts.
+ */
+describe('whole prompt text', () => {
+  const long = 'this is too ai - ' + 'x'.repeat(1300) + ' - Where it says no - SCREAMS AI';
+  const cut = long.slice(0, 1200) + '…';
+  const row = (texts: string[], v?: number) => ({
+    ...(v ? { v } : {}), sessionId: 's1',
+    prompts: texts.map((text, i) => ({ line: 10 * (i + 1), ts: i, text, markers: [], intensity: 0 })),
+    summary: summarizeMarkers([]),
+  });
+
+  test('THE FAILURE: the markers compute keeps each prompt whole', () => {
+    const events = [{ kind: 'user' as const, ts: 1, line: 3047, text: long }];
+    expect(markersFromTurns('s1', extractTurnsFromEvents('s1', events, MARKERS_TURN_OPTS).turns).prompts[0].text).toBe(long);
+    // The conversation view keeps its own limit.
+    expect(extractTurnsFromEvents('s1', events).turns[0].text).toBe(cut);
+  });
+
+  test('THE FAILURE: a cut prompt in a synced row is restored from the envelope', () => {
+    const best = pickMarkersPayload('s1', [
+      { source: 'markers', data: row(['fix the login bug', cut], MARKERS_VERSION) },
+      { source: 'envelope', data: { ...row(['fix the login bug', long]), prompts: row(['fix the login bug', long]).prompts.map(p => ({ ...p, ...markPrompt(p.text) })) } },
+    ]);
+    expect(best?.v).toBe(MARKERS_VERSION);
+    expect(best?.prompts.map((x) => x.text)).toEqual(['fix the login bug', long]);
+    expect(best?.prompts[1].markers).toEqual(markPrompt(long).markers);
+  });
+
+  test('an envelope prompt that does not continue the cut text is left alone', () => {
+    const best = pickMarkersPayload('s1', [
+      { source: 'markers', data: row(['a', cut], MARKERS_VERSION) },
+      { source: 'envelope', data: row(['a', 'something else entirely' + 'y'.repeat(2000)]) },
+    ]);
+    expect(best?.prompts[1].text).toBe(cut);
+  });
+
+  test('a prompt that ends in an ellipsis the person typed is left alone', () => {
+    const best = pickMarkersPayload('s1', [
+      { source: 'markers', data: row(['wait…'], MARKERS_VERSION) },
+      { source: 'envelope', data: row(['wait…']) },
+    ]);
+    expect(best?.prompts[0].text).toBe('wait…');
   });
 });

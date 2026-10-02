@@ -18,6 +18,7 @@ import type {
   AiTool,
   CanonicalEvent,
   EditDelta,
+  ExtractTurnsOpts,
   LiveScanEditsResult,
 } from './tool-backend.js';
 import { isMultiFileDelta } from './tool-backend.js';
@@ -51,10 +52,11 @@ function shorten(text: string, max: number): string {
 export function extractTurnsFromEvents(
   sessionId: string,
   events: CanonicalEvent[],
-  opts: { maxTurns?: number; assistantMax?: number } = {},
+  opts: ExtractTurnsOpts = {},
 ): ExtractedTurns {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   const assistantMax = opts.assistantMax ?? DEFAULT_ASSISTANT_MAX;
+  const userMax = opts.userMax ?? DEFAULT_USER_MAX;
 
   const turns: SessionTurn[] = [];
   let startMs = 0, endMs = 0;
@@ -70,7 +72,7 @@ export function extractTurnsFromEvents(
     if (e.kind === 'user' && e.text) {
       turns.push({
         kind: 'user', ts: e.ts, tsIso: e.tsIso, line: e.line,
-        text: shorten(e.text, DEFAULT_USER_MAX),
+        text: shorten(e.text, userMax),
       });
     } else if (e.kind === 'assistant_text' && e.text) {
       turns.push({
