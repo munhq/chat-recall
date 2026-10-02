@@ -17,7 +17,7 @@
  * is. Each mode is one line of behaviour, deliberately: the point is to be
  * obviously correct, not configurable.
  */
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 export type HostileMode =
   /** A retired route behind Traefik/nginx: plain text, HTTP 404. THE one that
@@ -53,6 +53,15 @@ export async function startHostileServer(mode: HostileMode): Promise<HostileServ
   const hits: string[] = [];
   const server: Server = createServer((req, res) => {
     hits.push(`${req.method} ${req.url}`);
+    if (mode === 'silent') return; // see the 'silent' case below
+    // Read the whole request before the reply. A socket closed with unread
+    // request bytes is reset on Windows, so a sync POST got ECONNRESET there in
+    // place of the reply this server sends.
+    req.resume();
+    req.on('end', () => reply(req, res));
+  });
+
+  function reply(req: IncomingMessage, res: ServerResponse): void {
     switch (mode) {
       case 'text404':
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -80,7 +89,7 @@ export async function startHostileServer(mode: HostileMode): Promise<HostileServ
         void req;
         return;
     }
-  });
+  }
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
