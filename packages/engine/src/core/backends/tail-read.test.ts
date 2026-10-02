@@ -70,11 +70,11 @@ describe('readTailFromOffset', () => {
   test('maxBytes bounds one read, so a large file ships as a sequence of chunks', () => {
     writeFileSync(file(), '{"a":1}\n{"b":2}\n{"c":3}\n');
     const first = readTailFromOffset(file(), 0, 12);
-    expect(first).toEqual({ text: '{"a":1}\n', newOffset: 8 });
+    expect(first).toEqual({ text: '{"a":1}\n', newOffset: 8, baseLine: 0 });
     const second = readTailFromOffset(file(), first.newOffset, 12);
-    expect(second).toEqual({ text: '{"b":2}\n', newOffset: 16 });
+    expect(second).toEqual({ text: '{"b":2}\n', newOffset: 16, baseLine: 1 });
     const third = readTailFromOffset(file(), second.newOffset, 12);
-    expect(third).toEqual({ text: '{"c":3}\n', newOffset: 24 });
+    expect(third).toEqual({ text: '{"c":3}\n', newOffset: 24, baseLine: 2 });
     expect(readTailFromOffset(file(), third.newOffset, 12)).toEqual({ text: '', newOffset: 24 });
   });
 
@@ -85,11 +85,26 @@ describe('readTailFromOffset', () => {
     expect(r.text).toBe('');
     expect(r.newOffset).toBe(giant.length + 1);
     expect(r.skippedBytes).toBe(giant.length + 1);
-    expect(readTailFromOffset(file(), r.newOffset, 16)).toEqual({ text: '{"b":2}\n', newOffset: giant.length + 9 });
+    expect(readTailFromOffset(file(), r.newOffset, 16)).toEqual({ text: '{"b":2}\n', newOffset: giant.length + 9, baseLine: 1 });
   });
 
   test('a long line still being written at the end of the file is not skipped', () => {
     writeFileSync(file(), `{"a":1}\n{"img":"${'x'.repeat(40)}`);
     expect(readTailFromOffset(file(), 8, 16)).toEqual({ text: '', newOffset: 8 });
+  });
+
+  test('baseLine counts the lines before the offset, also when read again from a later one', () => {
+    writeFileSync(file(), '{"a":1}\n\n{"b":2}\n{"c":3}\n');
+    expect(readTailFromOffset(file(), 9).baseLine).toBe(2);   // the empty line counts
+    expect(readTailFromOffset(file(), 17).baseLine).toBe(3);  // counted forward from the last answer
+    expect(readTailFromOffset(file(), 8).baseLine).toBe(1);   // an earlier offset counts from the start
+  });
+
+  test('a file rewritten in place is counted again, not from the cached answer', () => {
+    writeFileSync(file(), '{"a":1}\n{"b":2}\n{"c":3}\n');
+    expect(readTailFromOffset(file(), 16).baseLine).toBe(2);
+    // A resume rewrite: different content, same path.
+    writeFileSync(file(), '{"x":"aaaaaaaaaaaaaaa"}\n{"y":2}\n');
+    expect(readTailFromOffset(file(), 24).baseLine).toBe(1);
   });
 });

@@ -138,6 +138,10 @@ describe('a transcript over the full-build ceiling ships in chunks', () => {
     const stored = JSON.parse((await store.getCachedContentStale(SESSION_ID, 'session'))!.content);
     expect(stored.o).toBe(size);
     expect(stored.messages.length).toBe(local.length);
+    // Every appended message keeps its line in the file. The server used to
+    // number one line per message, so the 9 MB snapshot line and every
+    // non-message line before an append shifted the rest.
+    expect(stored.messages.map((m: any) => m.line)).toEqual(local.map((m: any) => m.line));
     expect(JSON.stringify(stored)).not.toContain(SECRET);
 
     // Findings scanned chunk by chunk carry the same absolute line number.
@@ -150,6 +154,46 @@ describe('a transcript over the full-build ceiling ships in chunks', () => {
     const again = await post(head);
     expect(again.status).toBe(200);
     expect(again.body.shrink_guarded).toEqual([{ session_id: SESSION_ID, o: size }]);
+
+    // THE FAILURE: a stored copy with a gap could never be repaired. Its head
+    // is refused as smaller, and the appends continued the copy with the gap.
+    // A head marked chunk_head is staged, the appends extend the staged copy,
+    // and the final one replaces the stored copy.
+    const gapped = { ...stored, messages: [...stored.messages.slice(0, 3000), ...stored.messages.slice(3029)] };
+    await store.setCachedContent(SESSION_ID, 'session', Math.floor(loc.mtime), JSON.stringify(gapped));
+    const staged = await post({ ...head, chunk_head: true });
+    expect(staged.status).toBe(200);
+    expect(staged.body.rebuild_staged).toEqual([SESSION_ID]);
+    expect(staged.body.shrink_guarded ?? []).toEqual([]);
+    // Readers keep the stored copy while the rebuild runs.
+    const during = JSON.parse((await store.getCachedContentStale(SESSION_ID, 'session'))!.content);
+    expect(during.messages.length).toBe(local.length - 29);
+    let at = head.from_offset as number;
+    let lastTail: any = null;
+    while (at < size) {
+      lastTail = await buildConversationTail(ref as any, at);
+      const r = await post(lastTail!.conv);
+      expect(r.status).toBe(200);
+      expect(r.body.full_resync_needed ?? []).toEqual([]);
+      at = lastTail!.newOffset;
+    }
+    expect(lastTail.conv.final).toBe(true);
+    const rebuilt = JSON.parse((await store.getCachedContentStale(SESSION_ID, 'session'))!.content);
+    expect(rebuilt.messages.map((m: any) => m.line)).toEqual(local.map((m: any) => m.line));
+    expect(rebuilt.o).toBe(size);
+
+    // A file with fewer messages than the stored copy (an in-place
+    // truncation) never replaces it, through a rebuild either.
+    const fuller = { ...rebuilt, messages: [...rebuilt.messages, { line: 999_999, role: 'user', content: 'only on the server' }] };
+    await store.setCachedContent(SESSION_ID, 'session', Math.floor(loc.mtime), JSON.stringify(fuller));
+    expect((await post({ ...head, chunk_head: true })).body.rebuild_staged).toEqual([SESSION_ID]);
+    for (let o = head.from_offset as number; o < size;) {
+      const t = await buildConversationTail(ref as any, o);
+      await post(t!.conv);
+      o = t!.newOffset;
+    }
+    const kept = JSON.parse((await store.getCachedContentStale(SESSION_ID, 'session'))!.content);
+    expect(kept.messages.length).toBe(local.length + 1);
     await store.close();
-  }, 120_000);
+  }, 240_000);
 });
