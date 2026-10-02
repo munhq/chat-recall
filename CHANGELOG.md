@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.16] — 2026-10-02
+
 ### Fixed
 - **`verify --repair` never re-sent a stranded session.** It cleared the
   ledger cursors and exited before the delayed ledger write ran, so nothing
@@ -11,6 +13,15 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
   held all 23. The 0.7.15 entry blamed the running daemon for this; that was
   wrong. The edit is now on disk before the command exits. The same applied to
   the ledger edits of `chat-recall delete` and of sync tombstones.
+- **Messages added by an append had the wrong line numbers.** The server
+  numbered an appended tail as one line per message, so a message on line
+  3655 of the file was stored as line 3118. The client now sends the line
+  count before the tail, and each message keeps its line in the file.
+- **A large session with missing messages could not be repaired.** A session
+  too large to build at once ships in chunks, and the server refused its first
+  chunk as smaller than the stored copy, so the gaps stayed. The server now
+  builds the new copy beside the stored one and replaces it when the last
+  chunk arrives, if the new copy holds at least as many messages.
 
 ## [0.7.15] — 2026-10-02
 
