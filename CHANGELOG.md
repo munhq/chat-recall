@@ -4,15 +4,21 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **`verify --repair` never re-sent a stranded session.** It cleared the
+  ledger cursors and exited before the delayed ledger write ran, so nothing
+  reached the file. On one machine it reported 23 cursors cleared and the file
+  held all 23. The 0.7.15 entry blamed the running daemon for this; that was
+  wrong. The edit is now on disk before the command exits. The same applied to
+  the ledger edits of `chat-recall delete` and of sync tombstones.
+
 ## [0.7.15] — 2026-10-02
 
 ### Fixed
-- **`verify --repair` was undone by the running daemon.** Every chat-recall
-  process loaded the sync ledger once and later wrote its whole copy back, so
-  the watch daemon restored the cursors that `verify --repair` had cleared,
-  and the stranded sessions were never sent. On one machine all 23 came back
-  within a minute. A write now changes only the rows that process changed,
-  and a process reads rows that another process changed.
+- **Processes that share the sync ledger overwrote each other's rows.** Each
+  chat-recall process loaded the ledger once and later wrote its whole copy
+  back. A write now changes only the rows that process changed, and a process
+  reads rows that another process changed.
 
 ## [0.7.14] — 2026-10-02
 

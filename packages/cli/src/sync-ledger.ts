@@ -364,11 +364,19 @@ export function getLedgerData(server: string): Record<string, LedgerEntry> {
   return data[server] || {};
 }
 
-/** Persist mutated data for one server. */
+/**
+ * Persist mutated data for one server, on disk before this returns.
+ *
+ * The callers are commands that edit rows and then exit: `verify --repair`
+ * calls process.exit right after, and the coalesced write's timer is unref'd,
+ * so the edit was lost every time. Measured: 23 cursors "cleared", none of
+ * them cleared in the file.
+ */
 export function persistLedgerData(server: string, serverData: Record<string, LedgerEntry>): void {
   const data = load();
   data[server] = serverData;
   persist(data);
+  flushLedger();
 }
 
 /**
