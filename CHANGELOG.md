@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.14] — 2026-10-02
+
 ### Fixed
 - **Line numbers moved after an archive merge.** When the local copy of a
   session and the file on disk differed, the merge dropped every repeated
