@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.15] — 2026-10-02
+
 ### Fixed
 - **`verify --repair` was undone by the running daemon.** Every chat-recall
   process loaded the sync ledger once and later wrote its whole copy back, so
