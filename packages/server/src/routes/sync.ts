@@ -68,6 +68,8 @@ interface ConvContext {
   priorContent: Map<string, { content: string; mtime: number }>;
   priorChunkIdx: Map<string, number>;
   priorArchive: Map<string, { size: number; mtime: number; project_id: string }>;
+  /** Staged rebuilds of chunked sessions (REBUILD_SOURCE rows), prefetched. */
+  priorRebuild: Map<string, { content: string; mtime: number }>;
   /** Appended to, never written — the handler flushes the batch once. */
   itemBatch: MemoryItem[];
   chunkBatch: MemoryChunk[];
@@ -80,7 +82,39 @@ interface ConvContext {
   /** Full syncs the shrink guard refused, with the offset the stored copy is
    *  synced through, returned in the response. */
   shrinkGuardedIds: Array<{ session_id: string; o: number | null }>;
+  /** Chunked heads written to a staged rebuild, returned in the response. */
+  rebuildStagedIds: string[];
   tally: { conv: number; appendConv: number; shrinkGuarded: number };
+}
+
+/**
+ * Where a chunked session is rebuilt before it replaces the stored copy.
+ *
+ * A session too large to build at once ships as a head chunk (a FULL sync) and
+ * then appends. The head always holds fewer messages than a stored copy, so the
+ * shrink guard kept the stored copy and the appends continued it: a stored copy
+ * with gaps kept them for good. Measured on 2026-10-02: five sessions lacked 7
+ * to 29 messages that the file holds, and no re-send could restore them.
+ *
+ * The head goes to this row instead, the appends extend it, and the final
+ * append promotes it when it holds at least as many messages as the stored
+ * copy. Readers keep the stored copy until then, so an append that never
+ * arrives costs nothing.
+ */
+const REBUILD_SOURCE = 'session_rebuild';
+
+/**
+ * A tail's messages with the file's line numbers. The client's tail parser
+ * numbers lines from 1, and `base_line` is the number of lines before the tail.
+ * Without it the server numbered one line per message, which put line 3655 of
+ * a file at line 3118.
+ */
+function numberTail(prevMsgs: EnvelopeMessage[], tailMsgs: EnvelopeMessage[], baseLine: unknown): EnvelopeMessage[] {
+  if (typeof baseLine === 'number' && Number.isFinite(baseLine) && baseLine >= 0) {
+    return tailMsgs.map((m, i) => ({ ...m, line: baseLine + (typeof m.line === 'number' ? m.line : i + 1) }));
+  }
+  const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
+  return tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }));
 }
 
 /**
@@ -123,7 +157,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
   const {
     store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
     itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch, sessionMetaBatch,
-    touchBatch, fullResyncNeeded, shrinkGuardedIds, tally,
+    touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, priorRebuild, tally,
   } = ctx;
     if (!cv.session_id) return;
     if (deadSet.has(cv.session_id)) return; // deleted — never resurrect
@@ -148,6 +182,51 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         // client always sends an envelope on append — but be defensive.)
         fullResyncNeeded.push(cv.session_id);
         return;
+      }
+      // A staged rebuild that this tail continues takes it, and the live
+      // envelope is left for readers until the rebuild is complete.
+      const stagedRow = priorRebuild.get(cv.session_id);
+      if (stagedRow?.content) {
+        try {
+          const st = JSON.parse(stagedRow.content) as { messages?: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
+          if (typeof st.o === 'number' && st.o === (cv.base_offset ?? -1) && Array.isArray(st.messages)) {
+            const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
+            const rebuilt = {
+              v: PARSER_VERSION,
+              messages: [...st.messages, ...numberTail(st.messages, tailMsgs, cv.base_line)],
+              subagents: st.subagents ?? [],
+              o: cv.from_offset ?? st.o,
+            };
+            tally.appendConv++;
+            if (!cv.final) {
+              cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: JSON.stringify(rebuilt) });
+              return;
+            }
+            // The rebuild is done; this row never matches an offset again.
+            cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: '{}' });
+            let storedCount = 0;
+            try {
+              const live = priorContent.get(cv.session_id);
+              const msgs = live?.content ? (JSON.parse(live.content) as { messages?: unknown[] }).messages : undefined;
+              storedCount = Array.isArray(msgs) ? msgs.length : 0;
+            } catch { /* corrupt stored copy — the rebuild replaces it */ }
+            if (rebuilt.messages.length < storedCount) {
+              // The file holds fewer messages than the stored copy: an
+              // in-place truncation. The stored copy stays.
+              log.warn({ session: cv.session_id, storedCount, rebuiltCount: rebuilt.messages.length }, 'rebuild: kept the fuller stored conversation');
+              return;
+            }
+            cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(rebuilt) });
+            const textSource = rebuilt.messages.filter((m) => m.content?.trim()).map((m) => ({ role: chunkRole(m), text: m.content! }));
+            const firstPrompt = (textSource.find((t) => t.role === 'user')?.text || '').slice(0, 200);
+            const cks = chunksFromTurns(cv.session_id, textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })), projectPath, mtime, cv.project_id || undefined, firstPrompt);
+            const subChunks = subagentChunks(cv.session_id, rebuilt.subagents as EnvSubagent[], projectPath, mtime);
+            chunkBatch.push(...cks, ...subChunks);
+            touchBatch.push({ sessionId: cv.session_id, mtime });
+            log.info({ session: cv.session_id, storedCount, rebuiltCount: rebuilt.messages.length }, 'rebuild: replaced the stored conversation');
+            return;
+          }
+        } catch { /* corrupt staged row — the live path below decides */ }
       }
       // Read the existing envelope from content_cache (stale read —
       // the stored mtime may be older than the incoming append's mtime;
@@ -176,10 +255,8 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           return;
         }
         const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
-        // Continue line numbers from the stored envelope's last line.
-        const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
         const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
-        const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
+        const mergedMsgs = [...prevMsgs, ...numberTail(prevMsgs, tailMsgs, cv.base_line)];
         // Advance the synced-through offset to where this tail ends.
         const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
         cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
@@ -309,6 +386,13 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           const bytesShrank = rawArchiveResult === 'shrink-protected';
           const suspectedShrink = incomingCount < storedCount &&
             (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
+          if (suspectedShrink && cv.chunk_head === true) {
+            const headOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
+            cachedContentBatch.push({ id: cv.session_id, sourceType: REBUILD_SOURCE, mtime, content: JSON.stringify({ ...envelope, o: headOffset }) });
+            rebuildStagedIds.push(cv.session_id);
+            log.info({ session: cv.session_id, storedCount, incomingCount }, 'rebuild: staged a chunked head');
+            return;
+          }
           if (suspectedShrink) {
             log.warn(
               { session: cv.session_id, storedCount, incomingCount, bytesShrank, device: agent.deviceId },
@@ -467,6 +551,12 @@ interface SyncConversation {
   /** Byte offset the tail ENDS at (the new synced-through offset). Persisted
    *  server-side (`o`) and client-side (ledger) on a successful append/full. */
   from_offset?: number;
+  /** Append: lines in the file before `base_offset`. */
+  base_line?: number;
+  /** Append: this tail ends the file. */
+  final?: boolean;
+  /** FULL: the head chunk of a session shipped in chunks. */
+  chunk_head?: boolean;
 }
 interface SyncItem {
   id: string;
@@ -705,6 +795,7 @@ router.post('/', async (req, res) => {
       let appendConv = 0, shrinkGuarded = 0;
       const fullResyncNeeded: string[] = [];
       const shrinkGuardedIds: Array<{ session_id: string; o: number | null }> = [];
+      const rebuildStagedIds: string[] = [];
       // Accumulate chunks + item-metadata across the WHOLE batch and flush each
       // ONCE (bulk, single transaction) instead of per conversation/item — turns
       // thousands of round-trips into a handful. Chunks from different items are
@@ -762,14 +853,15 @@ router.post('/', async (req, res) => {
           const priorContent = await store.getCachedContentStaleMany('session', convIds);
           const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
           const priorArchive = await store.rawSessionMetaMany(convIds);
+          const priorRebuild = await store.getCachedContentStaleMany(REBUILD_SOURCE, convIds);
 
           const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
           for (const cv of conversations) {
             await ingestConversation(cv, {
               store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
-              deadSet, priorContent, priorChunkIdx, priorArchive,
+              deadSet, priorContent, priorChunkIdx, priorArchive, priorRebuild,
               itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
-              sessionMetaBatch, touchBatch, fullResyncNeeded, shrinkGuardedIds, tally,
+              sessionMetaBatch, touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, tally,
             });
           }
           conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
@@ -1021,7 +1113,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, inventory_removed: inventoryRemoved, full_resync_needed: fullResyncNeeded, shrink_guarded: shrinkGuardedIds };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, inventory_removed: inventoryRemoved, full_resync_needed: fullResyncNeeded, shrink_guarded: shrinkGuardedIds, rebuild_staged: rebuildStagedIds };
     }));
 
     const { cliRelease } = await import('../util/cli-release.js');

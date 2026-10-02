@@ -1560,7 +1560,10 @@ const refs = listAvailableBackends().flatMap((b) => {
   // records that offset, so the next tick appends from where the server is.
   // Recording the head's end instead makes every append miss the server's
   // offset, answer full_resync_needed, and send the head again, forever.
-  const postChunkedHead = async (conv: Record<string, unknown>, fileSize: number): Promise<void> => {
+  const postChunkedHead = async (head: Record<string, unknown>, fileSize: number): Promise<void> => {
+    // The server stages a head it would otherwise refuse as smaller than its
+    // stored copy, and the appends that follow complete the staged rebuild.
+    const conv: Record<string, unknown> = { ...head, chunk_head: true };
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (cred.token) headers.authorization = `Bearer ${cred.token}`;
     const ac = new AbortController();
@@ -1570,12 +1573,13 @@ const refs = listAvailableBackends().flatMap((b) => {
         method: 'POST', headers, body: JSON.stringify({ conversations: [conv] }), signal: ac.signal,
       });
       if (!res.ok) throw new Error(`chunked head sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-      const body = await res.json().catch(() => ({})) as { shrink_guarded?: Array<{ session_id: string; o?: number | null }> };
+      const body = await res.json().catch(() => ({})) as { shrink_guarded?: Array<{ session_id: string; o?: number | null }>; rebuild_staged?: string[] };
       const id = conv.session_id as string;
       const guarded = (body.shrink_guarded ?? []).find((g) => g.session_id === id);
+      const staged = (body.rebuild_staged ?? []).includes(id);
       const mtime = conv.mtime as number;
       try {
-        if (!guarded) {
+        if (staged || !guarded) {
           markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true }]);
         } else if (typeof guarded.o === 'number' && guarded.o > 0 && guarded.o <= fileSize) {
           markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true }]);
@@ -2819,8 +2823,16 @@ export async function buildConversationTail(
   if (!backend?.readFromOffset) return null;
   const mapPath = opts.mapPath ?? ((p: string) => p);
 
-  const { text: tailText, newOffset, skippedBytes } = await backend.readFromOffset(ref.prefixedId, fromOffset, SYNC_CHUNK_BYTES);
+  const { text: tailText, newOffset, skippedBytes, baseLine } = await backend.readFromOffset(ref.prefixedId, fromOffset, SYNC_CHUNK_BYTES);
   if (newOffset <= fromOffset) return null;
+  // The tail's parser numbers its lines from 1. `base_line` turns them into
+  // the file's line numbers on the server; `final` says this tail ends the
+  // file, which completes a rebuild the server staged.
+  const fileSize = backend.fileSize?.(ref.prefixedId) ?? 0;
+  const position = {
+    ...(typeof baseLine === 'number' ? { base_line: baseLine } : {}),
+    final: fileSize > 0 && newOffset >= fileSize,
+  };
 
   // A window with bytes but nothing to show (tool noise, a skipped line longer
   // than a chunk) still has to move the server's synced-through offset, or the
@@ -2833,7 +2845,7 @@ export async function buildConversationTail(
     return {
       conv: {
         session_id: ref.prefixedId, tool: ref.toolId, project_path: mapPath(ref.projectPath),
-        append: true, base_offset: fromOffset, from_offset: newOffset, redacted_text: '',
+        append: true, base_offset: fromOffset, from_offset: newOffset, ...position, redacted_text: '',
         envelope: { v: TRANSCRIPT_VERSION, messages: [], subagents: [] },
         mtime: Math.floor(ref.mtime) || 0,
       },
@@ -2885,6 +2897,7 @@ export async function buildConversationTail(
       base_offset: fromOffset, // where this tail STARTS — server validates it
                                // equals its stored synced-through offset.
       from_offset: newOffset,  // where it ends → new synced-through offset.
+      ...position,
       redacted_text: redactedText,
       envelope,
       mtime: Math.floor(ref.mtime) || 0,

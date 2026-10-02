@@ -20,7 +20,7 @@
  * skipped: the result has `skippedBytes` > 0, an empty `text`, and `newOffset`
  * just past that line's newline.
  */
-import { openSync, readSync, closeSync, statSync } from 'node:fs';
+import { openSync, readSync, closeSync, statSync, fstatSync } from 'node:fs';
 
 /** Default read bound. Transcripts grow by appends, so a tail is usually a few
  *  turns; the bound only matters for a missed tick after a long idle or for a
@@ -30,7 +30,74 @@ export const TAIL_READ_MAX_BYTES = 16 * 1024 * 1024;
 /** Block size for scanning past a line longer than the read bound. */
 const SKIP_SCAN_BYTES = 1024 * 1024;
 
-export interface TailRead { text: string; newOffset: number; skippedBytes?: number }
+export interface TailRead {
+  text: string;
+  newOffset: number;
+  skippedBytes?: number;
+  /** Lines in the file before `offset`. A line the tail's parser numbers `n`
+   *  is line `baseLine + n` of the file. */
+  baseLine?: number;
+}
+
+/** Per file: a byte offset at a line start and the lines before it. A watch
+ *  daemon reads each session's tail again and again, so counting forward from
+ *  the last answer reads each byte once. `ino` and `edge` (the bytes just
+ *  before `offset`) prove the file is still the one counted: a resume rewrites
+ *  a transcript in place, and a count from the old content is wrong. */
+const lineCounts = new Map<string, { offset: number; lines: number; ino: number; edge: Buffer }>();
+const LINE_COUNT_CACHE_MAX = 2048;
+const EDGE_BYTES = 64;
+
+function readAt(fd: number, pos: number, len: number): Buffer {
+  const buf = Buffer.alloc(len);
+  let got = 0;
+  while (got < len) {
+    const n = readSync(fd, buf, got, len - got, pos + got);
+    if (n <= 0) break;
+    got += n;
+  }
+  return buf.subarray(0, got);
+}
+
+/** Number of `\n` bytes in `path` before `offset`, or undefined when the file
+ *  cannot be read that far. */
+export function linesBeforeOffset(path: string, offset: number): number | undefined {
+  if (offset <= 0) return 0;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const ino = fstatSync(fd).ino;
+    const known = lineCounts.get(path);
+    let pos = 0;
+    let lines = 0;
+    if (known && known.ino === ino && known.offset <= offset) {
+      const edgeStart = Math.max(0, known.offset - EDGE_BYTES);
+      if (readAt(fd, edgeStart, known.offset - edgeStart).equals(known.edge)) {
+        pos = known.offset;
+        lines = known.lines;
+      }
+    }
+    const block = Buffer.allocUnsafe(SKIP_SCAN_BYTES);
+    while (pos < offset) {
+      const n = readSync(fd, block, 0, Math.min(SKIP_SCAN_BYTES, offset - pos), pos);
+      if (n <= 0) return undefined;
+      for (let i = block.indexOf(0x0a, 0); i >= 0 && i < n; i = block.indexOf(0x0a, i + 1)) lines++;
+      pos += n;
+    }
+    const edgeStart = Math.max(0, offset - EDGE_BYTES);
+    const edge = readAt(fd, edgeStart, offset - edgeStart);
+    if (lineCounts.size >= LINE_COUNT_CACHE_MAX && !lineCounts.has(path)) {
+      const oldest = lineCounts.keys().next().value;
+      if (oldest !== undefined) lineCounts.delete(oldest);
+    }
+    lineCounts.set(path, { offset, lines, ino, edge });
+    return lines;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* best-effort */ } }
+  }
+}
 
 export function readTailFromOffset(path: string, offset: number, maxBytes: number = TAIL_READ_MAX_BYTES): TailRead {
   let size = 0;
@@ -57,7 +124,7 @@ export function readTailFromOffset(path: string, offset: number, maxBytes: numbe
     const lastNl = slice.lastIndexOf(0x0a);
     if (lastNl >= 0) {
       const text = slice.subarray(0, lastNl + 1).toString('utf-8');
-      return { text, newOffset: offset + lastNl + 1 };
+      return { text, newOffset: offset + lastNl + 1, baseLine: linesBeforeOffset(path, offset) };
     }
     // No newline. The file ends inside this window: a line still being
     // written. Wait for the next tick.
