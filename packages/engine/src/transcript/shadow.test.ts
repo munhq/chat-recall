@@ -15,6 +15,7 @@ import {
   mergeContainer,
   updateShadow,
   readShadowContainer,
+  writeShadowContainer,
   seedShadow,
   shadowFileFor,
   shadowUncompressedBytes,
@@ -264,6 +265,25 @@ describe('updateShadow (disk round-trip)', () => {
     // exact content match).
     const grown = updateShadow(id, exportOf('claude', `${id}.jsonl`, jsonl(['a', 'b', 'c', 'd']), 6000));
     expect(grown.status).toBe('grew');
+  });
+
+  test('THE FAILURE: a shadow an older merge wrote is merged again, even with the file unchanged', () => {
+    // A version-1 merge left this shadow short of the file. The file did not
+    // change after it, so the srcHash fast path returned the short shadow on
+    // every sync and the server kept getting it.
+    const id = 'sess-old-merge';
+    const disk = jsonl(['a', 'b', 'c', 'd']);
+    const first = updateShadow(id, exportOf('claude', `${id}.jsonl`, disk, 1000));
+    expect(first.status).toBe('created');
+    const stored = readShadowContainer('claude', id)!;
+    const short = { ...stored, files: [{ ...stored.files[0], text: jsonl(['a', 'c']) }] };
+    delete (short as { mergeVersion?: number }).mergeVersion;     // written before versions
+    writeShadowContainer('claude', id, short);
+    const again = updateShadow(id, exportOf('claude', `${id}.jsonl`, disk, 1000));
+    expect(again.container!.files[0].text).toBe(disk);
+    expect(readShadowContainer('claude', id)!.files[0].text).toBe(disk);
+    // Merged once at the current version, the fast path holds again.
+    expect(updateShadow(id, exportOf('claude', `${id}.jsonl`, disk, 1000)).status).toBe('unchanged');
   });
 
   test('unavailable export still surfaces the prior shadow', () => {
