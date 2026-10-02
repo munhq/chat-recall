@@ -4,6 +4,14 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **`verify --repair` was undone by the running daemon.** Every chat-recall
+  process loaded the sync ledger once and later wrote its whole copy back, so
+  the watch daemon restored the cursors that `verify --repair` had cleared,
+  and the stranded sessions were never sent. On one machine all 23 came back
+  within a minute. A write now changes only the rows that process changed,
+  and a process reads rows that another process changed.
+
 ## [0.7.14] — 2026-10-02
 
 ### Fixed
