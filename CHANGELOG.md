@@ -4,6 +4,13 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+- **The first chunk of a large session failed with HTTP 500 on 0.7.16.** The
+  server wrote the new copy to a row that the database's row-level security
+  hides, and refused the write: `new row violates row-level security policy
+  "author_visibility" for table "content_cache"`. The new copy now lives in
+  the session's own row until it replaces the stored copy.
+
 ## [0.7.16] — 2026-10-02
 
 ### Fixed
