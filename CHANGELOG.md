@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.13] — 2026-10-02
+
 ### Fixed
 - **`recall_user_prompts` returned the oldest prompts.** It said "newest
   first", but it kept the first `limit` prompts in line order. On a session
