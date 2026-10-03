@@ -39,6 +39,7 @@ import {
   isFresh,
   fingerprintFile,
   gunzipContainer,
+  RAW_PARSE_MAX_BYTES,
   parseTranscriptFromContainer,
   type CachedOutcome,
   type CachedOutcomeStatus,
@@ -1913,11 +1914,15 @@ router.get('/:id/raw-archive', async (req, res) => {
     const row = await store.getRawSession(id);
     if (!row) return res.status(404).json({ error: 'No raw archive for this session' });
 
-    let messages = 0;
-    try {
-      const container = gunzipContainer(row.gz);
-      if (container) messages = parseTranscriptFromContainer(container).messages.length;
-    } catch { /* corrupt archive — still return metadata/bytes so the caller can inspect */ }
+    // Null when the archive is larger than the server unpacks whole.
+    let messages: number | null = null;
+    if (row.size <= RAW_PARSE_MAX_BYTES) {
+      messages = 0;
+      try {
+        const container = gunzipContainer(row.gz);
+        if (container) messages = parseTranscriptFromContainer(container).messages.length;
+      } catch { /* corrupt archive — still return metadata/bytes so the caller can inspect */ }
+    }
 
     res.json({
       sessionId: id,

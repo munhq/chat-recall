@@ -75,11 +75,14 @@ router.get('/sync', async (_req, res) => {
  */
 router.get('/archives/:id/records', async (req, res) => {
   try {
-    const { createStore, gunzipContainer } = await import('../imports.js');
+    const { createStore, gunzipContainer, RAW_PARSE_MAX_BYTES } = await import('../imports.js');
     const store = await createStore();
     try {
       const raw = await store.getRawSession(req.params.id);
       if (!raw?.gz) return res.status(404).json({ error: 'no archive for that session' });
+      if (raw.size > RAW_PARSE_MAX_BYTES) {
+        return res.status(413).json({ error: `the archive is ${raw.size} bytes, larger than the ${RAW_PARSE_MAX_BYTES} the server reads record by record` });
+      }
       const container = gunzipContainer(raw.gz);
       if (!container) return res.status(500).json({ error: 'archive unparseable' });
       const ids = new Set<string>();

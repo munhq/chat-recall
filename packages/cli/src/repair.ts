@@ -275,11 +275,18 @@ export async function repairAll(opts: { sinceHours?: number; apply?: boolean; ve
     scanned++;
     if (opts.verbose && scanned % 50 === 0) log(`checked ${scanned}/${ids.length}…`);
     const arch = await fetchJson(`${primary.url}/api/conversations/${id}/raw-archive?count=1`, primary.token);
-    const archiveMsgs = typeof arch?.messages === 'number' ? arch.messages : 0;
-    if (archiveMsgs < minMessages) continue; // no/thin archive — nothing to recover
-    const meta = await fetchJson(`${primary.url}/api/conversations/${id}/metadata`, primary.token);
-    const current = typeof meta?.messageCount === 'number' ? meta.messageCount : 0;
-    if (archiveMsgs <= current) continue; // healthy — archive not fuller than the live view
+    // A null count is an archive too large for the server to unpack; the
+    // client unpacks it in repairSession and compares there.
+    const counted = arch && arch.messages !== null;
+    if (counted) {
+      const archiveMsgs = typeof arch?.messages === 'number' ? arch.messages : 0;
+      if (archiveMsgs < minMessages) continue; // no/thin archive — nothing to recover
+      const meta = await fetchJson(`${primary.url}/api/conversations/${id}/metadata`, primary.token);
+      const current = typeof meta?.messageCount === 'number' ? meta.messageCount : 0;
+      if (archiveMsgs <= current) continue; // healthy — archive not fuller than the live view
+    } else if (!arch) {
+      continue;
+    }
     // Damaged. Dry-run reports; apply rebuilds + pushes via the canonical path.
     const r = await repairSession(id, { dryRun: !opts.apply, verbose: opts.verbose, server: opts.server });
     // Skip the 'already-full' verdict repairSession may return once the on-disk

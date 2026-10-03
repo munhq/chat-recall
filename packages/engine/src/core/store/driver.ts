@@ -303,6 +303,8 @@ export interface StorageDriver {
   putRawSession(
     ...a: [...Parameters<MemoryStore['putRawSession']>, known?: { size: number; mtime: number; project_id: string } | null]
   ): Promise<ReturnType<MemoryStore['putRawSession']>>;
+  /** Present only on a driver backed by object storage (Postgres). */
+  putRawSessionObject?(sessionId: string, tool: string, mtime: number, objectKey: string, uncompressedSize: number, projectId?: string, projectPath?: string): Promise<'stored' | 'shrink-protected' | 'unchanged'>;
   getRawSession: AsyncMethod<MemoryStore['getRawSession']>;
   listRawSessionVersions: AsyncMethod<MemoryStore['listRawSessionVersions']>;
   listEnvelopesMissingRawArchive: AsyncMethod<MemoryStore['listEnvelopesMissingRawArchive']>;

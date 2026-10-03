@@ -40,7 +40,7 @@ import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
-  gunzipContainer, gzipContainer, mergeContainer, repairContainer, parseTranscriptFromContainer,
+  gunzipContainer, gzipContainer, mergeContainer, repairContainer, parseTranscriptFromContainer, RAW_PARSE_MAX_BYTES,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import type { StorageDriver } from '@chat-recall/engine/core/store/driver.js';
@@ -48,6 +48,8 @@ import type { MemoryItem, MemoryChunk } from '@chat-recall/engine/types/memory.j
 import type { IngestBatch, IngestSessionMeta } from '@chat-recall/engine/core/store/ingest-batch.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { isEntitled, syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
+import { getObjectStore } from '@chat-recall/engine/core/store/object-store.js';
+import { multipartStore, startRawUpload, completeRawUpload } from '../services/raw-upload.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
 import { tenantIngestConcurrency } from '../middleware/rate-limit.js';
@@ -331,7 +333,9 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           // shadow uses) and re-store only if the result actually grew.
           // Truncation still cannot shrink the archive: a strict subset
           // merges back to the stored container and is a no-op.
-          if (rawArchiveResult === 'shrink-protected') {
+          // A stored archive larger than the server unpacks whole stays as it is.
+          const priorSize = priorArchive.get(cv.session_id)?.size ?? 0;
+          if (rawArchiveResult === 'shrink-protected' && priorSize <= RAW_PARSE_MAX_BYTES) {
             try {
               const prior = await store.getRawSession(cv.session_id);
               const priorContainer = prior?.gz ? gunzipContainer(prior.gz) : null;
@@ -695,26 +699,38 @@ function envelopeFromTurns(turns: SyncTurn[]): EnvelopeMessage[] {
 
 const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
-router.post('/', async (req, res) => {
-  // Agent-token auth (ct_…). The tenantAuth middleware may have resolved a
-  // different tenant for this request; the token's tenant wins for writes.
-  // Agent-token auth (ct_…) normally. But local self-host (AUTH_PROVIDER=none)
-  // is single-tenant and already trusts the network (the dashboard has no auth
-  // either), so a TOKENLESS push is accepted and written to the single
-  // 'default' tenant the dashboard reads — that's how a local collector syncs
-  // with no token. Any other auth mode still requires a valid agent token.
+type SyncAgent = { tenant: string; deviceId: string; userSub: string | null };
+
+/**
+ * The device a sync request comes from, or the 401 to answer with.
+ *
+ * Agent-token auth (ct_…). The tenantAuth middleware may have resolved a
+ * different tenant for this request; the token's tenant wins for writes. Local
+ * self-host (AUTH_PROVIDER=none) is single-tenant and already trusts the
+ * network (the dashboard has no auth either), so a TOKENLESS push is accepted
+ * and written to the single 'default' tenant the dashboard reads — that's how a
+ * local collector syncs with no token. Any other auth mode still requires a
+ * valid agent token.
+ */
+async function resolveSyncAgent(req: express.Request): Promise<{ agent: SyncAgent } | { error: string }> {
   const m = /^Bearer\s+(.+)$/.exec(req.get('authorization') || '');
-  let agent: { tenant: string; deviceId: string; userSub: string | null } | null;
   if (m) {
     const cp = await createControlPlane();
+    let agent: SyncAgent | null;
     try { agent = await cp.resolveAgentToken(m[1]); }
     finally { await cp.close(); }
-    if (!agent) return res.status(401).json({ error: 'invalid agent token' });
-  } else if ((process.env.AUTH_PROVIDER || 'none').toLowerCase() === 'none') {
-    agent = { tenant: 'default', deviceId: 'local', userSub: null };
-  } else {
-    return res.status(401).json({ error: 'agent token required' });
+    return agent ? { agent } : { error: 'invalid agent token' };
   }
+  if ((process.env.AUTH_PROVIDER || 'none').toLowerCase() === 'none') {
+    return { agent: { tenant: 'default', deviceId: 'local', userSub: null } };
+  }
+  return { error: 'agent token required' };
+}
+
+router.post('/', async (req, res) => {
+  const who = await resolveSyncAgent(req);
+  if ('error' in who) return res.status(401).json({ error: who.error });
+  const agent = who.agent;
 
   const conversations = arr<SyncConversation>(req.body?.conversations);
   const items = arr<SyncItem>(req.body?.items);
@@ -1165,5 +1181,42 @@ router.post('/', async (req, res) => {
     gate.release();   // free the ingest concurrency slot
   }
 });
+
+// ── Raw archives in parts, straight to object storage ──────────────
+// See services/raw-upload.ts. The client calls start, PUTs each part to its
+// presigned URL, then calls complete.
+async function rawUploadRoute(req: express.Request, res: express.Response, step: 'start' | 'complete'): Promise<void> {
+  const who = await resolveSyncAgent(req);
+  if ('error' in who) { res.status(401).json({ error: who.error }); return; }
+  const agent = who.agent;
+  const objects = multipartStore(getObjectStore());
+  if (!objects) { res.status(501).json({ error: 'raw upload in parts needs object storage on the server' }); return; }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (step === 'start') {
+    const admission = await syncAdmission(agent.tenant, Number(body.gz_size) || 0);
+    if (!admission.ok) { res.status(admission.status).json(admission.body); return; }
+  }
+  try {
+    const reply = await runWithTenant(agent.tenant, () => runWithAuthor({ sub: agent.userSub, device: agent.deviceId }, async () => {
+      const store = await createStore();
+      try {
+        return step === 'start'
+          ? await startRawUpload(store, objects, agent.tenant, body)
+          : await completeRawUpload(store, objects, body);
+      } finally { await store.close(); }
+    }));
+    if (step === 'complete' && reply.status === 200 && typeof reply.body.gz_size === 'number') {
+      try { await recordSyncUsage(agent.tenant, reply.body.gz_size); }
+      catch (err) { log.warn({ err }, 'raw upload usage record failed'); }
+    }
+    res.status(reply.status).json(reply.body);
+  } catch (e) {
+    log.error({ err: e, step }, 'raw upload failed');
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+router.post('/raw-upload/start', (req, res) => rawUploadRoute(req, res, 'start'));
+router.post('/raw-upload/complete', (req, res) => rawUploadRoute(req, res, 'complete'));
 
 export default router;
