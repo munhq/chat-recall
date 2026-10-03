@@ -26,7 +26,7 @@
  */
 import {
   createStore, createControlPlane, createMetadataCache, runWithTenant, runWithAuthor,
-  gunzipContainer, gzipContainer, repairContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION,
+  gunzipContainer, gzipContainer, repairContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION, RAW_PARSE_MAX_BYTES,
   getBackend,
   type SourceType,
 } from '../imports.js';
@@ -52,7 +52,7 @@ export interface HealResult {
   from: number;      // message count before
   to: number;        // message count after / would-be (archive count)
   prompts?: boolean; // the prompt row predates MARKERS_VERSION and is rebuilt
-  reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'deleted' | 'error';
+  reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'deleted' | 'too-large' | 'error';
 }
 
 /**
@@ -74,6 +74,10 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     }
     const raw = await store.getRawSession(sessionId);
     if (!raw) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'no-archive' };
+    if (raw.size > RAW_PARSE_MAX_BYTES) {
+      log.info({ session: sessionId, size: raw.size }, 'self-heal: archive too large to unpack here');
+      return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'too-large' };
+    }
     const stored0 = gunzipContainer(raw.gz);
     if (!stored0) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
     // Lines a pre-0.7.12 redactor made unparseable. Every reader skipped them,

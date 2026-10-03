@@ -1658,6 +1658,17 @@ export class PgStore implements StorageDriver {
   }
 
   async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number, projectId = '', projectPath = '', known?: { size: number; mtime: number; project_id: string } | null): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
+    return this.storeRaw(sessionId, tool, mtime, { gz }, uncompressedSize, projectId, projectPath, known);
+  }
+  /**
+   * Record an archive the client uploaded straight to object storage, under a
+   * key this server issued. Same shrink rule as putRawSession. On any result
+   * but 'stored' the row does not name the object, so the caller deletes it.
+   */
+  async putRawSessionObject(sessionId: string, tool: string, mtime: number, objectKey: string, uncompressedSize: number, projectId = '', projectPath = ''): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
+    return this.storeRaw(sessionId, tool, mtime, { objectKey }, uncompressedSize, projectId, projectPath, undefined);
+  }
+  private async storeRaw(sessionId: string, tool: string, mtime: number, src: { gz: Buffer } | { objectKey: string }, uncompressedSize: number, projectId: string, projectPath: string, known: { size: number; mtime: number; project_id: string } | null | undefined): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
     // `known` is the prefetched row for this session when the caller already
     // read the batch's archive metadata. `undefined` means it did not, and the
     // read happens here; `null` means it did and there is no row.
@@ -1710,11 +1721,14 @@ export class PgStore implements StorageDriver {
     //
     // The key is derived from this.t, the tenant this store was opened with.
     // Nothing a request supplies reaches it.
-    const objects = getObjectStore();
-    let objectKey = '';
-    if (objects) {
-      objectKey = rawObjectKey(this.t, sessionId, randomBytes(8).toString('hex'));
-      await objects.put(objectKey, gz);
+    let objectKey = 'objectKey' in src ? src.objectKey : '';
+    const gz = 'gz' in src ? src.gz : null;
+    if (gz) {
+      const objects = getObjectStore();
+      if (objects) {
+        objectKey = rawObjectKey(this.t, sessionId, randomBytes(8).toString('hex'));
+        await objects.put(objectKey, gz);
+      }
     }
     // `prev` reads the key this write supersedes, in the same statement and so
     // from the statement's snapshot. A writer that committed a newer key after

@@ -88,6 +88,23 @@ function canonicalPath(bucket: string, key: string): string {
   return `/${uriEncodeSegment(bucket)}/${key.split('/').map(uriEncodeSegment).join('/')}`;
 }
 
+type Method = 'PUT' | 'GET' | 'DELETE' | 'HEAD' | 'POST';
+
+/** Query parameters in SigV4 canonical form: encoded, sorted by name. */
+function canonicalQuery(query: Record<string, string>): string {
+  return Object.keys(query).sort()
+    .map((k) => `${uriEncodeSegment(k)}=${uriEncodeSegment(query[k])}`)
+    .join('&');
+}
+
+function signingKeyFor(cfg: ObjectStoreConfig, dateStamp: string): Uint8Array {
+  let key = hmac(sha256, enc.encode(`AWS4${cfg.secretAccessKey}`), enc.encode(dateStamp));
+  for (const part of [cfg.region, 's3', 'aws4_request']) key = hmac(sha256, key, enc.encode(part));
+  return key;
+}
+
+const amzDateOf = (now: Date) => now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+
 /**
  * Sign one request with AWS Signature Version 4.
  *
@@ -96,16 +113,18 @@ function canonicalPath(bucket: string, key: string): string {
  */
 export function signRequest(
   cfg: ObjectStoreConfig,
-  method: 'PUT' | 'GET' | 'DELETE' | 'HEAD',
+  method: Method,
   key: string,
   body: Uint8Array,
   now = new Date(),
+  query: Record<string, string> = {},
 ): { url: string; headers: Record<string, string> } {
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const amzDate = amzDateOf(now);
   const dateStamp = amzDate.slice(0, 8);
   const host = new URL(cfg.endpoint).host;
   const path = canonicalPath(cfg.bucket, key);
   const payloadHash = sha256hex(body);
+  const qs = canonicalQuery(query);
 
   const headers: Record<string, string> = {
     host,
@@ -114,19 +133,58 @@ export function signRequest(
   };
   const signedHeaders = Object.keys(headers).sort().join(';');
   const canonicalHeaders = Object.keys(headers).sort().map((h) => `${h}:${headers[h]}\n`).join('');
-  const canonicalRequest = [method, path, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const canonicalRequest = [method, path, qs, canonicalHeaders, signedHeaders, payloadHash].join('\n');
 
   const scope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonicalRequest)].join('\n');
-
-  let signingKey = hmac(sha256, enc.encode(`AWS4${cfg.secretAccessKey}`), enc.encode(dateStamp));
-  for (const part of [cfg.region, 's3', 'aws4_request']) signingKey = hmac(sha256, signingKey, enc.encode(part));
-  const signature = hex(hmac(sha256, signingKey, enc.encode(stringToSign)));
+  const signature = hex(hmac(sha256, signingKeyFor(cfg, dateStamp), enc.encode(stringToSign)));
 
   headers.authorization =
     `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-  return { url: `${cfg.endpoint}${path}`, headers };
+  return { url: `${cfg.endpoint}${path}${qs ? `?${qs}` : ''}`, headers };
 }
+
+/**
+ * A presigned URL: the signature travels in the query, so whoever holds the URL
+ * can make this one request until it expires, with no credentials of its own.
+ * Only `host` is signed, and the payload is UNSIGNED-PAYLOAD, because the
+ * holder sends a body the signer has not seen.
+ */
+export function presignUrl(
+  cfg: ObjectStoreConfig,
+  method: Method,
+  key: string,
+  expiresSec: number,
+  now = new Date(),
+  query: Record<string, string> = {},
+): string {
+  const amzDate = amzDateOf(now);
+  const dateStamp = amzDate.slice(0, 8);
+  const host = new URL(cfg.endpoint).host;
+  const path = canonicalPath(cfg.bucket, key);
+  const scope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
+  const q: Record<string, string> = {
+    ...query,
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': `${cfg.accessKeyId}/${scope}`,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(expiresSec),
+    'X-Amz-SignedHeaders': 'host',
+  };
+  const qs = canonicalQuery(q);
+  const canonicalRequest = [method, path, qs, `host:${host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonicalRequest)].join('\n');
+  const signature = hex(hmac(sha256, signingKeyFor(cfg, dateStamp), enc.encode(stringToSign)));
+  return `${cfg.endpoint}${path}?${qs}&X-Amz-Signature=${signature}`;
+}
+
+/** The text of one XML element, or null. S3's replies here are small and flat. */
+function xmlText(xml: string, tag: string): string | null {
+  const m = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml);
+  return m ? m[1] : null;
+}
+
+const xmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Thrown so a caller can tell "the object is not there" from "the store is broken". */
 export class ObjectNotFound extends Error {}
@@ -158,10 +216,56 @@ export class ObjectStore {
     const r = await fetch(url, { method: 'DELETE', headers });
     if (!r.ok && r.status !== 404) throw new Error(`object DELETE ${key} failed: ${r.status}`);
   }
+
+  /** The object's size in bytes, or null when it does not exist. */
+  async size(key: string): Promise<number | null> {
+    const { url, headers } = signRequest(this.cfg, 'HEAD', key, new Uint8Array());
+    const r = await fetch(url, { method: 'HEAD', headers });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`object HEAD ${key} failed: ${r.status}`);
+    return Number(r.headers.get('content-length'));
+  }
+
+  // ── Multipart upload: the client PUTs each part to a presigned URL ──
+
+  /** Start a multipart upload and return its id. */
+  async createMultipart(key: string): Promise<string> {
+    const { url, headers } = signRequest(this.cfg, 'POST', key, new Uint8Array(), new Date(), { uploads: '' });
+    const r = await fetch(url, { method: 'POST', headers });
+    const text = await r.text();
+    const id = xmlText(text, 'UploadId');
+    if (!r.ok || !id) throw new Error(`multipart create ${key} failed: ${r.status} ${text.slice(0, 200)}`);
+    return id;
+  }
+
+  /** A URL the holder can PUT part `partNumber` (1-based) to, for `expiresSec`. */
+  presignPart(key: string, uploadId: string, partNumber: number, expiresSec: number): string {
+    return presignUrl(this.cfg, 'PUT', key, expiresSec, new Date(), { partNumber: String(partNumber), uploadId });
+  }
+
+  /** Join the parts into the object. `etag` is what each part PUT returned. */
+  async completeMultipart(key: string, uploadId: string, parts: Array<{ partNumber: number; etag: string }>): Promise<void> {
+    const xml = `<CompleteMultipartUpload>${[...parts].sort((a, b) => a.partNumber - b.partNumber)
+      .map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${xmlEscape(p.etag)}</ETag></Part>`).join('')}</CompleteMultipartUpload>`;
+    const body = enc.encode(xml);
+    const { url, headers } = signRequest(this.cfg, 'POST', key, body, new Date(), { uploadId });
+    const r = await fetch(url, { method: 'POST', headers, body });
+    const text = await r.text();
+    // S3 can answer 200 with an <Error> body when the join fails late.
+    if (!r.ok || /<Error>/.test(text)) throw new Error(`multipart complete ${key} failed: ${r.status} ${text.slice(0, 200)}`);
+  }
+
+  /** Discard an upload and its parts. One that is already gone reports success. */
+  async abortMultipart(key: string, uploadId: string): Promise<void> {
+    const { url, headers } = signRequest(this.cfg, 'DELETE', key, new Uint8Array(), new Date(), { uploadId });
+    const r = await fetch(url, { method: 'DELETE', headers });
+    if (!r.ok && r.status !== 404) throw new Error(`multipart abort ${key} failed: ${r.status}`);
+  }
 }
 
 /** What the raw archive uses: put, get, delete, and the bucket name for log lines. */
-export type RawObjectStore = Pick<ObjectStore, 'put' | 'get' | 'delete' | 'bucket'>;
+export type RawObjectStore = Pick<ObjectStore, 'put' | 'get' | 'delete' | 'bucket'>
+  & Partial<Pick<ObjectStore, 'size' | 'createMultipart' | 'presignPart' | 'completeMultipart' | 'abortMultipart'>>;
 
 let cached: RawObjectStore | null | undefined;
 /** The process-wide store, or null when the environment configures none. */

@@ -63,6 +63,15 @@ export function gzipContainer(c: RawContainer): { gz: Buffer; size: number } {
   return { gz: gzipSync(json, { level: 6 }), size: Buffer.byteLength(json) };
 }
 
+/**
+ * The largest archive (uncompressed bytes) the server unpacks whole. Unpacking
+ * holds the text, the parsed container and the parsed transcript at once, and a
+ * server pod has 512 MiB. The largest archive stored before chunked uploads was
+ * 36 MB. A larger one is stored and can be downloaded, and every server path
+ * that would unpack it whole skips it.
+ */
+export const RAW_PARSE_MAX_BYTES = 40 * 1024 * 1024;
+
 export function gunzipContainer(gz: Buffer): RawContainer | null {
   try {
     const c = JSON.parse(gunzipSync(gz).toString('utf-8'));

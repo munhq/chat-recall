@@ -13,7 +13,7 @@
  *     -e MINIO_ROOT_PASSWORD=testsecret123 minio/minio server /data
  */
 import { describe, test, expect } from 'vitest';
-import { ObjectStore, ObjectNotFound, objectStoreFromEnv, rawObjectKey, signRequest } from './object-store.js';
+import { ObjectStore, ObjectNotFound, objectStoreFromEnv, rawObjectKey, signRequest, presignUrl } from './object-store.js';
 
 const CONFIGURED = !!process.env.RAW_ARCHIVE_S3_ENDPOINT && !!process.env.RAW_ARCHIVE_S3_BUCKET;
 
@@ -61,6 +61,23 @@ describe('signRequest', () => {
     expect(headers['x-amz-content-sha256']).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
   });
 
+  test('query parameters are signed sorted, and land in the URL', () => {
+    const at = new Date('2013-05-24T00:00:00Z');
+    const a = signRequest(cfg, 'DELETE', 'raw/t/k.gz', new Uint8Array(), at, { uploadId: 'u 1', partNumber: '2' });
+    expect(a.url).toBe('https://s3.example.invalid/archive/raw/t/k.gz?partNumber=2&uploadId=u%201');
+    const b = signRequest(cfg, 'DELETE', 'raw/t/k.gz', new Uint8Array(), at, { uploadId: 'u 2', partNumber: '2' });
+    expect(a.headers.authorization).not.toBe(b.headers.authorization);
+  });
+
+  test('a presigned URL carries its signature, expiry and only the host header', () => {
+    const url = new URL(presignUrl(cfg, 'PUT', 'raw/t/k.gz', 3600, new Date('2013-05-24T00:00:00Z'), { partNumber: '1', uploadId: 'u' }));
+    expect(url.searchParams.get('X-Amz-Expires')).toBe('3600');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host');
+    expect(url.searchParams.get('X-Amz-Credential')).toBe('AKIAIOSFODNN7EXAMPLE/20130524/gra/s3/aws4_request');
+    expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/);
+    expect(url.searchParams.get('partNumber')).toBe('1');
+  });
+
   test('is deterministic for a fixed instant', () => {
     const at = new Date('2013-05-24T00:00:00Z');
     const body = new TextEncoder().encode('same');
@@ -93,5 +110,47 @@ describe('signRequest', () => {
     await store.delete(key);
     await expect(store.get(key)).rejects.toBeInstanceOf(ObjectNotFound);
     await store.delete(key);
+  });
+
+  test('a multipart upload through presigned part URLs joins into one object', async () => {
+    // S3 requires every part but the last to be at least 5 MiB.
+    const big = Buffer.alloc(5 * 1024 * 1024, 7);
+    const tail = Buffer.from('the last part may be small');
+    const mkey = rawObjectKey('test-tenant', `multi-${Date.now()}`);
+    const id = await store.createMultipart(mkey);
+    const parts: Array<{ partNumber: number; etag: string }> = [];
+    for (const [i, body] of [big, tail].entries()) {
+      // No credentials here: the URL alone authorizes the PUT.
+      const r = await fetch(store.presignPart(mkey, id, i + 1, 600), { method: 'PUT', body });
+      expect(r.status).toBe(200);
+      parts.push({ partNumber: i + 1, etag: r.headers.get('etag')! });
+    }
+    await store.completeMultipart(mkey, id, parts);
+    expect(await store.size(mkey)).toBe(big.length + tail.length);
+    const got = await store.get(mkey);
+    expect(Buffer.compare(got, Buffer.concat([big, tail]))).toBe(0);
+    await store.delete(mkey);
+    expect(await store.size(mkey)).toBeNull();
+  }, 60_000);
+
+  test('an aborted upload leaves nothing, and its URLs stop working', async () => {
+    const mkey = rawObjectKey('test-tenant', `abort-${Date.now()}`);
+    const id = await store.createMultipart(mkey);
+    const url = store.presignPart(mkey, id, 1, 600);
+    await store.abortMultipart(mkey, id);
+    const r = await fetch(url, { method: 'PUT', body: Buffer.from('late') });
+    expect(r.status).toBe(404);
+    expect(await store.size(mkey)).toBeNull();
+    await store.abortMultipart(mkey, id);
+  });
+
+  test('a presigned URL with a changed query is refused', async () => {
+    const mkey = rawObjectKey('test-tenant', `tamper-${Date.now()}`);
+    const id = await store.createMultipart(mkey);
+    const url = new URL(store.presignPart(mkey, id, 1, 600));
+    url.searchParams.set('partNumber', '2');
+    const r = await fetch(url, { method: 'PUT', body: Buffer.from('x') });
+    expect(r.status).toBe(403);
+    await store.abortMultipart(mkey, id);
   });
 });
