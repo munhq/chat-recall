@@ -122,7 +122,7 @@ describe('sync-ledger (JSON watermark)', () => {
     expect(syncMode(undefined, 1000, 500, V, AO)).toBe('full');
 
     // FULL sync ships the whole file; mark with offset=size so the cursor covers.
-    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500, acked: true }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500, acked: true, full: true }]);
     _resetLedgerCacheForTests();
     // Unchanged mtime + cursor covers size → skip.
     expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 500, V, AO)).toBe('skip');

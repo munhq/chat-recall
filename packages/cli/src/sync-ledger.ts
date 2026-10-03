@@ -59,6 +59,13 @@ export interface SyncedRow {
    *  re-redact, KG or git-replay. Only trusted when `v` is the current extractor
    *  version. Absent after an APPEND (the head hash is stale) and on legacy rows. */
   h?: string;
+  /** Byte offset the last COMPLETE full sync covered. Appends past it leave the
+   *  server's raw archive and derived rows behind, which the settle FULL in
+   *  syncMode brings up to date. Absent on older rows: see fullCoveredOffset. */
+  F?: number;
+  /** A chunked full sync is in progress: its head was acked, and its final
+   *  append completes it (and sets F). */
+  k?: 1;
 }
 /** On disk a row is the {m,v[,f,o,s]} shape OR a legacy bare mtime number. */
 type LedgerEntry = SyncedRow | number;
@@ -423,6 +430,13 @@ export function markSynced(
     /** The server confirmed a write covering `offset`/`size`. Required for the
      *  cursor to advance; without it those fields are ignored. */
     acked?: boolean;
+    /** This ack is a whole-file full sync through `offset`. */
+    full?: boolean;
+    /** This ack is an append that reached the end of the file. It completes a
+     *  chunked full sync when one is in progress (`k`). */
+    chunkFinal?: boolean;
+    /** This ack is the head of a chunked full sync. */
+    chunkedHead?: boolean;
   }>,
 ): void {
   if (rows.length === 0) return;
@@ -456,6 +470,11 @@ export function markSynced(
     // it. An APPEND passes no hash → the stale head hash is dropped, so a later
     // FULL never falsely matches the grown content.
     if (r.hash !== undefined) base.h = r.hash;
+    const completesChunked = cursorFromCaller && r.chunkFinal === true && prev?.k === 1;
+    if (cursorFromCaller && (r.full || completesChunked) && o > 0) base.F = o;
+    else if (prev?.F !== undefined) base.F = prev.F;
+    if (cursorFromCaller && r.chunkedHead) base.k = 1;
+    else if (prev?.k && !completesChunked && !(cursorFromCaller && r.full)) base.k = 1;
     forServer[r.id] = base;
   }
   persist(data);
@@ -614,12 +633,27 @@ export type SyncMode = 'skip' | 'append' | 'full';
  * @param isAppendOnly  whether the backend's transcript is an append-only file
  *                      (Claude/Gemini/Codex JSONL = true; OpenCode SQLite = false)
  */
+/** How long a session must stay unchanged after appends before its settle FULL. */
+export const SETTLE_QUIET_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Bytes the last complete full sync covered. A row written before `F` existed
+ * counts as fully synced when it carries a content hash, because an append
+ * drops the hash and only a full sync writes one. Without that rule the first
+ * walk after an upgrade would settle every session at once.
+ */
+export function fullCoveredOffset(row: SyncedRow): number {
+  if (row.F !== undefined) return row.F;
+  return row.h ? (row.s ?? 0) : 0;
+}
+
 export function syncMode(
   row: SyncedRow | undefined,
   mtime: number,
   fileSize: number,
   extractorVersion: number,
   isAppendOnly: boolean,
+  nowMs: number = Date.now(),
 ): SyncMode {
   // Never synced → FULL.
   if (!row) return 'full';
@@ -644,6 +678,15 @@ export function syncMode(
   if (process.env.CHAT_RECALL_TAIL_APPEND !== '0' &&
       isAppendOnly && fileSize > 0 && offset > 0 && fileSize > (row.s ?? 0)) {
     return 'append';
+  }
+  // SETTLE. An append ships only the tail: no raw archive, no derived rows. A
+  // session that took appends and then went quiet gets ONE full sync, so the
+  // server's archive and derived rows catch up. Without this nothing ever
+  // re-sent it: a session's archive held 64 messages while its conversation
+  // held 387.
+  if (isAppendOnly && offset > 0 && fileSize > 0 && fileSize === (row.s ?? 0) && !row.k
+      && fullCoveredOffset(row) < offset && nowMs - Math.floor(mtime) >= SETTLE_QUIET_MS) {
+    return 'full';
   }
   // mtime unchanged → the last sync (FULL or APPEND) covered this version of
   // the file. SKIP. The byte cursor is NOT a skip prerequisite — a FULL sync

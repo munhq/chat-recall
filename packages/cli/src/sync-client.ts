@@ -1491,7 +1491,7 @@ const refs = listAvailableBackends().flatMap((b) => {
         // acked: the server accepted the batch containing this conversation, so
         // the cursor is a real delivery receipt.
         return off > 0
-          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash, acked: true }
+          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash, acked: true, full: true }
           : { id: r.session_id, mtime: r.mtime, hash };
       }));
     }
@@ -1544,6 +1544,7 @@ const refs = listAvailableBackends().flatMap((b) => {
             offset: c.from_offset as number,
             size: c.from_offset as number, // size = new offset (file grew to here)
             acked: true,                   // server merged this tail
+            chunkFinal: c.final === true,  // completes a chunked full sync
           })));
         } catch { /* ledger — never fail an upload over it */ }
       }
@@ -1580,9 +1581,9 @@ const refs = listAvailableBackends().flatMap((b) => {
       const mtime = conv.mtime as number;
       try {
         if (staged || !guarded) {
-          markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true }]);
+          markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true, chunkedHead: true }]);
         } else if (typeof guarded.o === 'number' && guarded.o > 0 && guarded.o <= fileSize) {
-          markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true }]);
+          markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true, chunkedHead: true }]);
         } else {
           // The server holds more than this file has: the file was truncated in
           // place. The server keeps the fuller copy; stop here at this mtime.
