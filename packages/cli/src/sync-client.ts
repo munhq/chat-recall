@@ -72,7 +72,7 @@ import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
-  syncMode, markFullResync, loadItemVersions, saveItemVersions, loadInventoryHashes, saveInventoryHashes, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
+  syncMode, markFullResync, forgetFullCoverage, loadItemVersions, saveItemVersions, loadInventoryHashes, saveInventoryHashes, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
 import { extractorVersionForTool, extractorVersionForId, extractorVersionForItem, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
@@ -193,7 +193,8 @@ let walkProgressForUpload: { done: number; total: number; complete: boolean } | 
 
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
 import { reportWalkProgress, readCollectorHealth, updateCollectorHealth } from '@chat-recall/engine/core/collector-health.js';
-import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
+import { withSessionReadCache , withSessionScanScope, resolveSessionContentGroups } from '@chat-recall/engine/core/live-session-scan.js';
+import { writeArchiveFile, uploadArchiveFile, type ArchiveSource, type ArchiveFile } from './raw-archive-parts.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -1510,6 +1511,9 @@ const refs = listAvailableBackends().flatMap((b) => {
   // NOT go through the shared `post`/`submit` pool — it needs the response
   // body, which the shared path discards.
   const appendResults = { uploaded: 0, fullResyncNeeded: new Set<string>() };
+  /** Archives too large for the sync request, uploaded once the walk's
+   *  conversations have landed (an archive row is read through its session). */
+  const pendingArchives: Array<{ id: string; file: ArchiveFile; tool: string; mtime: number; projectId?: string; projectPath?: string }> = [];
   const postAppend = async (convs: Array<Record<string, unknown>>): Promise<void> => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (cred.token) headers.authorization = `Bearer ${cred.token}`;
@@ -1993,6 +1997,12 @@ const refs = listAvailableBackends().flatMap((b) => {
     if (built.srcHash) shippedHash.set(ref.prefixedId, built.srcHash);
     if (built.conv.chunked) await postChunkedHead(built.conv, sessionFileBytes(ref));
     else await convBatch.add(built.conv);
+    if (built.archive) {
+      pendingArchives.push({
+        id: ref.prefixedId, ...built.archive,
+        projectId: built.conv.project_id as string | undefined, projectPath: built.conv.project_path as string | undefined,
+      });
+    }
     // Ship this session's secret findings as one group (server replaces wholesale).
     if (built.findings.length > 0) await findingsBatch.add(built.findings);
 
@@ -2204,6 +2214,27 @@ const refs = listAvailableBackends().flatMap((b) => {
   // error) before tombstones/prune, which must run strictly after all data.
   await drainInflight();
 
+  // ── Raw archives in parts, straight to object storage ──
+  // A server without object storage answers 'unsupported' once; the rest are
+  // not tried. A failed upload clears the session's full-sync coverage, so the
+  // settle full sync tries again when the session is next quiet.
+  let archivesUnsupported = false;
+  for (const a of pendingArchives) {
+    try {
+      if (!archivesUnsupported) {
+        const r = await uploadArchiveFile(base, cred.token, {
+          sessionId: a.id, tool: a.tool, mtime: a.mtime, projectId: a.projectId, projectPath: a.projectPath, file: a.file,
+        });
+        if (r === 'unsupported') archivesUnsupported = true;
+      }
+    } catch (err) {
+      console.error(`[sync] raw archive for ${a.id} not uploaded (tried again when the session is next quiet): ${err instanceof Error ? err.message : err}`);
+      try { forgetFullCoverage(base, a.id); } catch { /* ledger — best-effort */ }
+    } finally {
+      rmSync(a.file.path, { force: true });
+    }
+  }
+
   // ── Toolkit inventory. Sent after the barrier, so every item row it names
   // has landed. The server records which device has each item and deletes a
   // row only when no device has it any more (see reconcileToolkitInventory).
@@ -2311,6 +2342,9 @@ export interface BuiltConversation {
    *  a later mtime-only bump with identical content can skip the whole rebuild.
    *  Undefined for the oversized-tail path (no full container is materialized). */
   srcHash?: string;
+  /** The raw archive, written to a temp file, when it is too large to send
+   *  inline. The walk uploads it in parts once the conversation has landed. */
+  archive?: { file: ArchiveFile; tool: string; mtime: number };
 }
 
 /** buildConversationSync's early-out when the caller passed a priorContentHash
@@ -2430,6 +2464,8 @@ export async function buildConversationSync(
   let includeMeta = opts.includeMeta !== false;
   let srcHash: string | undefined;
 
+  // The caller wants the raw archive; size alone decides inline or in parts.
+  const wantRaw = opts.includeRaw !== false;
   // Oversized transcript: ship it in chunks. This FULL sync carries the HEAD
   // chunk (the first SYNC_CHUNK_BYTES, cut at a line end) with from_offset at
   // the end of that chunk. The ledger records that offset, so syncMode sees the
@@ -2755,6 +2791,29 @@ export async function buildConversationSync(
   // here — it's a derived field reconciled separately (sync-fields.ts), so a
   // title change never drags the conversation back through sync.
 
+  // An archive too large to send inline goes up in parts after the walk. It is
+  // written to a temp file now, while the container is in memory, or streamed
+  // from disk for a session too large to export. Redacted the same way.
+  let archive: BuiltConversation['archive'];
+  if (wantRaw && !raw_b64) {
+    try {
+      const redact = (t: string) => redactSecrets(t, { force: true, count });
+      let source: ArchiveSource | null = null;
+      let archiveMtime = Math.floor(ref.mtime) || 0;
+      let archiveTool: string = ref.toolId;
+      if (container) {
+        source = { kind: 'memory', files: container.files };
+        archiveMtime = container.mtime;
+        archiveTool = container.tool;
+      } else if (oversized) {
+        source = diskArchiveSource(ref);
+      }
+      if (source) archive = { file: await writeArchiveFile(source, { tool: archiveTool, mtime: archiveMtime }, redact), tool: archiveTool, mtime: archiveMtime };
+    } catch (err) {
+      console.error(`[sync] raw archive for ${ref.prefixedId} not written: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   return {
     conv: {
       session_id: ref.prefixedId,
@@ -2787,6 +2846,22 @@ export async function buildConversationSync(
     findings,
     scanMs,
     srcHash,
+    archive,
+  };
+}
+
+/**
+ * The files of a session too large to export, to stream from disk. Claude
+ * only, and only when each logical file has one copy: copies in two profile
+ * homes must be unioned record by record, which needs them in memory.
+ */
+function diskArchiveSource(ref: SessionRef): ArchiveSource | null {
+  if (ref.toolId !== 'claude') return null;
+  const groups = resolveSessionContentGroups(ref.rawId);
+  if (groups.length === 0 || groups.some((g) => g.paths.length !== 1)) return null;
+  return {
+    kind: 'disk',
+    files: groups.map((g) => ({ name: g.name === 'main' ? `${ref.rawId}.jsonl` : g.name, path: g.paths[0] })),
   };
 }
 

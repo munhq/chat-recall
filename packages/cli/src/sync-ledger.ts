@@ -600,6 +600,21 @@ export function _resetLedgerCacheForTests(): void {
 }
 
 /**
+ * Forget that a full sync covered this session, so the settle full sync runs
+ * again once it is quiet. Used when the part of a full sync that ships after
+ * the conversation (its raw archive in parts) failed. The cursor stays: the
+ * conversation itself did land.
+ */
+export function forgetFullCoverage(server: string, sessionId: string): void {
+  const data = load();
+  const row = data[server]?.[sessionId];
+  if (!row || typeof row !== 'object') return;
+  delete row.F;
+  delete row.h;
+  persist(data);
+}
+
+/**
  * Invalidate a session's ledger row so the next sync tick classifies it as
  * FULL (never-synced). Used when the server signals `full_resync_needed` for
  * an append — the client must not retry append (the server lost the prior
