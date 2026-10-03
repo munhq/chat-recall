@@ -390,7 +390,11 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           const bytesShrank = rawArchiveResult === 'shrink-protected';
           const suspectedShrink = incomingCount < storedCount &&
             (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
-          if (suspectedShrink && cv.chunk_head === true) {
+          // A chunked head always holds less than a complete stored copy.
+          // Writing it would leave readers a partial conversation until the
+          // last append arrives, and for good when one never does, so it is
+          // staged whenever it holds fewer messages.
+          if (cv.chunk_head === true && incomingCount < storedCount) {
             const headOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
             const { rebuild: _prior, ...kept } = prevEnv as StoredEnvelope;
             cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime: stored.mtime, content: JSON.stringify({ ...kept, rebuild: { ...envelope, o: headOffset } }) });
