@@ -4,6 +4,30 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.18] — 2026-10-03
+
+### Fixed
+- **A session that took appends kept an old raw archive.** An append sends
+  only the new messages, and nothing sent the session in full again. Now a
+  session that took appends gets one full sync once it has been unchanged for
+  2 hours.
+- **Large sessions kept an old raw archive.** An archive over 8 MB gzipped
+  was dropped, and a session over 24 MB never built one. Such an archive now
+  goes to object storage in 8 MB parts, written as a stream so memory holds
+  one line at a time, and redacted the same way as before.
+- **A session lost chat-recall when its daemon stopped.** The relay now
+  reconnects, and a call that was running gets an error that says to call
+  again. A daemon leaves by itself after an upgrade, so sessions use the new
+  code.
+- **The first chunk of a large session could replace a fuller stored copy.**
+  The server now builds the new copy beside the stored one in every such case.
+
+### Added
+- `POST /api/sync/raw-upload/start` and `/complete`: a raw archive uploaded
+  in parts straight to object storage through presigned URLs. A server
+  without object storage answers 501, and the client keeps sending archives
+  inline.
+
 ## [0.7.17] — 2026-10-02
 
 ### Fixed
