@@ -436,7 +436,33 @@ async function runDaemon(): Promise<boolean> {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // An upgrade replaces the files on disk, and this process keeps running the
+  // code it loaded. On 2026-10-02 five daemons ran three older releases for
+  // days after an install and kept writing their old view of the sync ledger.
+  // So the daemon leaves when the installed version changes; each relay then
+  // reconnects and starts the new code (relay-lifecycle.ts resilientBridge).
+  const upgradeTimer = setInterval(() => {
+    const installed = installedVersion();
+    // 0.0.0 is a run outside the bundle, which has no version to compare.
+    if (installed && RELAY_VERSION !== '0.0.0' && installed !== RELAY_VERSION) {
+      console.error(`[mcp] v${installed} is installed; daemon v${RELAY_VERSION} is leaving`);
+      clearInterval(upgradeTimer);
+      shutdown();
+    }
+  }, 30_000);
+  upgradeTimer.unref();
   return true;
+}
+
+/** The version in the package.json beside this bundle, or null when unreadable. */
+function installedVersion(): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch {
+    return null;
+  }
 }
 
 async function main() {
