@@ -147,3 +147,153 @@ export function bridge(
 
   stopParentWatch = watchParent(finish, { probe: opts.probe, intervalMs: opts.parentPollMs });
 }
+
+/** JSON-RPC id as a map key: ids may be numbers or strings, and 1 is not "1". */
+const idKey = (id: unknown): string => JSON.stringify(id);
+
+interface RpcHead { id?: unknown; method?: unknown }
+
+function peek(line: string): RpcHead | null {
+  try {
+    const m = JSON.parse(line) as RpcHead;
+    return m && typeof m === 'object' ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Calls up to newline-delimited lines; the remainder waits for the next chunk. */
+function lineSplitter(onLine: (line: string) => void): (chunk: Buffer | string) => void {
+  const decoder = new TextDecoder('utf-8');
+  let rest = '';
+  return (chunk) => {
+    rest += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+    let nl = rest.indexOf('\n');
+    while (nl >= 0) {
+      const line = rest.slice(0, nl);
+      rest = rest.slice(nl + 1);
+      if (line.trim()) onLine(line);
+      nl = rest.indexOf('\n');
+    }
+  };
+}
+
+/** The error a client gets for a call that was running when its daemon went away. */
+export const DAEMON_RESTART_ERROR = 'chat-recall restarted while this call ran. Call the tool again.';
+
+/**
+ * Like `bridge`, but the session survives its daemon.
+ *
+ * A daemon goes away when it is upgraded or killed. `bridge` then ended the
+ * relay, and the AI tool showed the server as disconnected until a person
+ * reconnected it by hand. Here the relay connects again (`reconnect` starts a
+ * daemon when none answers), replays the client's `initialize` request and
+ * `notifications/initialized`, drops the new daemon's reply to that replay,
+ * and goes on.
+ *
+ * A request that had no reply when the daemon went away gets a JSON-RPC error
+ * that says to call again. Sending it again could run a write twice.
+ *
+ * The session is over when the client's input finishes, when the parent is
+ * gone, when output fails, or when no daemon can be reached again.
+ */
+export function resilientBridge(
+  input: Readable,
+  output: Writable,
+  first: Duplex,
+  reconnect: () => Promise<Duplex | null>,
+  exit: (code: number) => void,
+  opts: { drainMs?: number; probe?: ParentProbe; parentPollMs?: number } = {},
+): void {
+  let done = false;
+  let inputEnded = false;
+  let sock: Duplex | null = null;
+  /** Client lines held while no daemon is ready for them. */
+  let queue: string[] = [];
+  /** The replayed `initialize` request whose reply the client must not see. */
+  let replayId: string | null = null;
+  let initLine: string | null = null;
+  let initializedLine: string | null = null;
+  const pending = new Set<string>();
+  let stopParentWatch: () => void = () => {};
+
+  const finish = (code = 0) => {
+    if (done) return;
+    done = true;
+    stopParentWatch();
+    try { sock?.destroy(); } catch { /* already gone */ }
+    exit(code);
+  };
+
+  const toClient = (line: string) => {
+    try { output.write(line + '\n'); } catch { finish(); }
+  };
+
+  const fromClient = (line: string) => {
+    const m = peek(line);
+    if (m?.method === 'initialize') initLine = line;
+    else if (m?.method === 'notifications/initialized') initializedLine = line;
+    if (m && m.id !== undefined && typeof m.method === 'string') pending.add(idKey(m.id));
+    if (sock && replayId === null) sock.write(line + '\n');
+    else queue.push(line);
+  };
+
+  const attach = (s: Duplex) => {
+    sock = s;
+    const onLine = lineSplitter((line) => {
+      if (s !== sock) return;
+      const m = peek(line);
+      const isReply = m && m.id !== undefined && m.method === undefined;
+      if (isReply && replayId !== null && idKey(m!.id) === replayId) {
+        replayId = null;
+        if (initializedLine) s.write(initializedLine + '\n');
+        const held = queue;
+        queue = [];
+        for (const l of held) s.write(l + '\n');
+        return;
+      }
+      if (isReply) pending.delete(idKey(m!.id));
+      toClient(line);
+    });
+    s.on('data', onLine);
+    s.on('error', () => { /* 'close' follows and handles it */ });
+    s.on('close', () => { if (s === sock) void lost(); });
+  };
+
+  const lost = async () => {
+    sock = null;
+    if (done) return;
+    if (inputEnded) { finish(); return; }
+    for (const key of pending) {
+      toClient(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(key), error: { code: -32000, message: DAEMON_RESTART_ERROR } }));
+    }
+    pending.clear();
+    const next = await reconnect().catch(() => null);
+    if (done) { try { next?.destroy(); } catch { /* gone */ } return; }
+    if (!next) { finish(1); return; }
+    if (initLine) {
+      replayId = idKey(peek(initLine)?.id);
+      attach(next);
+      next.write(initLine + '\n');
+    } else {
+      attach(next);
+      const held = queue;
+      queue = [];
+      for (const l of held) next.write(l + '\n');
+    }
+  };
+
+  attach(first);
+  input.on('data', lineSplitter(fromClient));
+  output.on('error', () => finish());
+
+  onInputFinished(input, () => {
+    inputEnded = true;
+    if (!sock) { finish(); return; }
+    try { sock.end(); } catch { finish(); return; }
+    const t = setTimeout(() => finish(), opts.drainMs ?? 2_000);
+    t.unref?.();
+  });
+
+  stopParentWatch = watchParent(() => finish(), { probe: opts.probe, intervalMs: opts.parentPollMs });
+}

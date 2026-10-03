@@ -21,7 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SOCKET_FLAG, daemonEnabled, ensureSocketDir, logPath, socketPath } from './mcp-socket.js';
-import { bridge } from './relay-lifecycle.js';
+import { resilientBridge } from './relay-lifecycle.js';
 
 declare const __CLI_VERSION__: string;
 const VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
@@ -103,12 +103,29 @@ function startDaemon(dir: string, sock: string): ChildProcess | null {
 }
 
 /**
- * Move bytes both ways until the session is over, then exit. `bridge` decides
- * when that is: the daemon closed the socket, the client closed stdin, or the
- * process that spawned this relay is gone.
+ * A socket on this profile's daemon, starting one when none answers. Null
+ * when no daemon could be reached.
+ *
+ * A daemon exits early for two reasons: a sibling won the race to the same
+ * path (then the next connect succeeds onto the sibling), or it could not bind
+ * at all (then nothing will ever answer, and waiting longer is a stall the
+ * session pays for nothing).
  */
-function relay(sock: Socket): void {
-  bridge(process.stdin, process.stdout, sock, (code) => process.exit(code));
+async function connectOrStart(dir: string, path: string): Promise<Socket | null> {
+  const existing = await tryConnect(path);
+  if (existing) return existing;
+  const child = startDaemon(dir, path);
+  if (!child) return null;
+  // The daemon listens before it does any of its startup work, so this waits
+  // for a process to exist, not for an index to be ready.
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(RETRY_MS);
+    const sock = await tryConnect(path);
+    if (sock) return sock;
+    if (child.exitCode !== null || child.signalCode !== null) return tryConnect(path);
+  }
+  return null;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -129,46 +146,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  const existing = await tryConnect(path);
-  if (existing) {
-    relay(existing);
-    return;
-  }
-
-  const child = startDaemon(dir, path);
-  if (!child) {
+  const sock = await connectOrStart(dir, path);
+  if (!sock) {
+    console.error('[mcp] no daemon answered; serving this session in-process');
     await serveInProcess();
     return;
   }
-
-  // The daemon listens before it does any of its startup work, so this waits
-  // for a process to exist, not for an index to be ready.
-  //
-  // It also stops waiting the moment the daemon is gone. A daemon exits early
-  // for two reasons: a sibling won the race to the same path (then the next
-  // connect succeeds and the session relays onto the sibling), or it could not
-  // bind at all (then nothing will ever answer, and every further tick of this
-  // loop is a stall the session pays for nothing).
-  const deadline = Date.now() + START_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await sleep(RETRY_MS);
-    const sock = await tryConnect(path);
-    if (sock) {
-      relay(sock);
-      return;
-    }
-    if (child.exitCode !== null || child.signalCode !== null) {
-      const sibling = await tryConnect(path);
-      if (sibling) {
-        relay(sibling);
-        return;
-      }
-      break;
-    }
-  }
-
-  console.error('[mcp] no daemon answered; serving this session in-process');
-  await serveInProcess();
+  // The session outlives its daemon: an upgrade or a crash reconnects it.
+  resilientBridge(process.stdin, process.stdout, sock, () => connectOrStart(dir, path), (code) => process.exit(code));
 }
 
 main().catch(async (err) => {
