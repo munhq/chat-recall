@@ -24,6 +24,9 @@ function pair(): [Duplex, Duplex] {
 function fakeDaemon(name: string) {
   const [relaySide, daemonSide] = pair();
   const seen: Array<{ id?: unknown; method?: string }> = [];
+  // Destroying one end of the pair aborts the shared streams; a real daemon's
+  // socket server handles that 'error', and so does this one.
+  daemonSide.on('error', () => {});
   let rest = '';
   daemonSide.on('data', (d: Buffer) => {
     rest += d.toString();
