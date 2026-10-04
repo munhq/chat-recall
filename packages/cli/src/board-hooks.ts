@@ -1,5 +1,6 @@
 /**
- * Registration for the two board hooks, on every platform.
+ * The commands for the two board hooks and the message hook, on every
+ * platform. install-hooks.ts writes them into each profile's settings.json.
  *
  * The other five hooks are POSIX shell scripts, and `install-hooks` refuses to
  * register any of them on Windows: Claude Code runs a hook command through
@@ -20,13 +21,12 @@
  * own small bundle (`dist/message-hook.js`) because it runs on every tool call,
  * and the full CLI takes about 0.4 s to start.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string }> };
-type HookConfig = { hooks?: Record<string, unknown[]> };
 
-/** The command string of a hooks.json entry, or null for a malformed one. */
+/** The command string of a hook entry, or null for a malformed one. */
 function entryCommand(entry: unknown): string | null {
   const cmd = (entry as { hooks?: Array<{ command?: unknown }> })?.hooks?.[0]?.command;
   return typeof cmd === 'string' ? cmd : null;
@@ -50,7 +50,7 @@ export function boardHookCommand(execPath: string, cliEntry: string, mode: 'clai
 }
 
 /**
- * True when this hooks.json entry is one of ours.
+ * True when this hook entry is one of ours.
  *
  * It answers for two shapes. The first is the CLI command above. The second is
  * `chat_recall_task_hook.sh`, a wrapper that shipped briefly and did nothing
@@ -65,7 +65,7 @@ export function isBoardHookEntry(entry: unknown): boolean {
   return cmd.includes('task-hook') && (cmd.includes('--claim') || cmd.includes('--close'));
 }
 
-/** The `[event, entry]` pairs for a hooks.json. */
+/** The `[event, entry]` pairs for a settings.json. */
 export function boardHookEntries(execPath: string, cliEntry: string): Array<[string, HookEntry]> {
   return BOARD_HOOKS.map(({ event, mode }) => [
     event,
@@ -74,123 +74,45 @@ export function boardHookEntries(execPath: string, cliEntry: string): Array<[str
 }
 
 /**
- * The events the message hook handles. SessionStart tells the session its own
- * id; the prompt, the tool call and the turn end deliver what waits for it;
- * SessionEnd marks it ended so a parent stops waiting for it.
+ * The events of the message hook's turn runs. SessionStart tells the session
+ * its own id; the prompt and the turn end deliver what already waits;
+ * SessionEnd marks the session ended so a parent stops waiting for it.
  */
-export const MESSAGE_HOOK_EVENTS: readonly string[] = [
-  'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd',
-];
+export const MESSAGE_HOOK_EVENTS: readonly string[] = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
+
+/**
+ * The events that start the waiter. It runs in the background (asyncRewake)
+ * until a message arrives, then exits 2 and Claude Code wakes the session; the
+ * turn that follows ends in a Stop, which starts the next waiter.
+ */
+export const MESSAGE_WAITER_EVENTS: readonly string[] = ['SessionStart', 'UserPromptSubmit', 'Stop'];
 
 /** The command Claude Code runs for the message hook. Both paths quoted, as above. */
-export function messageHookCommand(execPath: string, hookEntry: string): string {
-  return `"${execPath}" "${hookEntry}"`;
+export function messageHookCommand(execPath: string, hookEntry: string, waiter = false): string {
+  return `"${execPath}" "${hookEntry}"${waiter ? ' --wait' : ''}`;
 }
 
-/** True when this hooks.json entry is the message hook. */
+/** True when this hook entry is the message hook, its turn run or its waiter. */
 export function isMessageHookEntry(entry: unknown): boolean {
   const cmd = entryCommand(entry);
-  return cmd !== null && /message-hook\.(js|ts)"?$/.test(cmd.trim());
+  return cmd !== null && /message-hook\.(js|ts)"?( --wait)?$/.test(cmd.trim());
 }
 
-/** The `[event, entry]` pairs for the message hook. */
-export function messageHookEntries(execPath: string, hookEntry: string): Array<[string, HookEntry]> {
-  const command = messageHookCommand(execPath, hookEntry);
-  return MESSAGE_HOOK_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command }] }] as [string, HookEntry]);
+/** True when this hook entry is the waiter. */
+export function isMessageWaiterEntry(entry: unknown): boolean {
+  return isMessageHookEntry(entry) && /--wait$/.test(entryCommand(entry)!.trim());
 }
 
-/**
- * Replace our entries for these events in one parsed hooks.json.
- *
- * Every prior entry of ours is dropped first, so a reinstall after an upgrade
- * replaces a stale bundle path instead of stacking a second registration.
- * Entries that are not ours are untouched.
- */
-function mergeEntries(config: HookConfig, events: readonly string[], entries: Array<[string, HookEntry]>, ours: (e: unknown) => boolean): void {
-  if (!config.hooks || typeof config.hooks !== 'object') config.hooks = {};
-  for (const event of events) {
-    const current = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-    const kept = current.filter((h) => !ours(h));
-    for (const [ev, entry] of entries) if (ev === event) kept.push(entry);
-    config.hooks[event] = kept;
-  }
-}
+type HookCommand = { type: string; command: string; asyncRewake?: boolean };
 
-/** Drop our entries for these events; returns how many it removed. */
-function removeEntries(config: HookConfig, events: readonly string[], ours: (e: unknown) => boolean): number {
-  if (!config.hooks) return 0;
-  let removed = 0;
-  for (const event of events) {
-    const current = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-    const kept = current.filter((h) => !ours(h));
-    removed += current.length - kept.length;
-    if (kept.length) config.hooks[event] = kept;
-    else delete config.hooks[event];
-  }
-  return removed;
-}
-
-/** Merge the board hooks into one already-parsed hooks.json object. */
-export function mergeBoardHooks(config: HookConfig, execPath: string, cliEntry: string): void {
-  mergeEntries(config, BOARD_HOOKS.map((h) => h.event), boardHookEntries(execPath, cliEntry), isBoardHookEntry);
-}
-
-/** Drop the board hooks from one already-parsed hooks.json object. */
-export function removeBoardHooks(config: HookConfig): number {
-  return removeEntries(config, BOARD_HOOKS.map((h) => h.event), isBoardHookEntry);
-}
-
-/** Merge the message hook into one already-parsed hooks.json object. */
-export function mergeMessageHooks(config: HookConfig, execPath: string, hookEntry: string): void {
-  mergeEntries(config, MESSAGE_HOOK_EVENTS, messageHookEntries(execPath, hookEntry), isMessageHookEntry);
-}
-
-/** Drop the message hook from one already-parsed hooks.json object. */
-export function removeMessageHooks(config: HookConfig): number {
-  return removeEntries(config, MESSAGE_HOOK_EVENTS, isMessageHookEntry);
-}
-
-/** Read a hooks.json, tolerating an absent or unreadable file. */
-function readConfig(file: string): HookConfig {
-  if (!existsSync(file)) return { hooks: {} };
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as { hooks?: Record<string, unknown[]> };
-    if (!parsed.hooks || typeof parsed.hooks !== 'object') parsed.hooks = {};
-    return parsed;
-  } catch { return { hooks: {} }; }
-}
-
-/**
- * Apply one change to every given hooks.json.
- *
- * Returns the files it wrote. A file it cannot parse is skipped rather than
- * overwritten: another tool's config is not ours to replace.
- */
-function writeConfigs(files: string[], change: (config: HookConfig) => void): string[] {
-  const written: string[] = [];
-  for (const file of files) {
-    if (existsSync(file)) {
-      try { JSON.parse(readFileSync(file, 'utf-8')); } catch { continue; }
-    }
-    const config = readConfig(file);
-    change(config);
-    try {
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
-      written.push(file);
-    } catch { /* a read-only profile directory is not a reason to fail setup */ }
-  }
-  return written;
-}
-
-/** Register the board hooks in every given hooks.json. */
-export function registerBoardHooks(files: string[], execPath: string, cliEntry: string): string[] {
-  return writeConfigs(files, (c) => mergeBoardHooks(c, execPath, cliEntry));
-}
-
-/** Register the message hook in every given hooks.json. */
-export function registerMessageHooks(files: string[], execPath: string, hookEntry: string): string[] {
-  return writeConfigs(files, (c) => mergeMessageHooks(c, execPath, hookEntry));
+/** The `[event, entry]` pairs for the message hook: the turn runs, then the waiters. */
+export function messageHookEntries(execPath: string, hookEntry: string): Array<[string, { matcher: string; hooks: HookCommand[] }]> {
+  const turn = messageHookCommand(execPath, hookEntry);
+  const waiter = messageHookCommand(execPath, hookEntry, true);
+  return [
+    ...MESSAGE_HOOK_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: turn }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
+    ...MESSAGE_WAITER_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: waiter, asyncRewake: true }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
+  ];
 }
 
 /** Resolve the CLI entry that a hook should run. */

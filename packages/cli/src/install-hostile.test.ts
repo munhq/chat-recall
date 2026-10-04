@@ -180,24 +180,26 @@ describe('init against a server that cannot be reached', () => {
     expect(existsSync(join(home, '.mcp.json'))).toBe(true);
   });
 
-  test('init registers the task-board hooks, even when the server is unreachable', async () => {
-    // `init` installed no hooks at all, so the board loop reached only a user
-    // who had separately found and run `install-hooks`. It is a step of setup
-    // now, and it is local work: a server nobody can reach must not skip it.
+  test('init registers every hook in settings.json, even when the server is unreachable', async () => {
+    // Setup is one command, and hooks are local work: a server nobody can
+    // reach must not skip them. They go to settings.json, the file Claude
+    // Code reads hooks from.
     const { home } = await runCli(['init', '--server', await refusedUrl(), ...INIT_LOCAL_ONLY]);
-    const hooksJson = join(home, 'claude', 'hooks.json');
-    expect(existsSync(hooksJson)).toBe(true);
-    const cfg = JSON.parse(readFileSync(hooksJson, 'utf-8'));
+    const settingsJson = join(home, 'claude', 'settings.json');
+    expect(existsSync(settingsJson)).toBe(true);
+    const cfg = JSON.parse(readFileSync(settingsJson, 'utf-8'));
     const commandsFor = (event: string): string[] =>
       (cfg.hooks?.[event] ?? []).map((h: { hooks?: Array<{ command?: string }> }) => h.hooks?.[0]?.command ?? '');
     expect(commandsFor('UserPromptSubmit').some((c) => c.includes('task-hook --claim'))).toBe(true);
     expect(commandsFor('SessionEnd').some((c) => c.includes('task-hook --close'))).toBe(true);
+    expect(commandsFor('Stop').some((c) => c.includes('message-hook') && c.endsWith('--wait'))).toBe(true);
+    if (process.platform !== 'win32') expect(commandsFor('Stop').some((c) => c.includes('chat_recall_save_hook.sh'))).toBe(true);
   });
 
-  test('--skip-hooks leaves the board hooks out', async () => {
+  test('--skip-hooks leaves the hooks out', async () => {
     const { home } = await runCli(['init', '--server', await refusedUrl(), '--skip-hooks', ...INIT_LOCAL_ONLY]);
-    const hooksJson = join(home, 'claude', 'hooks.json');
-    const cfg = existsSync(hooksJson) ? JSON.parse(readFileSync(hooksJson, 'utf-8')) : { hooks: {} };
+    const settingsJson = join(home, 'claude', 'settings.json');
+    const cfg = existsSync(settingsJson) ? JSON.parse(readFileSync(settingsJson, 'utf-8')) : { hooks: {} };
     const all = Object.values(cfg.hooks ?? {}).flat() as Array<{ hooks?: Array<{ command?: string }> }>;
     expect(all.some((h) => (h.hooks?.[0]?.command ?? '').includes('task-hook'))).toBe(false);
   });

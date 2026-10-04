@@ -9,14 +9,12 @@ import type { McpClientId } from '@chat-recall/engine/core/mcp-clients.js';
 import { config } from 'dotenv';
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { existsSync, readFileSync, writeFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { execSync } from 'child_process';
 
 import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engine/core/paths.js';
-import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
-import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { resolveProjectId, resolveWorkspaceId } from '@chat-recall/engine/core/project-resolver.js';
 import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
@@ -62,32 +60,6 @@ config({ quiet: true });
 // We talk to the FIRST logged-in target (the same one `loadCredentials()`
 // resolves). Multi-target fan-out only applies to writes (sync/delete); reads
 // have a single source of truth.
-
-/**
- * Every Claude profile's `hooks.json`, deduped by real path.
- *
- * `CLAUDE_CONFIG_DIR=~/.claude-work` makes that directory the whole config root
- * for a session, so a hook registered only in `~/.claude/hooks.json` never fires
- * there. Only profiles that are real installs (they have `projects/`) are
- * returned — a bare `~/.claude-backups` directory is not a Claude to configure.
- * The hook SCRIPTS are shared in one directory; only this registration is
- * per-profile.
- */
-function claudeHookConfigFiles(): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const home of claudeHomeDirs()) {
-    if (!existsSync(join(home, 'projects'))) continue;
-    const file = join(home, 'hooks.json');
-    let key: string;
-    try { key = realpathSync(file); } catch { key = file; }
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(file);
-  }
-  if (out.length === 0) out.push(claudeBackend.hooksFile());
-  return out;
-}
 
 interface RemoteTarget { base: string; token: string; }
 
@@ -314,7 +286,7 @@ const DEFAULT_ALLOW = [
   'recall_analytics_summary',
   'recall_outcome_summary', 'recall_regenerate_summary', 'recall_shares',
   'recall_wake_up', 'recall_set', 'recall_get', 'recall_rename_session',
-  'recall_message_send', 'recall_inbox', 'recall_session_status', 'recall_session_register',
+  'recall_message_send', 'recall_inbox', 'recall_session_status', 'recall_session_register', 'recall_session_spawn',
   'recall_team_activity', 'recall_recommendations',
   'recall_security_summary', 'recall_security_session',
   'recall_security_dismiss', 'recall_security_rules',
@@ -373,7 +345,7 @@ program
   .option('--with-codeindex', 'Force-download the codeindex binary during init. Default behavior is to detect an already-installed codeindex on PATH and register it as an MCP server.')
   .option('--skip-codeindex', 'Skip the codeindex companion entirely (no detection, no registration).')
   .option('--skip-service', 'Skip installing the per-user background sync service (Linux/macOS/Windows). By default init installs it so new conversations ship automatically.')
-  .option('--skip-hooks', 'Skip registering the task-board hooks')
+  .option('--skip-hooks', 'Skip installing the Claude Code hooks')
   .option('--yes', 'Do not pause before the first upload. The scope summary still prints.', false)
   // For a non-terminal caller (the MCP) that must relay the sign-in link into a
   // conversation instead of printing it to a console nobody is reading.
@@ -845,24 +817,20 @@ program
       // costing every user a line during setup; it lives in `--help` and the docs.
       void options.skipService; // retained for back-compat; no longer changes behaviour
 
-      // Step 7: the task-board hooks.
+      // Step 7: every hook, in every Claude profile.
       //
-      // `init` installed no hooks at all, so the board moved only for someone
-      // who had separately run `install-hooks` — and on Windows that command
-      // refuses. These two need no script and no POSIX shell (see
-      // board-hooks.ts), so every user gets the loop from setup: a prompt that
-      // names a card id claims it, a commit message that names one closes it.
+      // Setup is one command. A hook that needed a second command reached only
+      // the users who found that command, so init installs all of them, and
+      // the MCP server repairs a profile that is missing them at start.
       if (!options.skipHooks) {
         try {
-          const { registerBoardHooks, resolveCliEntry, registerMessageHooks, resolveMessageHookEntry } = await import('./board-hooks.js');
+          const { installHooks } = await import('./install-hooks.js');
           const { fileURLToPath: toPath } = await import('url');
-          const distDir = toPath(new URL('.', import.meta.url));
           // Silent, like the MCP wiring above it. init prints one status line
           // and one done line, and a setup step that announces itself is how
           // that output grew to forty lines before. `doctor` reports it.
-          registerBoardHooks(claudeHookConfigFiles(), process.execPath, resolveCliEntry(distDir));
-          registerMessageHooks(claudeHookConfigFiles(), process.execPath, resolveMessageHookEntry(distDir));
-        } catch { /* setup completes without them; `install-hooks` retries */ }
+          await installHooks(toPath(new URL('.', import.meta.url)));
+        } catch { /* setup completes without them; the MCP server repairs them at start */ }
       }
 
       // Done
@@ -1653,65 +1621,43 @@ program
     // Hooks + skills, PER CLAUDE PROFILE. Reporting only the primary home is
     // how a profile ran with no hooks and no skills while every check said OK:
     // its sessions index fine, so nothing else surfaces the gap.
-    for (const hooksJson of claudeHookConfigFiles()) {
-      const profile = basename(dirname(hooksJson));
+    const { claudeSettingsFiles, isOurEntry } = await import('./install-hooks.js');
+    const { MESSAGE_HOOK_EVENTS, isMessageHookEntry, isBoardHookEntry } = await import('./board-hooks.js');
+    for (const settingsFile of claudeSettingsFiles()) {
+      const profile = basename(dirname(settingsFile));
       const label = `Claude hooks (${profile})`;
-      if (!existsSync(hooksJson)) {
-        note(false, label, `no ${hooksJson} — run \`chat-recall install-hooks\``);
+      let hooks: Record<string, unknown[]>;
+      try {
+        hooks = existsSync(settingsFile) ? (JSON.parse(readFileSync(settingsFile, 'utf-8')).hooks || {}) : {};
+      } catch {
+        note(false, label, `${settingsFile} is not valid JSON, so no hook in it runs`);
         continue;
       }
+      // Claude Code reads hooks from settings.json only. Entries an older
+      // version left in hooks.json never ran, and saying so is the fix.
+      const legacy = join(dirname(settingsFile), 'hooks.json');
       try {
-        // Claude reads hooks from settings.json AS WELL as hooks.json, and the
-        // wake-up hook is commonly hand-wired in the former. Reading only
-        // hooks.json reports a working hook as missing.
-        const readHooks = (file: string): Record<string, any[]> => {
-          if (!existsSync(file)) return {};
-          try { return JSON.parse(readFileSync(file, 'utf-8')).hooks || {}; } catch { return {}; }
-        };
-        const cfg = readHooks(hooksJson);
-        const settings = readHooks(join(dirname(hooksJson), 'settings.json'));
-        const all = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact', 'SessionEnd'];
-        const hits: string[] = [];
-        for (const ev of all) {
-          const arr = [
-            ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
-            ...(Array.isArray(settings[ev]) ? settings[ev] : []),
-          ];
-          if (arr.some((h: any) => (h.hooks?.[0]?.command || '').includes('chat_recall'))) hits.push(ev);
-        }
-        note(hits.length === all.length, label,
-          hits.length === 0 ? 'none — run `chat-recall install-hooks`'
-            : `${hits.join(', ')}${hits.length < all.length ? ` (missing ${all.filter((e) => !hits.includes(e)).join(', ')} — run install-hooks)` : ''}`);
+        const stranded = existsSync(legacy)
+          ? Object.values(JSON.parse(readFileSync(legacy, 'utf-8')).hooks || {}).flat().filter(isOurEntry).length
+          : 0;
+        if (stranded) note(false, `Old hook file (${profile})`, `${stranded} chat-recall entr${stranded === 1 ? 'y' : 'ies'} in ${legacy}, which Claude Code does not read — run \`chat-recall install-hooks\` to move them`);
+      } catch { /* an unreadable hooks.json holds nothing that runs */ }
 
-        // The board hooks get their own line. The check above asks whether the
-        // EVENT carries any chat-recall command, and UserPromptSubmit and
-        // SessionEnd already carry the resume hint and the escalation — so a
-        // profile with neither half of the board loop reported green.
-        const boardEvents = ['UserPromptSubmit', 'SessionEnd'];
-        const boardHits = boardEvents.filter((ev) => [
-          ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
-          ...(Array.isArray(settings[ev]) ? settings[ev] : []),
-        ].some((h: any) => {
-          const cmd = h.hooks?.[0]?.command || '';
-          return cmd.includes('task-hook') && (cmd.includes('--claim') || cmd.includes('--close'));
-        }));
-        note(boardHits.length === boardEvents.length, `Task board hooks (${profile})`,
-          boardHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
-            : boardHits.length === boardEvents.length ? 'claim on a prompt, close on a commit'
-              : `only ${boardHits.join(', ')} — run \`chat-recall install-hooks\``);
-
-        const { MESSAGE_HOOK_EVENTS, isMessageHookEntry } = await import('./board-hooks.js');
-        const messageHits = MESSAGE_HOOK_EVENTS.filter((ev) => [
-          ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
-          ...(Array.isArray(settings[ev]) ? settings[ev] : []),
-        ].some(isMessageHookEntry));
-        note(messageHits.length === MESSAGE_HOOK_EVENTS.length, `Message hook (${profile})`,
-          messageHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
-            : messageHits.length === MESSAGE_HOOK_EVENTS.length ? 'messages between sessions are delivered'
-              : `only ${messageHits.join(', ')} — run \`chat-recall install-hooks\``);
-      } catch {
-        note(false, label, `${hooksJson} unparseable`);
-      }
+      const on = (ev: string, test: (h: unknown) => boolean) => (Array.isArray(hooks[ev]) ? hooks[ev] : []).some(test);
+      const shell = (script: string) => (h: unknown) => String((h as any)?.hooks?.[0]?.command || '').includes(script);
+      const checks: Array<[string, boolean]> = [
+        ['save', on('Stop', shell('chat_recall_save_hook.sh'))],
+        ['wake-up', on('SessionStart', shell('chat_recall_wakeup_hook.sh'))],
+        ['resume hint', on('UserPromptSubmit', shell('chat_recall_resume_hook.sh'))],
+        ['task board', on('UserPromptSubmit', isBoardHookEntry) && on('SessionEnd', isBoardHookEntry)],
+        ['messages', MESSAGE_HOOK_EVENTS.every((ev) => on(ev, isMessageHookEntry))],
+      ];
+      // The shell hooks cannot run on Windows and are not installed there.
+      const expected = process.platform === 'win32' ? checks.filter(([n]) => n === 'task board' || n === 'messages') : checks;
+      const missing = expected.filter(([, ok]) => !ok).map(([n]) => n);
+      note(missing.length === 0, label,
+        missing.length === 0 ? `${expected.map(([n]) => n).join(', ')} — in ${settingsFile}`
+          : `missing ${missing.join(', ')} — run \`chat-recall install-hooks\`, or restart the MCP server, which repairs them`);
     }
 
     // The decision guard, per tool. Claude Code is covered by the loop above;
@@ -3302,8 +3248,8 @@ program
 
 program
   .command('install-hooks')
-  .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd + SessionStart + PostToolUse) into every Claude profile')
-  .option('--uninstall', 'Remove hooks instead of installing them')
+  .description('Install the chat-recall hooks into every Claude profile (init does this; use this to change which hooks run)')
+  .option('--uninstall', 'Remove the hooks, and keep them out when the MCP server starts')
   .option('--no-resume-hint', "Don't install the UserPromptSubmit resume-hint hook")
   .option('--no-escalate', "Don't install the SessionEnd learnings-escalation hook")
   .option('--no-wakeup', "Don't install the SessionStart wake-up hook")
@@ -3311,375 +3257,41 @@ program
   .option('--no-task-board', "Don't install the hooks that claim and close board cards")
   .option('--no-messages', "Don't install the hook that delivers messages between sessions")
   .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean; taskBoard?: boolean; messages?: boolean }) => {
-    const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } = await import('fs');
     const { fileURLToPath } = await import('url');
-    const {
-      boardHookEntries, isBoardHookEntry, registerBoardHooks, resolveCliEntry,
-      messageHookEntries, isMessageHookEntry, registerMessageHooks, resolveMessageHookEntry,
-    } = await import('./board-hooks.js');
-
-    // Locate the bundled hook scripts. When installed via npm the files live
-    // at <pkg>/hooks/*.sh; in development they sit next to src/.
+    const { installHooks, uninstallHooks } = await import('./install-hooks.js');
     const here = fileURLToPath(new URL('.', import.meta.url));
-    const findHook = (name: string) => {
-      const candidates = [
-        join(here, '..', 'hooks', name),
-        join(here, '..', '..', 'hooks', name),
-        // The monorepo root, for a run straight from the checkout. The copy
-        // under packages/cli/hooks is written by the package build, so a
-        // freshly added script is only at the root until that build runs.
-        join(here, '..', '..', '..', 'hooks', name),
-      ];
-      return candidates.find(p => existsSync(p));
-    };
-    const sourceSaveHook = findHook('chat_recall_save_hook.sh');
-    const sourceGuardHook = findHook('chat_recall_guard_hook.sh');
-    const sourceResumeHook = findHook('chat_recall_resume_hook.sh');
-    const sourceEscalateHook = findHook('chat_recall_escalate_hook.sh');
-    const sourceWakeupHook = findHook('chat_recall_wakeup_hook.sh');
-    if (!sourceSaveHook) {
-      console.error(chalk.red('Could not locate chat_recall_save_hook.sh in the package.'));
-      process.exit(1);
-    }
-
-    const hooksDir = getHooksDir();
-    const installedSaveHook = join(hooksDir, 'chat_recall_save_hook.sh');
-    const installedGuardHook = join(hooksDir, 'chat_recall_guard_hook.sh');
-    const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
-    const installedEscalateHook = join(hooksDir, 'chat_recall_escalate_hook.sh');
-    const installedWakeupHook = join(hooksDir, 'chat_recall_wakeup_hook.sh');
-
-    /**
-     * True when this profile's settings.json ALREADY registers our SessionStart
-     * hook. Claude reads hooks from settings.json as well as hooks.json, so
-     * adding a second registration would inject the wake-up bundle twice per
-     * session. Hand-wired setups predate this command — respect them.
-     */
-    const wakeupWiredInSettings = (home: string): boolean => {
-      const settings = join(home, 'settings.json');
-      if (!existsSync(settings)) return false;
-      try {
-        const cfg = JSON.parse(readFileSync(settings, 'utf-8'));
-        const arr = Array.isArray(cfg.hooks?.SessionStart) ? cfg.hooks.SessionStart : [];
-        return arr.some((h: any) => (h?.hooks?.[0]?.command || '').includes('chat_recall_wakeup_hook'));
-      } catch { return false; }
-    };
-    // EVERY Claude profile gets the registration, not only the primary home.
-    // A profile selected by CLAUDE_CONFIG_DIR reads its own hooks.json, so
-    // registering in ~/.claude alone means the hooks never fire there while
-    // that profile's sessions index normally — nothing looks broken.
-    const hookConfigFiles = claudeHookConfigFiles();
-
-    // Read one profile's hooks.json, or start fresh.
-    const readHookConfig = (file: string): any => {
-      if (!existsSync(file)) return { hooks: {} };
-      try {
-        const c = JSON.parse(readFileSync(file, 'utf-8'));
-        if (!c.hooks || typeof c.hooks !== 'object') c.hooks = {};
-        return c;
-      } catch (err) {
-        console.error(chalk.red(`Could not parse ${file}: ${err}`));
-        console.error(chalk.dim('Fix the file or move it aside before re-running.'));
-        process.exit(1);
-      }
-    };
-
-    // Identify our entries by command path. Six scripts now: save + resume +
-    // escalate + wakeup + guard + task board.
-    const matchesOurs = (h: any) => {
-      const cmd = h?.hooks?.[0]?.command;
-      return typeof cmd === 'string' && (
-        cmd.includes('chat_recall_save_hook.sh') ||
-        cmd.includes('chat_recall_resume_hook.sh') ||
-        cmd.includes('chat_recall_escalate_hook.sh') ||
-        cmd.includes('chat_recall_wakeup_hook.sh') ||
-        cmd.includes('chat_recall_guard_hook.sh')
-      ) || isBoardHookEntry(h) || isMessageHookEntry(h);
-    };
-
-    // SessionStart joins the list every loop below iterates, so a reinstall or
-    // an uninstall reaches the wake-up registration too.
-    const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse', 'PostToolUse'];
-
-    // ── The four tools that are not Claude Code ──────────────────────────────
-    //
-    // `chat-recall guard` already speaks all five harnesses. Registration is
-    // what kept it to one: each of the other four stores its pre-execution hook
-    // in its own file, in its own shape. See core/guard-registration.ts for the
-    // shapes; this reads and writes the files.
-    //
-    // A tool whose directory is absent is skipped, so installing never leaves
-    // config behind for a tool nobody has.
-    const readJson = (file: string): any => {
-      if (!existsSync(file)) return {};
-      try { return JSON.parse(readFileSync(file, 'utf-8')); } catch { return {}; }
-    };
-
-    const addGuardToOtherTools = async (hookPath: string): Promise<void> => {
-      const reg = await import('@chat-recall/engine/core/guard-registration.js');
-      const notes: string[] = [];
-      for (const target of reg.guardTargets()) {
-        if (!existsSync(target.homeDir)) continue;
-        // Each tool runs its own wrapper, which names the harness and execs
-        // the shared script. The registration is then one absolute path.
-        const wrapper = join(hooksDir, reg.guardWrapperName(target.tool));
-        writeFileSync(wrapper, reg.guardWrapperSource(target.tool, hookPath));
-        chmodSync(wrapper, 0o755);
-        mkdirSync(dirname(target.configPath), { recursive: true });
-        if (target.tool === 'opencode') {
-          writeFileSync(target.configPath, reg.opencodePluginSource(wrapper));
-        } else {
-          const merged = reg.registerGuard(target.tool, readJson(target.configPath), reg.guardCommand(wrapper));
-          writeFileSync(target.configPath, JSON.stringify(merged, null, 2) + '\n');
-        }
-        console.log(chalk.green(`\u2713 Registered the guard for ${target.label}`));
-        console.log(chalk.dim(`  ${target.configPath}`));
-        if (target.note) notes.push(`${target.label}: ${target.note}`);
-      }
-      for (const n of notes) console.log(chalk.yellow(`  ! ${n}`));
-    };
-
-    const removeGuardFromOtherTools = async (): Promise<number> => {
-      const reg = await import('@chat-recall/engine/core/guard-registration.js');
-      let removed = 0;
-      for (const target of reg.guardTargets()) {
-        if (!existsSync(target.configPath)) continue;
-        if (target.tool === 'opencode') {
-          // Only ours. The marker is the line install wrote at the top.
-          const body = readFileSync(target.configPath, 'utf-8');
-          if (!body.includes('chat-recall install-hooks')) continue;
-          unlinkSync(target.configPath);
-          removed += 1;
-        } else {
-          const r = reg.unregisterGuard(target.tool, readJson(target.configPath));
-          if (r.removed === 0) continue;
-          writeFileSync(target.configPath, JSON.stringify(r.config, null, 2) + '\n');
-          removed += r.removed;
-        }
-        console.log(chalk.green(`\u2713 Removed the guard from ${target.label} (${target.configPath})`));
-      }
-      return removed;
-    };
 
     if (opts.uninstall) {
-      let total = 0;
-      for (const hooksJson of hookConfigFiles) {
-        const config = readHookConfig(hooksJson);
-        let removed = 0;
-        for (const event of HOOK_EVENTS) {
-          const arr = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-          const filtered = arr.filter((h: any) => !matchesOurs(h));
-          removed += arr.length - filtered.length;
-          if (filtered.length) config.hooks[event] = filtered;
-          else delete config.hooks[event];
-        }
-        if (removed === 0 && !existsSync(hooksJson)) continue;
-        writeFileSync(hooksJson, JSON.stringify(config, null, 2) + '\n');
-        total += removed;
-        console.log(chalk.green(`✓ Removed ${removed} chat-recall hook entr${removed === 1 ? 'y' : 'ies'} from ${hooksJson}`));
-      }
-      total += await removeGuardFromOtherTools();
-      if (total === 0) console.log(chalk.dim('No chat-recall hook entries were registered.'));
-      console.log(chalk.dim(`  (Hook scripts left in ${hooksDir} — delete manually if you want.)`));
+      const r = await uninstallHooks();
+      for (const f of r.files) console.log(chalk.green(`✓ Removed chat-recall hooks from ${f}`));
+      for (const g of r.guardRemoved) console.log(chalk.green(`✓ Removed the guard from ${g.label} (${g.configPath})`));
+      if (r.removed === 0 && r.guardRemoved.length === 0) console.log(chalk.dim('No chat-recall hooks were registered.'));
+      console.log(chalk.dim('The MCP server will not put them back. Run `chat-recall install-hooks` to install them again.'));
       return;
     }
 
-    // WINDOWS: refuse rather than install something that cannot run.
-    //
-    // The hooks are POSIX shell scripts. Claude Code on Windows runs a hook
-    // command through cmd.exe, which cannot execute a .sh — so installing here
-    // registered five hook events (Stop, PreCompact, UserPromptSubmit,
-    // SessionEnd, SessionStart) that errored on EVERY interaction, forever,
-    // while `doctor` cheerfully reported them installed and healthy. A broken
-    // hook on every turn is worse than no hook at all, and a wrong green check
-    // is worse than both.
-    if (process.platform === 'win32') {
-      // The BOARD hooks still install here. They run `chat-recall task-hook`,
-      // which is the CLI itself, so cmd.exe runs them the way sh does — the
-      // refusal below is about the five POSIX scripts and nothing else.
-      if (opts.taskBoard !== false && !opts.uninstall) {
-        const written = registerBoardHooks(hookConfigFiles, process.execPath, resolveCliEntry(here));
-        if (written.length) {
-          console.log(chalk.green('✓ Registered the chat-recall task-board hooks'));
-          console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
-          for (const f of written) console.log(chalk.dim(`  ${f}`));
-          console.log();
-        }
-      }
-      // The message hook is node plus a bundle path too, so it installs here.
-      if (opts.messages !== false && !opts.uninstall) {
-        const written = registerMessageHooks(hookConfigFiles, process.execPath, resolveMessageHookEntry(here));
-        if (written.length) {
-          console.log(chalk.green('✓ Registered the chat-recall message hook'));
-          console.log(chalk.dim('  Sessions receive messages from your other sessions at each prompt, tool call and turn end.'));
-          console.log();
-        }
-      }
-      console.log(chalk.yellow('The five shell hooks are not installed on Windows.'));
-      console.log(chalk.dim('  They are POSIX shell scripts, and Claude Code runs hook commands through'));
-      console.log(chalk.dim('  cmd.exe, which cannot execute them. Registering them would put an error on'));
-      console.log(chalk.dim('  every turn instead of saving anything.'));
-      console.log(chalk.dim(''));
-      console.log(chalk.dim('  Everything else works: indexing, sync, search, the MCP server and the'));
-      console.log(chalk.dim('  node hooks above. The five scripts add automatic fact-saving and the'));
-      console.log(chalk.dim('  wake-up bundle; recall_wake_up gives an agent the same context on demand.'));
-      console.log(chalk.dim(''));
-      console.log(chalk.dim('  Under WSL, run this from inside the WSL shell and it installs normally.'));
-      return;
+    const r = await installHooks(here, {
+      save: true,
+      resume: opts.resumeHint !== false,
+      escalate: opts.escalate !== false,
+      wakeup: opts.wakeup !== false,
+      guard: opts.guard !== false,
+      taskBoard: opts.taskBoard !== false,
+      messages: opts.messages !== false,
+    });
+    for (const f of r.written) console.log(chalk.green(`✓ Hooks registered in ${f}`));
+    for (const f of r.skipped) console.log(chalk.yellow(`! ${f} is not valid JSON, so it was left alone. Fix it and run this again.`));
+    if (r.migrated) console.log(chalk.dim(`  Removed ${r.migrated} old entr${r.migrated === 1 ? 'y' : 'ies'} from hooks.json, which Claude Code does not read.`));
+    for (const g of r.guardTargets) {
+      console.log(chalk.green(`✓ Registered the guard for ${g.label}`));
+      if (g.note) console.log(chalk.yellow(`  ! ${g.note}`));
     }
-
-    // Install: copy scripts and merge entries idempotently.
-    mkdirSync(hooksDir, { recursive: true });
-    copyFileSync(sourceSaveHook, installedSaveHook);
-    chmodSync(installedSaveHook, 0o755);
-
-    const installResume = opts.resumeHint !== false && !!sourceResumeHook;
-    if (installResume) {
-      copyFileSync(sourceResumeHook!, installedResumeHook);
-      chmodSync(installedResumeHook, 0o755);
+    if (r.shellSkipped) {
+      console.log(chalk.yellow('The five shell hooks are not installed on Windows: Claude Code runs hooks through cmd.exe, which cannot run them.'));
+      console.log(chalk.dim('  The task-board and message hooks are installed. Under WSL, run this inside the WSL shell to get all of them.'));
     }
-
-    const installEscalate = opts.escalate !== false && !!sourceEscalateHook;
-    if (installEscalate) {
-      copyFileSync(sourceEscalateHook!, installedEscalateHook);
-      chmodSync(installedEscalateHook, 0o755);
-    }
-
-    const installGuard = opts.guard !== false && !!sourceGuardHook;
-    if (opts.guard !== false && !sourceGuardHook) {
-      console.error(chalk.yellow('! chat_recall_guard_hook.sh is not in this package — the decision guard is not installed.'));
-    }
-    if (installGuard) {
-      copyFileSync(sourceGuardHook!, installedGuardHook);
-      chmodSync(installedGuardHook, 0o755);
-    }
-
-    const installWakeup = opts.wakeup !== false && !!sourceWakeupHook;
-    if (installWakeup) {
-      copyFileSync(sourceWakeupHook!, installedWakeupHook);
-      chmodSync(installedWakeupHook, 0o755);
-    }
-
-    // The board hooks run the CLI itself, so they need no script on disk and no
-    // POSIX shell. See board-hooks.ts.
-    const installTaskBoard = opts.taskBoard !== false;
-
-    const stopEntry = { matcher: '', hooks: [{ type: 'command', command: installedSaveHook }] };
-    // Quoted: the path contains the user's home directory, and a space in it
-    // ("C:/Users/First Last", "/Users/First Last") would split the command.
-    const precompactEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedSaveHook}" --precompact` }] };
-    const resumeEntry = { matcher: '', hooks: [{ type: 'command', command: installedResumeHook }] };
-    // The escalate script detaches its own background work and exits
-    // immediately, so session end is never delayed by network writes.
-    const escalateEntry = { matcher: '', hooks: [{ type: 'command', command: installedEscalateHook }] };
-    // `startup|clear` only: a RESUMED session already carries its context, so
-    // re-injecting the wake-up bundle there is duplicate tokens for no gain.
-    const wakeupEntry = { matcher: 'startup|clear', hooks: [{ type: 'command', command: installedWakeupHook }] };
-
-    // Only the tools that can introduce a dependency. Matching everything
-    // would spawn a process on every Read for a check that can never fire.
-    const guardEntry = {
-      matcher: 'Bash|Edit|Write|MultiEdit|NotebookEdit',
-      hooks: [{ type: 'command', command: installedGuardHook }],
-    };
-
-    // The board, both halves. The claim runs on the prompt that names a card;
-    // the close runs at session end and reads the commits that named one.
-    const boardEntries = boardHookEntries(process.execPath, resolveCliEntry(here));
-
-    // Messages between sessions: a small bundle of its own, on five events.
-    const installMessages = opts.messages !== false;
-    const messageEntries = messageHookEntries(process.execPath, resolveMessageHookEntry(here));
-
-    const events: Array<[string, any]> = [
-      ['Stop', stopEntry],
-      ['PreCompact', precompactEntry],
-    ];
-    if (installResume) events.push(['UserPromptSubmit', resumeEntry]);
-    if (installEscalate) events.push(['SessionEnd', escalateEntry]);
-    if (installGuard) events.push(['PreToolUse', guardEntry]);
-    if (installTaskBoard) for (const pair of boardEntries) events.push(pair);
-    if (installMessages) for (const pair of messageEntries) events.push(pair);
-
-    // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
-    // when reinstalling with those hooks disabled, so we don't leave orphan
-    // registrations behind.
-    const wakeupSkipped: string[] = [];
-    for (const hooksJson of hookConfigFiles) {
-      const config = readHookConfig(hooksJson);
-      // Per-profile: only register SessionStart where settings.json has not
-      // already wired it, so a hand-configured profile keeps ONE registration.
-      const home = dirname(hooksJson);
-      const alreadyWired = wakeupWiredInSettings(home);
-      if (alreadyWired) wakeupSkipped.push(join(home, 'settings.json'));
-      const perProfile = installWakeup && !alreadyWired
-        ? [...events, ['SessionStart', wakeupEntry] as [string, any]]
-        : events;
-      for (const event of HOOK_EVENTS) {
-        const arr = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-        const without = arr.filter((h: any) => !matchesOurs(h));
-        // EVERY entry for this event, because two of ours now share one.
-        // UserPromptSubmit carries the resume hint and the card claim, and
-        // SessionEnd carries the escalation and the card close; reading only
-        // the first match registered one of each pair and dropped the other
-        // silently.
-        for (const [, entry] of perProfile.filter(([e]) => e === event)) without.push(entry);
-        if (without.length) config.hooks[event] = without;
-        else delete config.hooks[event];
-      }
-      mkdirSync(dirname(hooksJson), { recursive: true });
-      writeFileSync(hooksJson, JSON.stringify(config, null, 2) + '\n');
-    }
-    if (installGuard) await addGuardToOtherTools(installedGuardHook);
-
-    const saveSz = statSync(installedSaveHook).size;
-    console.log(chalk.green(`✓ Installed chat-recall save hook (${saveSz} bytes)`));
-    if (installResume) {
-      const resumeSz = statSync(installedResumeHook).size;
-      console.log(chalk.green(`✓ Installed chat-recall resume-hint hook (${resumeSz} bytes)`));
-    }
-    if (installEscalate) {
-      const escalateSz = statSync(installedEscalateHook).size;
-      console.log(chalk.green(`✓ Installed chat-recall learnings-escalation hook (${escalateSz} bytes)`));
-    }
-    if (installGuard) {
-      const guardSz = statSync(installedGuardHook).size;
-      console.log(chalk.green(`✓ Installed chat-recall decision guard (${guardSz} bytes)`));
-    }
-    if (installTaskBoard) {
-      console.log(chalk.green('✓ Registered the chat-recall task-board hooks'));
-      console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
-    }
-    if (installMessages) {
-      console.log(chalk.green('✓ Registered the chat-recall message hook'));
-      console.log(chalk.dim('  Sessions receive messages from your other sessions at each prompt, tool call and turn end.'));
-    }
-    if (installWakeup) {
-      const wakeupSz = statSync(installedWakeupHook).size;
-      console.log(chalk.green(`✓ Installed chat-recall wake-up hook (${wakeupSz} bytes)`));
-      for (const f of wakeupSkipped) {
-        console.log(chalk.dim(`  (SessionStart already wired in ${f} — left as is, not duplicated)`));
-      }
-    }
-    console.log(chalk.dim(`  scripts:   ${hooksDir}`));
-    for (const [i, f] of hookConfigFiles.entries()) {
-      console.log(chalk.dim(`  ${i === 0 ? 'config:   ' : '          '} ${f}`));
-    }
-    const registeredEvents = ['Stop', 'PreCompact'];
-    if (installResume || installTaskBoard || installMessages) registeredEvents.push('UserPromptSubmit');
-    if (installEscalate || installTaskBoard || installMessages) registeredEvents.push('SessionEnd');
-    if (installWakeup || installMessages) registeredEvents.push('SessionStart');
-    if (installGuard) registeredEvents.push('PreToolUse');
-    if (installMessages) registeredEvents.push('PostToolUse');
-    console.log(chalk.dim(`  events:    ${registeredEvents.join(', ')}`));
-    console.log();
-    console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove later.'));
-    if (!installResume) {
-      console.log(chalk.dim('(--no-resume-hint passed — UserPromptSubmit hook skipped)'));
-    }
-    if (!installEscalate) {
-      console.log(chalk.dim('(--no-escalate passed — SessionEnd hook skipped)'));
-    }
+    console.log(chalk.dim(`  scripts: ${r.scriptsDir}`));
+    console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove them.'));
   });
 
 program
