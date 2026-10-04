@@ -9,7 +9,8 @@
  * Every row carries the user behind the token (`owner_sub`), and every query
  * filters on it, so a session reaches only the sessions of the same person.
  *
- *   POST /api/live-sessions/event     {sessionId, event, cwd?, take?}  → {session, messages}
+ *   POST /api/live-sessions/event     {sessionId, event, cwd?, take?, label?, parent?, doing?} → {session, messages}
+ *   POST /api/live-sessions/wait      {sessionId, timeoutSecs?}        → {ended, messages}
  *   POST /api/live-sessions/register  {sessionId, label?, parent?, doing?} → {session}
  *   GET  /api/live-sessions?parent=&includeEnded=&limit=              → {sessions}
  *   GET  /api/live-sessions/:address?messages=                        → {session, messages}
@@ -31,7 +32,9 @@
 import express from 'express';
 import { createStore } from '../imports.js';
 import { actor } from '../util/actor.js';
-import { SessionOwnedElsewhereError, type LiveSession, type LiveSessionState, type StorageDriver } from '@chat-recall/engine/core/store/driver.js';
+import {
+  SessionOwnedElsewhereError, type LiveSession, type LiveSessionState, type LiveSessionUpdate, type SessionMessage, type StorageDriver,
+} from '@chat-recall/engine/core/store/driver.js';
 
 const router = express.Router();
 
@@ -45,7 +48,6 @@ const MAX_DOING = 280;
 const EVENT_STATE: Record<string, LiveSessionState> = {
   SessionStart: 'idle',
   UserPromptSubmit: 'working',
-  PostToolUse: 'working',
   Stop: 'idle',
   SessionEnd: 'ended',
 };
@@ -76,6 +78,19 @@ async function resolveOne(store: StorageDriver, owner: string, address: string):
   throw new HttpError(409, `"${address}" matches ${found.length} sessions: ${list}. Use a session id.`, {
     candidates: found.map((s) => ({ sessionId: s.sessionId, label: s.label, cwd: s.cwd, state: s.state })),
   });
+}
+
+/** How often a waiting long-poll checks for a message. */
+const WAIT_STEP_MS = 1000;
+
+/** The senders' names, so a hook can show "worker-a" in place of an id. */
+async function senderLabels(store: StorageDriver, owner: string, messages: readonly SessionMessage[]): Promise<Record<string, string>> {
+  const labels: Record<string, string> = {};
+  for (const from of new Set(messages.map((m) => m.fromSession).filter((f): f is string => !!f))) {
+    const label = (await store.getLiveSession(owner, from))?.label;
+    if (label) labels[from] = label;
+  }
+  return labels;
 }
 
 type Card = { id: string; title: string; status: string };
@@ -126,30 +141,45 @@ router.post('/event', handle(async (req, res, store) => {
   const state = typeof event === 'string' ? EVENT_STATE[event] : undefined;
   if (!state) throw new HttpError(400, `event must be one of ${Object.keys(EVENT_STATE).join(', ')}`);
   const owner = actor(req);
+  // A session that a parent started carries its name, parent and task in its
+  // environment, and the hook sends them on SessionStart.
+  // A name that is taken, or a parent that is gone, must not cost the
+  // session its report: it starts unlinked and can register later.
+  let reg: Awaited<ReturnType<typeof registration>> | Record<string, never> = {};
+  if (event === 'SessionStart') {
+    const fields = { label: req.body?.label || undefined, parent: req.body?.parent || undefined, doing: req.body?.doing || undefined };
+    try {
+      reg = await registration(store, owner, sessionId, fields);
+    } catch (e) {
+      if (!(e instanceof HttpError)) throw e;
+      reg = await registration(store, owner, sessionId, { doing: fields.doing }).catch(() => ({}));
+    }
+  }
   const session = await store.upsertLiveSession({
     sessionId, ownerSub: owner, state, lastEvent: event,
     cwd: typeof cwd === 'string' && cwd ? cwd.slice(0, 1024) : undefined,
+    ...reg,
   });
   const messages = take === true && state !== 'ended' ? await store.takeSessionMessages(owner, sessionId) : [];
-  // The sender's name, so the hook can show "worker-a" in place of an id.
-  const labels: Record<string, string> = {};
-  for (const from of new Set(messages.map((m) => m.fromSession).filter((f): f is string => !!f))) {
-    const label = (await store.getLiveSession(owner, from))?.label;
-    if (label) labels[from] = label;
-  }
+  const labels = await senderLabels(store, owner, messages);
   res.json({
     session: messages.length ? { ...session, unread: Math.max(0, session.unread - messages.length) } : session,
     messages, labels,
   });
 }));
 
-router.post('/register', handle(async (req, res, store) => {
-  const { label, parent, doing } = req.body ?? {};
-  const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
+/**
+ * Validate a name, a parent and a "doing" line, and turn them into an update.
+ * `/register` takes them from a tool call, `/event` from the environment of a
+ * session that a parent started.
+ */
+async function registration(
+  store: StorageDriver, owner: string, sessionId: string,
+  { label, parent, doing }: { label?: unknown; parent?: unknown; doing?: unknown },
+): Promise<Pick<LiveSessionUpdate, 'label' | 'parentSession' | 'doing'>> {
   if (doing !== undefined && (typeof doing !== 'string' || doing.length > MAX_DOING)) {
     throw new HttpError(400, `doing must be a line of at most ${MAX_DOING} characters`);
   }
-  const owner = actor(req);
   if (label !== undefined && label !== '' && (typeof label !== 'string' || !LABEL.test(label))) {
     throw new HttpError(400, "label must be 1-64 letters, digits, '.', '_' or '-'");
   }
@@ -166,11 +196,44 @@ router.post('/register', handle(async (req, res, store) => {
     parentSession = (await resolveOne(store, owner, parent)).sessionId;
     if (parentSession === sessionId) throw new HttpError(400, 'a session cannot be its own parent');
   }
-  const session = await store.upsertLiveSession({
-    sessionId, ownerSub: owner, label: label as string | undefined, parentSession,
+  return {
+    label: label as string | undefined, parentSession,
     doing: typeof doing === 'string' ? doing.replace(/\s+/g, ' ').trim() : undefined,
-  });
-  res.json({ session });
+  };
+}
+
+router.post('/register', handle(async (req, res, store) => {
+  const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
+  const owner = actor(req);
+  const reg = await registration(store, owner, sessionId, req.body ?? {});
+  res.json({ session: await store.upsertLiveSession({ sessionId, ownerSub: owner, ...reg }) });
+}));
+
+/**
+ * Long-poll for messages. The waiter hook holds this open; it returns as soon
+ * as a message waits (leased, like a take), when the session has ended, or
+ * after `timeoutSecs` (at most 25) with nothing. Each check also records the
+ * poll, which is how the status view tells a live session from a gone one.
+ */
+router.post('/wait', handle(async (req, res, store) => {
+  const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
+  const owner = actor(req);
+  const timeoutMs = Math.max(1, Math.min(25, Number(req.body?.timeoutSecs) || 25)) * 1000;
+  const deadline = Date.now() + timeoutMs;
+  let closed = false;
+  res.on('close', () => { closed = true; });
+  for (;;) {
+    const state = await store.touchLiveSession(owner, sessionId);
+    if (state === null) throw new HttpError(404, `No session ${sessionId} for this account.`);
+    if (state === 'ended') { res.json({ ended: true, messages: [] }); return; }
+    const messages = await store.takeSessionMessages(owner, sessionId);
+    if (messages.length) {
+      res.json({ ended: false, messages, labels: await senderLabels(store, owner, messages) });
+      return;
+    }
+    if (closed || Date.now() + WAIT_STEP_MS > deadline) { res.json({ ended: false, messages: [] }); return; }
+    await new Promise((r) => setTimeout(r, WAIT_STEP_MS));
+  }
 }));
 
 router.get('/', handle(async (req, res, store) => {

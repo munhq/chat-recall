@@ -63,8 +63,16 @@ describe('formatSessionLine', () => {
     ]);
   });
 
-  test('a working session that went silent says so', () => {
-    expect(formatSessionLine(session({ updatedAt: NOW - 40 * 60_000 }), NOW)).toContain('no signal for 40m');
+  test('a session whose waiter stopped polling is gone, whatever its last event said', () => {
+    expect(formatSessionLine(session({ lastSeen: NOW - 5 * 60_000 }), NOW)).toContain('gone: no poll for 5m');
+    expect(formatSessionLine(session({ state: 'idle', lastSeen: NOW - 20_000 }), NOW)).toContain('idle for');
+    // A session without the waiter (another AI tool) is never judged gone.
+    expect(formatSessionLine(session({ lastSeen: null, updatedAt: NOW - 3_600_000 }), NOW)).toContain('working');
+  });
+
+  test('a child that waits for a permission prompt says how to open it', () => {
+    const line = formatSessionLine(session({ local: { id: 'abc12345', kind: 'background', waitingFor: 'permission prompt' } }), NOW);
+    expect(line).toContain('blocked: waiting for a permission prompt — open it with `claude attach abc12345`');
   });
 
   test('shows the label, the unread count and the folder', () => {

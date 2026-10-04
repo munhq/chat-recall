@@ -50,6 +50,7 @@ import { formatContext } from '../core/context.js';
 import { getIdentityFilePath } from '../core/paths.js';
 import { recallTarget } from '../core/remote-target.js';
 import { redactSecrets } from '../core/secret-redactor.js';
+import { spawnChild, localAgents, PERMISSION_MODES, type LocalAgent } from '../core/session-spawn.js';
 import {
   formatDelivery, formatSessionLine, formatAge, sessionName, type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
@@ -999,6 +1000,18 @@ const RecallInboxSchema = z.object({
   limit: z.number().min(1).max(200).optional().default(50),
 });
 
+const RecallSessionSpawnSchema = z.object({
+  from: z.string().min(1).describe(`The parent: this session. ${SESSION_ARG}`),
+  prompt: z.string().min(1).max(32_000).describe('The task for the child, as its first prompt. Say what done means and what to report.'),
+  name: z.string().optional().describe('A name to send to, e.g. "worker-a". Letters, digits, ".", "_" and "-".'),
+  doing: z.string().max(280).optional().describe('One line on what the child works on.'),
+  cwd: z.string().optional().describe("The child's working directory. Defaults to the parent's."),
+  model: z.string().optional().describe('A model alias or id for the child, e.g. "sonnet". Defaults to the user\'s setting.'),
+  permission_mode: z.enum(PERMISSION_MODES).optional()
+    .describe('How the child handles tool permissions. Without one, a tool that needs approval stops the child until a person opens it with `claude attach`. Pass one only when the user chose it.'),
+  resume: z.string().optional().describe('Continue this ended child (its session id) with `prompt` as its next prompt.'),
+});
+
 const RecallSessionStatusSchema = z.object({
   parent: z.string().optional().describe('List only the children of this session (id, start of id, or name).'),
   session: z.string().optional().describe('Show one session and the messages it sent and received.'),
@@ -1210,6 +1223,7 @@ const LEAN_TOOLS = new Set([
   // Messages between running sessions. The hook output names these tools, and
   // Claude Code lets a model call only the tools it lists.
   'recall_message_send', 'recall_inbox', 'recall_session_status', 'recall_session_register',
+  'recall_session_spawn',
 ]);
 
 function toolProfile(): 'lean' | 'full' {
@@ -1251,6 +1265,7 @@ const WRITE_TOOLS = new Set<string>([
   'recall_message_send',
   'recall_inbox',              // marks the messages it returns as received
   'recall_session_register',
+  'recall_session_spawn',       // starts a Claude session on this machine
 ]);
 
 /** Writes that OVERWRITE or retire earlier state, rather than only adding to it. */
@@ -2310,6 +2325,31 @@ or in a tool without the hook.`,
             limit:     { type: 'number', default: 50 },
           },
           required: ['session'],
+        },
+      },
+      {
+        name: 'recall_session_spawn',
+        description: `Start a child session that works on a task in the background, linked to this session as its
+parent. It runs as a Claude Code background session (\`claude --bg\`) on this machine, in the parent's
+folder and profile unless you pass \`cwd\`. It does its task, reports to the parent with
+recall_message_send, and wakes again on the next message from the parent. The user can watch or
+take over any child with \`claude attach <id>\`.
+
+Without \`permission_mode\`, a tool call that needs approval stops the child until a person attaches;
+recall_session_status shows that. Pass a permission mode only when the user chose it.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            from:            { type: 'string', description: 'This session id (the parent).' },
+            prompt:          { type: 'string', description: 'The task, as the first prompt. Say what done means and what to report.' },
+            name:            { type: 'string', description: 'A name to send to, e.g. "worker-a".' },
+            doing:           { type: 'string', description: 'One line on what the child works on.' },
+            cwd:             { type: 'string', description: "Working directory. Defaults to the parent's." },
+            model:           { type: 'string', description: 'Model alias or id. Defaults to the user\'s setting.' },
+            permission_mode: { type: 'string', enum: [...PERMISSION_MODES], description: 'Only when the user chose it.' },
+            resume:          { type: 'string', description: 'Continue this ended child (session id) with the prompt.' },
+          },
+          required: ['from', 'prompt'],
         },
       },
       {
@@ -5316,16 +5356,62 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         return { content: [{ type: 'text', text: formatDelivery(params.session, messages, { labels }) }] };
       }
 
+      case 'recall_session_spawn': {
+        const params = RecallSessionSpawnSchema.parse(args);
+        requireRemote();
+        const parent = await remoteGet<{ session: WireLiveSession }>(`/api/live-sessions/${encodeURIComponent(params.from)}`);
+        if (params.name) {
+          const taken = (await remoteGetQS<{ sessions: WireLiveSession[] }>('/api/live-sessions', {}))
+            .sessions.find((x) => x.label === params.name && x.sessionId !== params.resume);
+          if (taken) throw new Error(`The name "${params.name}" belongs to the running session ${taken.sessionId}. Choose another name.`);
+        }
+        getWAL().log('session_spawn', { from: params.from, name: params.name, resume: params.resume });
+        const child = await spawnChild({
+          parentId: parent.session.sessionId, parentName: parent.session.label,
+          prompt: params.prompt, name: params.name, doing: params.doing, cwd: params.cwd,
+          model: params.model, permissionMode: params.permission_mode, resume: params.resume,
+        });
+        // A background session does not receive this process's environment, so
+        // the link is written here, now that the child's id is known.
+        let linked = false;
+        if (child.sessionId) {
+          await remotePost('/api/live-sessions/register', {
+            sessionId: child.sessionId, parent: parent.session.sessionId, label: params.name, doing: params.doing,
+          });
+          linked = true;
+        }
+        const lines = [
+          `Started ${params.name ? `"${params.name}" ` : ''}as a background session in ${child.cwd}.`,
+          linked
+            ? `Session id: ${child.sessionId}, linked to this session as its parent.`
+            : `Claude Code did not report its session id within 30 seconds, so it is not linked as your child. It still reports to you by your id; \`claude agents\` lists it as ${child.attachId}.`,
+          `Watch it or take over: \`claude attach ${child.attachId}\`. Stop it: \`claude stop ${child.attachId}\`.`,
+          'It reports to this session when it is done or blocked; the message wakes this session.',
+        ];
+        if (!params.permission_mode) {
+          lines.push('It has no permission mode, so a tool that needs approval stops it until someone attaches. recall_session_status shows when it waits.');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
       case 'recall_session_status': {
         const params = RecallSessionStatusSchema.parse(args);
         requireRemote();
         const now = Date.now();
+        // The Claude sessions on this machine: whether one waits for a
+        // permission prompt, and the id `claude attach` takes.
+        const agents = new Map<string, LocalAgent>();
+        try { for (const a of await localAgents()) agents.set(a.sessionId, a); } catch { /* no claude CLI here */ }
+        const withLocal = (x: WireLiveSession): WireLiveSession => {
+          const a = agents.get(x.sessionId);
+          return a ? { ...x, local: { id: a.id, kind: a.kind, status: a.status, state: a.state, waitingFor: a.waitingFor } } : x;
+        };
         if (params.session) {
           const r = await remoteGet<{ session: WireLiveSession; messages: WireMessage[] }>(
             `/api/live-sessions/${encodeURIComponent(params.session)}?messages=${params.messages}`);
           const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>('/api/live-sessions', { includeEnded: true, limit: 500 });
           const labels = new Map(sessions.map((x) => [x.sessionId, x.label] as const));
-          const lines = [formatSessionLine(r.session, now)];
+          const lines = [formatSessionLine(withLocal(r.session), now)];
           if (r.session.parentSession) lines.push(`  parent: ${sessionName(r.session.parentSession, labels)}`);
           const children = sessions.filter((x) => x.parentSession === r.session.sessionId && x.state !== 'ended');
           if (children.length) lines.push(`  children: ${children.map((c) => sessionName(c.sessionId, labels)).join(', ')}`);
@@ -5350,7 +5436,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           return { content: [{ type: 'text', text }] };
         }
         const head = params.parent ? `Children of ${params.parent} (${sessions.length}):` : `Sessions (${sessions.length}), most recent first:`;
-        return { content: [{ type: 'text', text: [head, ...sessions.map((x) => formatSessionLine(x, now))].join('\n') }] };
+        return { content: [{ type: 'text', text: [head, ...sessions.map((x) => formatSessionLine(withLocal(x), now))].join('\n') }] };
       }
 
       case 'recall_session_register': {

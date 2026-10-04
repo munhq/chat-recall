@@ -29,9 +29,13 @@ export interface WireLiveSession {
   lastEvent: string | null;
   startedAt: number;
   updatedAt: number;
+  /** The last poll of the session's waiter hook. */
+  lastSeen?: number | null;
   unread: number;
   /** Board cards in progress that name this session. */
   cards?: Array<{ id: string; title: string; status: string }>;
+  /** What `claude agents` reports when the session runs on this machine. */
+  local?: { id?: string; kind: string; status?: string; state?: string; waitingFor?: string };
 }
 
 /** The marker the hook output starts with, so an agent can tell where it came from. */
@@ -110,25 +114,31 @@ export function formatDelivery(
 }
 
 /**
- * A working session reports at least every tool call, throttled to one report
- * in 15 seconds. Silence much longer than that is worth saying out loud.
+ * The waiter hook polls the server every 25 seconds for as long as its session
+ * runs. A session whose waiter stopped for longer than this has gone away,
+ * whatever its last event said.
  */
-const STALE_WORKING_MS = 15 * 60_000;
+const WAITER_GONE_MS = 90_000;
 
 /** One line per session, for the status tool. */
 export function formatSessionLine(s: WireLiveSession, now = Date.now()): string {
   const name = s.label ? `**${s.label}** (${s.sessionId})` : `**${s.sessionId}**`;
   const age = formatAge(now - s.updatedAt);
+  const gone = s.state !== 'ended' && s.lastSeen != null && now - s.lastSeen > WAITER_GONE_MS;
   const state =
     s.state === 'ended' ? `ended ${age} ago`
-      : s.state === 'idle' ? `idle for ${age}, waiting for input`
-        : now - s.updatedAt > STALE_WORKING_MS
-          ? `no signal for ${age} (a long tool call, or the terminal closed before the session could report its end)`
+      : gone ? `gone: no poll for ${formatAge(now - s.lastSeen!)} (the terminal closed before the session could report its end)`
+        : s.state === 'idle' ? `idle for ${age}, waiting for input`
           : `working, last activity ${age} ago`;
   const parts = [`- ${name}: ${state}`];
   if (s.unread) parts.push(`${s.unread} unread`);
   if (s.cwd) parts.push(`in ${s.cwd}`);
   const lines = [parts.join(' · ')];
+  if (s.local?.waitingFor) {
+    lines.push(`  blocked: waiting for a ${s.local.waitingFor}${s.local.id ? ` — open it with \`claude attach ${s.local.id}\`` : ''}`);
+  } else if (s.local?.kind === 'background' && s.local.id) {
+    lines.push(`  background session: \`claude attach ${s.local.id}\` opens it`);
+  }
   if (s.doing) lines.push(`  doing: ${s.doing}`);
   for (const c of s.cards ?? []) lines.push(`  card ${c.id}: ${c.title}`);
   return lines.join('\n');

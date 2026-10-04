@@ -63,6 +63,7 @@ export class SqliteStore implements StorageDriver {
   async sendSessionMessages(): Promise<never> { throw new Error('session messages require the Postgres backend'); }
   async takeSessionMessages(): Promise<[]> { return []; }
   async ackSessionMessages(): Promise<number> { return 0; }
+  async touchLiveSession(): Promise<null> { return null; }
   async listSessionMessages(): Promise<[]> { return []; }
 
   // ── links ──

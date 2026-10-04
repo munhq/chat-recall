@@ -113,6 +113,8 @@ export interface LiveSession {
   lastEvent: string | null;
   startedAt: number;
   updatedAt: number;
+  /** The last poll of the session's waiter hook, or null when it never polled. */
+  lastSeen: number | null;
   /** Messages sent to this session that it has not received yet. */
   unread: number;
 }
@@ -235,6 +237,8 @@ export interface StorageDriver {
    * not acknowledged by then, it is offered again.
    */
   takeSessionMessages(ownerSub: string, sessionId: string, limit?: number, leaseMs?: number): Promise<SessionMessage[]>;
+  /** Record a waiter poll. Returns the session's state, or null when it is not this owner's. */
+  touchLiveSession(ownerSub: string, sessionId: string): Promise<LiveSession['state'] | null>;
   /** Mark leased messages received. Returns how many it marked. */
   ackSessionMessages(ownerSub: string, sessionId: string, ids: string[]): Promise<number>;
   /** Messages sent to or from a session, newest first. */

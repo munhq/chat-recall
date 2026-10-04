@@ -69,8 +69,9 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
   });
 
   test('an unknown event is refused', async () => {
-    const r = await alice.post('/api/live-sessions/event', { sessionId: PARENT, event: 'Notification' });
-    expect(r.status).toBe(400);
+    for (const event of ['Notification', 'PostToolUse']) {
+      expect((await alice.post('/api/live-sessions/event', { sessionId: PARENT, event })).status).toBe(400);
+    }
   });
 
   test('children register with a label and a parent', async () => {
@@ -104,7 +105,7 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
     const status = await alice.get('/api/live-sessions?parent=lead');
     for (const s of status.body.sessions) expect(s.unread).toBe(1);
 
-    const got = await alice.post('/api/live-sessions/event', { sessionId: CHILD_A, event: 'PostToolUse', take: true });
+    const got = await alice.post('/api/live-sessions/event', { sessionId: CHILD_A, event: 'UserPromptSubmit', take: true });
     expect(got.body.messages).toHaveLength(1);
     expect(got.body.messages[0]).toMatchObject({ fromSession: PARENT, toSession: CHILD_A, body: 'Run the tests.' });
     expect(got.body.session.unread).toBe(0);
@@ -229,14 +230,54 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
     expect(r.status).toBe(404);
   });
 
+  test('the long-poll returns a message as soon as one is sent, and records the poll', async () => {
+    const started = Date.now();
+    const pending = alice.post('/api/live-sessions/wait', { sessionId: CHILD_A, timeoutSecs: 10 });
+    await new Promise((r) => setTimeout(r, 1500));
+    await alice.post('/api/live-sessions/messages', { from: PARENT, to: 'worker-a', body: 'wake up' });
+    const r = await pending;
+    const took = Date.now() - started;
+    expect(r.status).toBe(200);
+    expect(r.body.messages.map((m: { body: string }) => m.body)).toEqual(['wake up']);
+    expect(r.body.labels).toEqual({ [PARENT]: 'lead' });
+    expect(took).toBeLessThan(4000);
+    await alice.post('/api/live-sessions/ack', { sessionId: CHILD_A, ids: [r.body.messages[0].id] });
+    expect((await alice.get('/api/live-sessions/worker-a')).body.session.lastSeen).toBeGreaterThanOrEqual(started);
+  });
+
+  test('the long-poll returns empty at its timeout, and 404 for a session that is not this owner\'s', async () => {
+    const r = await alice.post('/api/live-sessions/wait', { sessionId: CHILD_A, timeoutSecs: 1 });
+    expect(r.body).toEqual({ ended: false, messages: [] });
+    expect((await bob.post('/api/live-sessions/wait', { sessionId: CHILD_A, timeoutSecs: 1 })).status).toBe(404);
+  });
+
+  test('a session that a parent started links itself at SessionStart', async () => {
+    const KID = '11111111-0000-4000-8000-0000000000c1';
+    const r = await alice.post('/api/live-sessions/event', {
+      sessionId: KID, event: 'SessionStart', label: 'worker-c', parent: 'lead', doing: 'docs',
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.session).toMatchObject({ label: 'worker-c', parentSession: PARENT, doing: 'docs' });
+    // A name that is taken does not cost the session its report.
+    const KID2 = '11111111-0000-4000-8000-0000000000c2';
+    const r2 = await alice.post('/api/live-sessions/event', { sessionId: KID2, event: 'SessionStart', label: 'worker-c', parent: 'lead', doing: 'more docs' });
+    expect(r2.status).toBe(200);
+    expect(r2.body.session).toMatchObject({ label: null, doing: 'more docs' });
+    for (const id of [KID, KID2]) await alice.post('/api/live-sessions/event', { sessionId: id, event: 'SessionEnd' });
+  });
+
   test('an ended session leaves the running list and takes no messages', async () => {
     const r = await alice.post('/api/live-sessions/event', { sessionId: CHILD_B, event: 'SessionEnd', take: true });
     expect(r.body.session.state).toBe('ended');
     expect(r.body.messages).toHaveLength(0);
+    // Its waiter learns of the end at its next poll and stops.
+    expect((await alice.post('/api/live-sessions/wait', { sessionId: CHILD_B, timeoutSecs: 5 })).body).toEqual({ ended: true, messages: [] });
     const kids = await alice.get('/api/live-sessions?parent=lead');
     expect(kids.body.sessions.map((s: { sessionId: string }) => s.sessionId)).toEqual([CHILD_A]);
     const all = await alice.get('/api/live-sessions?parent=lead&includeEnded=true');
-    expect(all.body.sessions).toHaveLength(2);
+    const ids = all.body.sessions.map((s: { sessionId: string }) => s.sessionId);
+    expect(ids).toContain(CHILD_A);
+    expect(ids).toContain(CHILD_B);
   });
 
   test('another user of the same tenant cannot see or reach these sessions', async () => {

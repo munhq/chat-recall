@@ -950,6 +950,9 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   doing           TEXT,
   state           TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('working','idle','ended')),
   last_event      TEXT,
+  -- The last long-poll of the session's waiter hook. A session whose waiter
+  -- stopped polling has gone away, whatever its last event said.
+  last_seen       BIGINT,
   started_at      BIGINT NOT NULL,
   updated_at      BIGINT NOT NULL,
   PRIMARY KEY (tenant, session_id)

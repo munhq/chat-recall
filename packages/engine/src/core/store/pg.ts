@@ -533,6 +533,7 @@ export class PgStore implements StorageDriver {
       parentSession: r.parent_session ?? null, cwd: r.cwd ?? null, doing: r.doing ?? null,
       state: r.state, lastEvent: r.last_event ?? null,
       startedAt: Number(r.started_at) || 0, updatedAt: Number(r.updated_at) || 0,
+      lastSeen: r.last_seen != null ? Number(r.last_seen) : null,
       unread: Number(r.unread) || 0,
     };
   }
@@ -658,6 +659,13 @@ export class PgStore implements StorageDriver {
         RETURNING *`,
       [this.t, ownerSub, sessionId, now, now + Math.max(1, leaseMs), Math.max(1, Math.min(200, limit))]);
     return rows.map((r) => this.rowToSessionMessage(r)).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  async touchLiveSession(ownerSub: string, sessionId: string): Promise<LiveSession['state'] | null> {
+    const r = await this.one(
+      `UPDATE live_sessions SET last_seen=$4 WHERE tenant=$1 AND owner_sub=$2 AND session_id=$3 RETURNING state`,
+      [this.t, ownerSub, sessionId, Date.now()]);
+    return r ? r.state : null;
   }
 
   async ackSessionMessages(ownerSub: string, sessionId: string, ids: string[]): Promise<number> {
