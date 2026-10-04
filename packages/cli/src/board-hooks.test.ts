@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   BOARD_HOOKS, boardHookCommand, boardHookEntries, isBoardHookEntry,
   mergeBoardHooks, removeBoardHooks, registerBoardHooks,
+  MESSAGE_HOOK_EVENTS, messageHookCommand, messageHookEntries, isMessageHookEntry,
+  mergeMessageHooks, removeMessageHooks, registerMessageHooks,
 } from './board-hooks.js';
 
 /** Synthetic paths — a POSIX one and a Windows one that contains a space. */
@@ -165,5 +167,51 @@ describe('registerBoardHooks', () => {
 
   test('the events it registers are the ones the loop needs', () => {
     expect(BOARD_HOOKS.map((h) => h.event)).toEqual(['UserPromptSubmit', 'SessionEnd']);
+  });
+});
+
+describe('message hook registration', () => {
+  const HOOK_POSIX = '/home/user/.local/lib/node_modules/chat-recall/dist/message-hook.js';
+  const HOOK_WIN = 'C:\\Users\\First Last\\AppData\\Roaming\\npm\\node_modules\\chat-recall\\dist\\message-hook.js';
+
+  test('the command runs the hook bundle, both paths quoted', () => {
+    expect(messageHookCommand(NODE_WIN, HOOK_WIN)).toBe(`"${NODE_WIN}" "${HOOK_WIN}"`);
+  });
+
+  test('covers the five events, each recognised as ours', () => {
+    const entries = messageHookEntries(NODE_POSIX, HOOK_POSIX);
+    expect(entries.map(([e]) => e)).toEqual([...MESSAGE_HOOK_EVENTS]);
+    for (const [, entry] of entries) expect(isMessageHookEntry(entry)).toBe(true);
+  });
+
+  test('the two kinds of hook do not claim each other\'s entries', () => {
+    for (const [, entry] of messageHookEntries(NODE_POSIX, HOOK_POSIX)) expect(isBoardHookEntry(entry)).toBe(false);
+    for (const [, entry] of boardHookEntries(NODE_POSIX, CLI_POSIX)) expect(isMessageHookEntry(entry)).toBe(false);
+    expect(isMessageHookEntry({ hooks: [{ command: '/opt/other/message-hook.sh' }] })).toBe(false);
+  });
+
+  test('sits beside the board hooks and a foreign hook on the same event', () => {
+    const other = { matcher: '', hooks: [{ type: 'command', command: '/x/resume_hook.sh' }] };
+    const config = { hooks: { UserPromptSubmit: [other] } as Record<string, unknown[]> };
+    mergeBoardHooks(config, NODE_POSIX, CLI_POSIX);
+    mergeMessageHooks(config, NODE_POSIX, HOOK_POSIX);
+    mergeMessageHooks(config, NODE_POSIX, HOOK_POSIX);
+    expect(config.hooks.UserPromptSubmit).toHaveLength(3);
+    expect(config.hooks.PostToolUse).toHaveLength(1);
+
+    expect(removeMessageHooks(config)).toBe(5);
+    expect(config.hooks.UserPromptSubmit).toHaveLength(2);
+    expect(config.hooks.PostToolUse).toBeUndefined();
+    expect(config.hooks.SessionStart).toBeUndefined();
+  });
+
+  test('registers in every profile', () => {
+    const dir = tempDir();
+    const files = [join(dir, 'a', 'hooks.json'), join(dir, 'b', 'hooks.json')];
+    expect(registerMessageHooks(files, NODE_POSIX, HOOK_POSIX)).toEqual(files);
+    for (const f of files) {
+      const cfg = JSON.parse(readFileSync(f, 'utf-8'));
+      expect(cfg.hooks.PostToolUse[0].hooks[0].command).toBe(`"${NODE_POSIX}" "${HOOK_POSIX}"`);
+    }
   });
 });

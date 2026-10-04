@@ -314,6 +314,7 @@ const DEFAULT_ALLOW = [
   'recall_analytics_summary',
   'recall_outcome_summary', 'recall_regenerate_summary', 'recall_shares',
   'recall_wake_up', 'recall_set', 'recall_get', 'recall_rename_session',
+  'recall_message_send', 'recall_inbox', 'recall_session_status', 'recall_session_register',
   'recall_team_activity', 'recall_recommendations',
   'recall_security_summary', 'recall_security_session',
   'recall_security_dismiss', 'recall_security_rules',
@@ -853,13 +854,14 @@ program
       // names a card id claims it, a commit message that names one closes it.
       if (!options.skipHooks) {
         try {
-          const { registerBoardHooks, resolveCliEntry } = await import('./board-hooks.js');
+          const { registerBoardHooks, resolveCliEntry, registerMessageHooks, resolveMessageHookEntry } = await import('./board-hooks.js');
           const { fileURLToPath: toPath } = await import('url');
           const distDir = toPath(new URL('.', import.meta.url));
           // Silent, like the MCP wiring above it. init prints one status line
           // and one done line, and a setup step that announces itself is how
           // that output grew to forty lines before. `doctor` reports it.
           registerBoardHooks(claudeHookConfigFiles(), process.execPath, resolveCliEntry(distDir));
+          registerMessageHooks(claudeHookConfigFiles(), process.execPath, resolveMessageHookEntry(distDir));
         } catch { /* setup completes without them; `install-hooks` retries */ }
       }
 
@@ -1697,6 +1699,16 @@ program
           boardHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
             : boardHits.length === boardEvents.length ? 'claim on a prompt, close on a commit'
               : `only ${boardHits.join(', ')} — run \`chat-recall install-hooks\``);
+
+        const { MESSAGE_HOOK_EVENTS, isMessageHookEntry } = await import('./board-hooks.js');
+        const messageHits = MESSAGE_HOOK_EVENTS.filter((ev) => [
+          ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
+          ...(Array.isArray(settings[ev]) ? settings[ev] : []),
+        ].some(isMessageHookEntry));
+        note(messageHits.length === MESSAGE_HOOK_EVENTS.length, `Message hook (${profile})`,
+          messageHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
+            : messageHits.length === MESSAGE_HOOK_EVENTS.length ? 'messages between sessions are delivered'
+              : `only ${messageHits.join(', ')} — run \`chat-recall install-hooks\``);
       } catch {
         note(false, label, `${hooksJson} unparseable`);
       }
@@ -3290,18 +3302,21 @@ program
 
 program
   .command('install-hooks')
-  .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd + SessionStart) into every Claude profile')
+  .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd + SessionStart + PostToolUse) into every Claude profile')
   .option('--uninstall', 'Remove hooks instead of installing them')
   .option('--no-resume-hint', "Don't install the UserPromptSubmit resume-hint hook")
   .option('--no-escalate', "Don't install the SessionEnd learnings-escalation hook")
   .option('--no-wakeup', "Don't install the SessionStart wake-up hook")
   .option('--no-guard', "Don't install the PreToolUse decision guard")
   .option('--no-task-board', "Don't install the hooks that claim and close board cards")
-  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean; taskBoard?: boolean }) => {
+  .option('--no-messages', "Don't install the hook that delivers messages between sessions")
+  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean; taskBoard?: boolean; messages?: boolean }) => {
     const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } = await import('fs');
     const { fileURLToPath } = await import('url');
-    const { boardHookEntries, isBoardHookEntry, registerBoardHooks, resolveCliEntry } =
-      await import('./board-hooks.js');
+    const {
+      boardHookEntries, isBoardHookEntry, registerBoardHooks, resolveCliEntry,
+      messageHookEntries, isMessageHookEntry, registerMessageHooks, resolveMessageHookEntry,
+    } = await import('./board-hooks.js');
 
     // Locate the bundled hook scripts. When installed via npm the files live
     // at <pkg>/hooks/*.sh; in development they sit next to src/.
@@ -3379,12 +3394,12 @@ program
         cmd.includes('chat_recall_escalate_hook.sh') ||
         cmd.includes('chat_recall_wakeup_hook.sh') ||
         cmd.includes('chat_recall_guard_hook.sh')
-      ) || isBoardHookEntry(h);
+      ) || isBoardHookEntry(h) || isMessageHookEntry(h);
     };
 
     // SessionStart joins the list every loop below iterates, so a reinstall or
     // an uninstall reaches the wake-up registration too.
-    const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse'];
+    const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse', 'PostToolUse'];
 
     // ── The four tools that are not Claude Code ──────────────────────────────
     //
@@ -3491,13 +3506,22 @@ program
           console.log();
         }
       }
+      // The message hook is node plus a bundle path too, so it installs here.
+      if (opts.messages !== false && !opts.uninstall) {
+        const written = registerMessageHooks(hookConfigFiles, process.execPath, resolveMessageHookEntry(here));
+        if (written.length) {
+          console.log(chalk.green('✓ Registered the chat-recall message hook'));
+          console.log(chalk.dim('  Sessions receive messages from your other sessions at each prompt, tool call and turn end.'));
+          console.log();
+        }
+      }
       console.log(chalk.yellow('The five shell hooks are not installed on Windows.'));
       console.log(chalk.dim('  They are POSIX shell scripts, and Claude Code runs hook commands through'));
       console.log(chalk.dim('  cmd.exe, which cannot execute them. Registering them would put an error on'));
       console.log(chalk.dim('  every turn instead of saving anything.'));
       console.log(chalk.dim(''));
       console.log(chalk.dim('  Everything else works: indexing, sync, search, the MCP server and the'));
-      console.log(chalk.dim('  board hooks above. The five scripts add automatic fact-saving and the'));
+      console.log(chalk.dim('  node hooks above. The five scripts add automatic fact-saving and the'));
       console.log(chalk.dim('  wake-up bundle; recall_wake_up gives an agent the same context on demand.'));
       console.log(chalk.dim(''));
       console.log(chalk.dim('  Under WSL, run this from inside the WSL shell and it installs normally.'));
@@ -3563,6 +3587,10 @@ program
     // the close runs at session end and reads the commits that named one.
     const boardEntries = boardHookEntries(process.execPath, resolveCliEntry(here));
 
+    // Messages between sessions: a small bundle of its own, on five events.
+    const installMessages = opts.messages !== false;
+    const messageEntries = messageHookEntries(process.execPath, resolveMessageHookEntry(here));
+
     const events: Array<[string, any]> = [
       ['Stop', stopEntry],
       ['PreCompact', precompactEntry],
@@ -3571,6 +3599,7 @@ program
     if (installEscalate) events.push(['SessionEnd', escalateEntry]);
     if (installGuard) events.push(['PreToolUse', guardEntry]);
     if (installTaskBoard) for (const pair of boardEntries) events.push(pair);
+    if (installMessages) for (const pair of messageEntries) events.push(pair);
 
     // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
     // when reinstalling with those hooks disabled, so we don't leave orphan
@@ -3621,6 +3650,10 @@ program
       console.log(chalk.green('✓ Registered the chat-recall task-board hooks'));
       console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
     }
+    if (installMessages) {
+      console.log(chalk.green('✓ Registered the chat-recall message hook'));
+      console.log(chalk.dim('  Sessions receive messages from your other sessions at each prompt, tool call and turn end.'));
+    }
     if (installWakeup) {
       const wakeupSz = statSync(installedWakeupHook).size;
       console.log(chalk.green(`✓ Installed chat-recall wake-up hook (${wakeupSz} bytes)`));
@@ -3633,10 +3666,11 @@ program
       console.log(chalk.dim(`  ${i === 0 ? 'config:   ' : '          '} ${f}`));
     }
     const registeredEvents = ['Stop', 'PreCompact'];
-    if (installResume || installTaskBoard) registeredEvents.push('UserPromptSubmit');
-    if (installEscalate || installTaskBoard) registeredEvents.push('SessionEnd');
-    if (installWakeup) registeredEvents.push('SessionStart');
+    if (installResume || installTaskBoard || installMessages) registeredEvents.push('UserPromptSubmit');
+    if (installEscalate || installTaskBoard || installMessages) registeredEvents.push('SessionEnd');
+    if (installWakeup || installMessages) registeredEvents.push('SessionStart');
     if (installGuard) registeredEvents.push('PreToolUse');
+    if (installMessages) registeredEvents.push('PostToolUse');
     console.log(chalk.dim(`  events:    ${registeredEvents.join(', ')}`));
     console.log();
     console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove later.'));

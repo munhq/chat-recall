@@ -71,7 +71,7 @@ export async function buildHttpError(path: string, res: Response): Promise<Error
 
   const hint =
     status === 401 || status === 403 ? 'auth failed — re-run `chat-recall login <server-url>`' :
-    status === 404 ? 'not found — the id may be wrong, or the server is older than this CLI' :
+    status === 404 ? str('error') || 'not found — the id may be wrong, or the server is older than this CLI' :
     status === 429 ? 'rate limited — retry in a moment' :
     status >= 500 ? 'server error — check the chat-recall server logs' :
     str('error') || str('detail') || 'request rejected';

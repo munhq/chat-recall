@@ -47,8 +47,12 @@ import { fileURLToPath } from 'node:url';
 // engine modules (once the whole store layer, incl. lancedb + pino) into the
 // published bundle, which broke every fresh `npm i -g chat-recall`.
 import { formatContext } from '../core/context.js';
-import { getIdentityFilePath, getDataDir } from '../core/paths.js';
-import { envCredentials } from '../core/credentials-env.js';
+import { getIdentityFilePath } from '../core/paths.js';
+import { recallTarget } from '../core/remote-target.js';
+import { redactSecrets } from '../core/secret-redactor.js';
+import {
+  formatDelivery, formatSessionLine, formatAge, sessionName, type WireMessage, type WireLiveSession,
+} from '../core/session-messages.js';
 import { liveScanModifiedFiles } from '../core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
@@ -256,45 +260,7 @@ function remoteCredentials(): { base: string; token: string } | null {
   const ambient = currentCredentials();
   if (ambient) return ambient;
 
-  // A container has no credentials file and cannot run a login, so an explicit
-  // CHAT_RECALL_TOKEN outranks the disk. This is what lets Glama and the Docker
-  // MCP catalog run this server at all.
-  const fromEnv = envCredentials();
-  if (fromEnv) return { base: fromEnv.serverUrl, token: fromEnv.token };
-
-  try {
-    const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      targets?: Array<{ serverUrl?: string; token?: string }>;
-      primary?: string;
-      serverUrl?: string; token?: string;
-    };
-    // Multi-target format ({targets:[...]}). Recall READS from one server, and
-    // the default is the REMOTE (SaaS) one. A localhost/dev login must never
-    // hijack recall — that pointed reads at an empty dev instance while the
-    // real data lived on the cloud. Resolution order:
-    //   1. CHAT_RECALL_SERVER env  — explicit override
-    //   2. configured `primary`    — set by init/login/`chat-recall use`
-    //   3. the first remote (non-localhost) target  — SaaS by default
-    //   4. the first target        — pure self-host (localhost is the only login)
-    if (Array.isArray(parsed.targets) && parsed.targets.length) {
-      const valid = parsed.targets.filter((t) => t?.serverUrl);
-      if (!valid.length) return null;
-      const norm = (u: string) => u.replace(/\/+$/, '');
-      const isLocal = (u: string) => /\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)\b/.test(u);
-      const byUrl = (u?: string) => u ? valid.find((t) => norm(t.serverUrl!) === norm(u)) : undefined;
-      const remotes = valid.filter((t) => !isLocal(t.serverUrl!));
-      const pick =
-        byUrl(process.env.CHAT_RECALL_SERVER) ??
-        byUrl(parsed.primary) ??
-        remotes[0] ??
-        valid[0];
-      return pick?.serverUrl ? { base: norm(pick.serverUrl), token: pick.token || '' } : null;
-    }
-    // Legacy single-target format. Empty token is valid (tokenless self-host).
-    if (parsed.serverUrl) return { base: parsed.serverUrl.replace(/\/+$/, ''), token: parsed.token || '' };
-    return null;
-  } catch { return null; }
+  return recallTarget();
 }
 
 /**
@@ -1004,6 +970,42 @@ const RecallGetSchema = z.object({
   limit: z.number().optional().default(50).describe('Max entries when listing (no key given).'),
 });
 
+// ── Messages between sessions ──────────────────────────────────
+
+const SESSION_ARG = 'A session id. The message hook tells each Claude Code session its own id at start ("chat-recall session id: …").';
+
+const RecallSessionRegisterSchema = z.object({
+  session: z.string().min(1).describe(`The session to change, usually this one. ${SESSION_ARG}`),
+  name: z.string().optional()
+    .describe('A name other sessions can send to, e.g. "backend-worker". Letters, digits, ".", "_" and "-". Empty string removes the name.'),
+  parent: z.string().optional()
+    .describe('The parent session: its id, the start of its id, or its name. Empty string removes the link.'),
+  doing: z.string().max(280).optional()
+    .describe('One line on what this session works on: the project, the issue, the task. Empty string clears it.'),
+});
+
+const RecallMessageSendSchema = z.object({
+  from: z.string().optional().describe(`The sending session, so the recipient can answer. ${SESSION_ARG}`),
+  to: z.string().min(1)
+    .describe('The recipient: a session id, the start of one, a session name, or "parent" / "children" / "group" (relative to `from`).'),
+  body: z.string().min(1).max(16_000).describe('The message. Secrets in it are redacted before it leaves this machine.'),
+  reply_to: z.string().optional().describe('The id of the message this answers.'),
+});
+
+const RecallInboxSchema = z.object({
+  session: z.string().min(1).describe(`The session whose messages to receive, usually this one. ${SESSION_ARG}`),
+  wait_secs: z.number().min(0).max(600).optional().default(0)
+    .describe('If no message waits, poll for up to this many seconds before returning. Use it to wait for a child to answer.'),
+  limit: z.number().min(1).max(200).optional().default(50),
+});
+
+const RecallSessionStatusSchema = z.object({
+  parent: z.string().optional().describe('List only the children of this session (id, start of id, or name).'),
+  session: z.string().optional().describe('Show one session and the messages it sent and received.'),
+  include_ended: z.boolean().optional().default(false).describe('Also list sessions that have ended.'),
+  messages: z.number().min(1).max(100).optional().default(10).describe('How many messages to show with `session`.'),
+});
+
 // ── Security / Secret Findings Schemas ─────────────────────────────
 
 const RecallSecuritySummarySchema = z.object({
@@ -1205,6 +1207,9 @@ const LEAN_TOOLS = new Set([
   // z.literal(true), and both are kept out of the alwaysAllow list `init`
   // writes, so the host prompts every time. Neither depends on the listing.
   'recall_forget', 'recall_exclude_path',
+  // Messages between running sessions. The hook output names these tools, and
+  // Claude Code lets a model call only the tools it lists.
+  'recall_message_send', 'recall_inbox', 'recall_session_status', 'recall_session_register',
 ]);
 
 function toolProfile(): 'lean' | 'full' {
@@ -1243,6 +1248,9 @@ const WRITE_TOOLS = new Set<string>([
   'recall_reclassify',         // rewrites classifier tags on indexed chunks
   'recall_regenerate_summary', // overwrites a stored summary
   'recall_rename_session',     // overwrites the session name
+  'recall_message_send',
+  'recall_inbox',              // marks the messages it returns as received
+  'recall_session_register',
 ]);
 
 /** Writes that OVERWRITE or retire earlier state, rather than only adding to it. */
@@ -1262,6 +1270,7 @@ const DESTRUCTIVE_TOOLS = new Set<string>([
 /** Writes where calling twice with the same input leaves the same state. */
 const IDEMPOTENT_TOOLS = new Set<string>([
   'recall_set',
+  'recall_session_register',
   'recall_recommendation_dismiss',
   'recall_project_label',
   'recall_kg_invalidate',
@@ -2264,6 +2273,78 @@ remembering specific keys.`,
             scope: { type: 'string', description: 'Namespace (default "default" when reading; omit to list across all scopes)' },
             limit: { type: 'number', default: 50, description: 'Max entries in list mode' },
           },
+        },
+      },
+      // ── Messages between sessions ────────────────────────────────
+      {
+        name: 'recall_message_send',
+        description: `Send a message to another running AI session of this account. Use it when one
+session coordinates others: a parent gives work to its children, a child reports back.
+
+The recipient gets the message at its next prompt, tool call or turn end (Claude Code, through the
+chat-recall message hook). A session that waits for its user reads it when the user types next.
+"children" sends to every running child of \`from\`; "parent" sends to its parent; "group" sends to
+the parent and every running child — use it to announce a decision to the whole group.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            from:     { type: 'string', description: 'The sending session id, so the recipient can answer.' },
+            to:       { type: 'string', description: 'A session id, the start of one, a session name, "parent", "children" or "group".' },
+            body:     { type: 'string', description: 'The message. Secrets are redacted before it is sent.' },
+            reply_to: { type: 'string', description: 'The id of the message this answers.' },
+          },
+          required: ['to', 'body'],
+        },
+      },
+      {
+        name: 'recall_inbox',
+        description: `Receive the messages other sessions sent to a session. Each message is returned once.
+With wait_secs, wait for a message to arrive, for example the answer from a child session.
+Claude Code sessions with the message hook receive messages without this tool; use it to wait,
+or in a tool without the hook.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session:   { type: 'string', description: 'The receiving session id, usually this one.' },
+            wait_secs: { type: 'number', default: 0, description: 'Poll for up to this many seconds (max 600) when nothing waits.' },
+            limit:     { type: 'number', default: 50 },
+          },
+          required: ['session'],
+        },
+      },
+      {
+        name: 'recall_session_status',
+        description: `See which sessions of this account are running, what each works on, and what state each
+is in: working, idle and waiting for input, or ended. Each line shows the folder, the "doing" line the
+session set, the board cards in progress linked to it, and unread messages. With \`parent\`, list the
+children of one session — the check a coordinating session runs on the sessions it started.
+With \`session\`, show one session and its message thread. To read what a session did, follow up
+with recall_show and from_end.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            parent:        { type: 'string', description: 'List only the children of this session (id, start of id, or name).' },
+            session:       { type: 'string', description: 'Show one session and its messages.' },
+            include_ended: { type: 'boolean', default: false },
+            messages:      { type: 'number', default: 10, description: 'Messages to show with `session`.' },
+          },
+        },
+      },
+      {
+        name: 'recall_session_register',
+        description: `Give a session a name other sessions can send to, link it to its parent session, and say
+what it works on. A child calls this once with its own id and the parent's id or name, so the parent can
+list it with recall_session_status and reach it with to: "children". Set \`doing\` when you start a task
+and when it changes, so every other session can see who works on what.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session: { type: 'string', description: 'The session to change, usually this one.' },
+            name:    { type: 'string', description: 'A name, e.g. "backend-worker". Empty string removes it.' },
+            parent:  { type: 'string', description: 'The parent: id, start of id, or name. Empty string removes the link.' },
+            doing:   { type: 'string', description: 'One line: the project, issue or task this session works on. Empty string clears it.' },
+          },
+          required: ['session'],
         },
       },
       // ── Security / Secret Findings Tools ─────────────────────────
@@ -5189,6 +5270,101 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         };
       }
 
+
+      // ── Messages between sessions ──────────────────────────────
+      case 'recall_message_send': {
+        const params = RecallMessageSendSchema.parse(args);
+        requireRemote();
+        // The body goes into another agent's context, so it is redacted here,
+        // before it leaves the machine, like every synced transcript.
+        const body = redactSecrets(params.body, { force: true });
+        getWAL().log('message_send', { from: params.from, to: params.to, chars: body.length });
+        const r = await remotePost<{ messages: WireMessage[]; recipients: Array<{ sessionId: string; label: string | null; state: string }> }>(
+          '/api/live-sessions/messages', { from: params.from, to: params.to, body, replyTo: params.reply_to });
+        const lines = r.recipients.map((rc, i) => {
+          const name = rc.label ? `${rc.label} (${rc.sessionId})` : rc.sessionId;
+          const when =
+            rc.state === 'ended' ? 'That session has ended. The message waits in case it resumes.'
+              : rc.state === 'idle' ? 'That session waits for its user, so it reads the message when the user types next.'
+                : 'It receives the message at its next tool call or turn end.';
+          return `- ${name}: message ${r.messages[i]?.id}. ${when}`;
+        });
+        const redacted = body !== params.body ? '\nSecrets in the body were redacted before sending.' : '';
+        return { content: [{ type: 'text', text: `Sent.\n${lines.join('\n')}${redacted}` }] };
+      }
+
+      case 'recall_inbox': {
+        const params = RecallInboxSchema.parse(args);
+        requireRemote();
+        const deadline = Date.now() + params.wait_secs * 1000;
+        let messages: WireMessage[] = [];
+        for (;;) {
+          ({ messages } = await remotePost<{ messages: WireMessage[] }>(
+            '/api/live-sessions/inbox', { sessionId: params.session, limit: params.limit }));
+          if (messages.length || Date.now() + 2000 > deadline) break;
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        if (messages.length) {
+          await remotePost('/api/live-sessions/ack', { sessionId: params.session, ids: messages.map((m) => m.id) });
+        }
+        if (!messages.length) {
+          const waited = params.wait_secs ? ` after ${params.wait_secs}s of waiting` : '';
+          return { content: [{ type: 'text', text: `No messages for ${params.session}${waited}.` }] };
+        }
+        const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>('/api/live-sessions', { includeEnded: true, limit: 500 });
+        const labels = new Map(sessions.map((x) => [x.sessionId, x.label] as const));
+        return { content: [{ type: 'text', text: formatDelivery(params.session, messages, { labels }) }] };
+      }
+
+      case 'recall_session_status': {
+        const params = RecallSessionStatusSchema.parse(args);
+        requireRemote();
+        const now = Date.now();
+        if (params.session) {
+          const r = await remoteGet<{ session: WireLiveSession; messages: WireMessage[] }>(
+            `/api/live-sessions/${encodeURIComponent(params.session)}?messages=${params.messages}`);
+          const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>('/api/live-sessions', { includeEnded: true, limit: 500 });
+          const labels = new Map(sessions.map((x) => [x.sessionId, x.label] as const));
+          const lines = [formatSessionLine(r.session, now)];
+          if (r.session.parentSession) lines.push(`  parent: ${sessionName(r.session.parentSession, labels)}`);
+          const children = sessions.filter((x) => x.parentSession === r.session.sessionId && x.state !== 'ended');
+          if (children.length) lines.push(`  children: ${children.map((c) => sessionName(c.sessionId, labels)).join(', ')}`);
+          lines.push('', r.messages.length ? `Messages (oldest first, last ${r.messages.length}):` : 'No messages yet.');
+          for (const m of [...r.messages].reverse()) {
+            const dir = m.toSession === r.session.sessionId
+              ? `from ${m.fromSession ? sessionName(m.fromSession, labels) : 'unknown'}`
+              : `to ${sessionName(m.toSession, labels)}`;
+            const state = m.toSession === r.session.sessionId && m.deliveredAt == null ? ', unread' : '';
+            const text = m.body.length > 400 ? m.body.slice(0, 400) + '…' : m.body;
+            lines.push(`- ${formatAge(now - m.createdAt)} ago, ${dir}${state} (${m.id}): ${text.replace(/\n/g, ' ')}`);
+          }
+          lines.push('', `Read what it did: recall_show with session_id "${r.session.sessionId}" and from_end.`);
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>(
+          '/api/live-sessions', { parent: params.parent, includeEnded: params.include_ended });
+        if (!sessions.length) {
+          const text = params.parent
+            ? `No ${params.include_ended ? '' : 'running '}children of ${params.parent}. A child links itself with recall_session_register.`
+            : 'No running sessions reported. A Claude Code session reports here after its first prompt, once the message hook is installed (`chat-recall install-hooks`).';
+          return { content: [{ type: 'text', text }] };
+        }
+        const head = params.parent ? `Children of ${params.parent} (${sessions.length}):` : `Sessions (${sessions.length}), most recent first:`;
+        return { content: [{ type: 'text', text: [head, ...sessions.map((x) => formatSessionLine(x, now))].join('\n') }] };
+      }
+
+      case 'recall_session_register': {
+        const params = RecallSessionRegisterSchema.parse(args);
+        requireRemote();
+        const { session } = await remotePost<{ session: WireLiveSession }>('/api/live-sessions/register', {
+          sessionId: params.session, label: params.name, parent: params.parent, doing: params.doing,
+        });
+        const parts = [`Session ${session.sessionId}`];
+        parts.push(session.label ? `is named "${session.label}"` : 'has no name');
+        parts.push(session.parentSession ? `and is a child of ${session.parentSession}.` : 'and has no parent.');
+        if (session.doing) parts.push(`Doing: ${session.doing}`);
+        return { content: [{ type: 'text', text: parts.join(' ') }] };
+      }
 
       // ── Wake-up context ────────────────────────────────────────
       case 'recall_wake_up': {
