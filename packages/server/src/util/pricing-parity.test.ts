@@ -119,7 +119,7 @@ describe('advertised MCP tool count ↔ the registry', () => {
         .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
         .map((m) => Number(m[1]))
         // Small numbers are other counts (the codeindex companion set of 4,
-        // the lean profile's 32) — only the headline capability count is pinned.
+        // the lean profile's 33) — only the headline capability count is pinned.
         // The cut is the one mcp-tool-registry.test.ts uses.
         .filter((n) => n > 40);
       expect(found.length).toBeGreaterThan(0);

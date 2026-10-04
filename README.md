@@ -19,7 +19,7 @@
 Every coding agent you run keeps a full transcript of its work: the decisions, the
 reasoning, the keys somebody pasted, the problems it found and never filed. Each one
 writes to its own directory in its own format, none can read another's, and nothing
-reads any of them. `chat-recall` does, through **67 MCP tools**.
+reads any of them. `chat-recall` does, through **68 MCP tools**.
 
 | | What it does | Tools |
 |---|---|---|
@@ -131,7 +131,7 @@ Exclusions live on the machine that holds the data, so the CLI owns them; they a
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity (`~/.gemini/antigravity-cli/`) and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 67 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
+2. **The agent recalls itself.** 68 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
 3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
 4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
 
@@ -216,15 +216,19 @@ CHAT_RECALL_DAEMON_IDLE_SECS=0   # keep the daemon resident (default 900)
 If the daemon cannot be reached for any reason, the session loads the server
 itself and works exactly as it did before — slower, never broken.
 
-Then install the hooks (one command sets up auto-save, pre-compact backup, and the resume-hint that warns when you're about to redo work):
+`chat-recall init` installs the Claude Code hooks in every profile's
+`settings.json`. If you added only the MCP server, from a marketplace button or
+by hand, the MCP server installs them when it starts. You run nothing else.
+
+To choose which hooks run, or to remove them:
 
 ```bash
-chat-recall install-hooks                 # registers all five events, in every Claude profile
-chat-recall install-hooks --no-resume-hint  # skip the resume warning
-chat-recall install-hooks --no-wakeup       # skip the session-start wake-up bundle
-chat-recall install-hooks --no-escalate     # skip the session-end escalation
-chat-recall install-hooks --uninstall     # remove all of ours, leave third-party hooks alone
+chat-recall install-hooks --no-resume-hint  # without the resume warning
+chat-recall install-hooks --no-messages     # without messages between sessions
+chat-recall install-hooks --uninstall       # remove ours; third-party hooks stay
 ```
+
+After `--uninstall` the MCP server does not put them back.
 
 | Hook | When it fires | What it does |
 |---|---|---|
@@ -233,6 +237,29 @@ chat-recall install-hooks --uninstall     # remove all of ours, leave third-part
 | `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.chat-recall/memory/` |
 | `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
 | `SessionEnd` | When the session closes | Escalates the session's learnings in the background, so nothing is delayed |
+| `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | Each turn | Messages between sessions: tells the session its id, delivers what waits for it, reports its state |
+| `SessionStart`, `UserPromptSubmit`, `Stop` (background) | Until a message arrives | Waits for a message from another session and wakes this one, also when it is idle |
+
+## Sessions that work together
+
+One session can start others and direct them. In Claude Code, ask for it in
+plain words: "start two workers, one on the API and one on the web form, and
+tell me when both are done".
+
+- `recall_session_spawn` starts a child as a Claude Code background session,
+  linked to its parent. `claude attach <id>` opens it.
+- `recall_message_send` sends to a session by id or name, or to `parent`,
+  `children` or `group`. The message wakes the recipient within about a second,
+  also when it waits for input.
+- `recall_session_status` lists the sessions: what each works on, its board
+  cards, and whether it is working, idle, waiting for a permission prompt, or
+  ended.
+- Decisions, facts and shared state go in the memory every session reads:
+  `recall_decision_record`, `recall_kg_add`, `recall_set`.
+
+A message from another session is not a message from you. A child acts on its
+parent's messages because its parent started it with that instruction. Any
+other session treats a message as information and checks with you first.
 
 ## The decision guard
 
@@ -256,13 +283,13 @@ guard uninstalled; a wrong warning costs a line of context. Set
 `CHAT_RECALL_GUARD_ENFORCE=1` to block instead, per machine. `CHAT_RECALL_GUARD=0`
 turns it off.
 
-`chat-recall install-hooks` registers it in all five tools. Each one keeps its
+`chat-recall init` registers it in all five tools. Each one keeps its
 pre-execution hook in its own file, so the installer writes five shapes and
 skips any tool that is not on the machine (`--no-guard` to skip all of them):
 
 | Tool | Where | Event |
 |---|---|---|
-| Claude Code | `~/.claude/hooks.json`, every profile | `PreToolUse` |
+| Claude Code | `~/.claude/settings.json`, every profile | `PreToolUse` |
 | Codex | `~/.codex/hooks.json` | `PreToolUse` |
 | Antigravity | `~/.gemini/antigravity-cli/hooks.json` | `PreToolUse` — the one tool with a real `ask` verdict, so it can prompt |
 | Cursor | `~/.cursor/hooks.json` | `beforeShellExecution` + `afterFileEdit` |
