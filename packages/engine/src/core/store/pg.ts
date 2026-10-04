@@ -19,7 +19,11 @@ import type { MemoryStore } from '../memory-store.js';
 import type {
   SourceType, MemoryItem, MemoryLink, MemoryChunk, MemoryMetadataRow, MemoryLinkRow, MemorySearchResult,
 } from '../../types/memory.js';
-import type { StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, UpdateTeamTaskPatch } from './driver.js';
+import type {
+  StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, UpdateTeamTaskPatch,
+  LiveSession, LiveSessionUpdate, SessionMessage,
+} from './driver.js';
+import { SessionOwnedElsewhereError } from './driver.js';
 import { resolveProjectId } from '../project-resolver.js';
 import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
@@ -519,6 +523,160 @@ export class PgStore implements StorageDriver {
     await this.q(`INSERT INTO team_task_comments (tenant,id,task_id,author_sub,body,created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
       [this.t, id, taskId, authorSub, body, now]);
     return { id, taskId, authorSub, body, createdAt: now };
+  }
+
+  // ── Messages between running sessions ──
+
+  private rowToLiveSession(r: any): LiveSession {
+    return {
+      sessionId: r.session_id, ownerSub: r.owner_sub, label: r.label ?? null,
+      parentSession: r.parent_session ?? null, cwd: r.cwd ?? null, doing: r.doing ?? null,
+      state: r.state, lastEvent: r.last_event ?? null,
+      startedAt: Number(r.started_at) || 0, updatedAt: Number(r.updated_at) || 0,
+      unread: Number(r.unread) || 0,
+    };
+  }
+
+  private rowToSessionMessage(r: any): SessionMessage {
+    return {
+      id: r.id, fromSession: r.from_session ?? null, toSession: r.to_session, body: r.body,
+      replyTo: r.reply_to ?? null, createdAt: Number(r.created_at) || 0,
+      deliveredAt: r.delivered_at != null ? Number(r.delivered_at) : null,
+    };
+  }
+
+  /** The unread count is part of every session row a caller reads. */
+  private static readonly LIVE_SESSION_COLUMNS = `s.*, (
+      SELECT COUNT(*) FROM session_messages m
+       WHERE m.tenant = s.tenant AND m.owner_sub = s.owner_sub
+         AND m.to_session = s.session_id AND m.delivered_at IS NULL
+    )::int AS unread`;
+
+  async upsertLiveSession(u: LiveSessionUpdate): Promise<LiveSession> {
+    const now = Date.now();
+    // A null parameter keeps the stored value; an empty label or parent clears it.
+    // The WHERE on the conflict branch keeps one person's row out of reach of
+    // another, so a guessed session id cannot be taken over.
+    const rows = await this.q(
+      `INSERT INTO live_sessions (tenant,session_id,owner_sub,label,parent_session,cwd,state,last_event,started_at,updated_at,doing)
+       VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,COALESCE($7,'idle'),$8,$9,$9,NULLIF($10,''))
+       ON CONFLICT (tenant, session_id) DO UPDATE SET
+         label          = CASE WHEN $4::text IS NULL THEN live_sessions.label ELSE NULLIF($4,'') END,
+         parent_session = CASE WHEN $5::text IS NULL THEN live_sessions.parent_session ELSE NULLIF($5,'') END,
+         cwd            = COALESCE($6, live_sessions.cwd),
+         state          = COALESCE($7, live_sessions.state),
+         last_event     = COALESCE($8, live_sessions.last_event),
+         doing          = CASE WHEN $10::text IS NULL THEN live_sessions.doing ELSE NULLIF($10,'') END,
+         updated_at     = $9
+       WHERE live_sessions.owner_sub = excluded.owner_sub
+       RETURNING session_id`,
+      [this.t, u.sessionId, u.ownerSub, u.label ?? null, u.parentSession ?? null, u.cwd ?? null,
+        u.state ?? null, u.lastEvent ?? null, now, u.doing ?? null],
+    );
+    if (!rows[0]) throw new SessionOwnedElsewhereError(u.sessionId);
+    return (await this.getLiveSession(u.ownerSub, u.sessionId))!;
+  }
+
+  async getLiveSession(ownerSub: string, sessionId: string): Promise<LiveSession | null> {
+    const r = await this.one(
+      `SELECT ${PgStore.LIVE_SESSION_COLUMNS} FROM live_sessions s
+        WHERE s.tenant=$1 AND s.owner_sub=$2 AND s.session_id=$3`,
+      [this.t, ownerSub, sessionId]);
+    return r ? this.rowToLiveSession(r) : null;
+  }
+
+  async listLiveSessions(
+    ownerSub: string,
+    opts: { parentSession?: string; includeEnded?: boolean; limit?: number } = {},
+  ): Promise<LiveSession[]> {
+    const where = ['s.tenant=$1', 's.owner_sub=$2']; const params: unknown[] = [this.t, ownerSub];
+    if (opts.parentSession) { params.push(opts.parentSession); where.push(`s.parent_session=$${params.length}`); }
+    if (!opts.includeEnded) where.push(`s.state <> 'ended'`);
+    params.push(Math.max(1, Math.min(500, opts.limit ?? 100)));
+    const rows = await this.q(
+      `SELECT ${PgStore.LIVE_SESSION_COLUMNS} FROM live_sessions s
+        WHERE ${where.join(' AND ')} ORDER BY s.updated_at DESC LIMIT $${params.length}`, params);
+    return rows.map((r) => this.rowToLiveSession(r));
+  }
+
+  async resolveLiveSessions(ownerSub: string, address: string): Promise<LiveSession[]> {
+    const exact = await this.getLiveSession(ownerSub, address);
+    if (exact) return [exact];
+    const byLabel = await this.q(
+      `SELECT ${PgStore.LIVE_SESSION_COLUMNS} FROM live_sessions s
+        WHERE s.tenant=$1 AND s.owner_sub=$2 AND s.label=$3 AND s.state <> 'ended'
+        ORDER BY s.updated_at DESC`, [this.t, ownerSub, address]);
+    if (byLabel.length) return byLabel.map((r) => this.rowToLiveSession(r));
+    // A session id is 36 characters, so a unique leading part of it is accepted
+    // the way git accepts a short commit hash.
+    if (address.length < 8) return [];
+    const byPrefix = await this.q(
+      `SELECT ${PgStore.LIVE_SESSION_COLUMNS} FROM live_sessions s
+        WHERE s.tenant=$1 AND s.owner_sub=$2 AND left(s.session_id, length($3)) = $3
+        ORDER BY s.updated_at DESC LIMIT 2`, [this.t, ownerSub, address]);
+    return byPrefix.map((r) => this.rowToLiveSession(r));
+  }
+
+  async sendSessionMessages(
+    ownerSub: string,
+    input: { fromSession: string | null; toSessions: string[]; body: string; replyTo?: string | null },
+  ): Promise<SessionMessage[]> {
+    const now = Date.now();
+    const out: SessionMessage[] = [];
+    await this.tx(async (c) => {
+      for (const to of input.toSessions) {
+        const id = 'm_' + randomBytes(9).toString('hex');
+        const r = await c.query(
+          `INSERT INTO session_messages (tenant,id,owner_sub,from_session,to_session,body,reply_to,created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          [this.t, id, ownerSub, input.fromSession, to, input.body, input.replyTo ?? null, now]);
+        out.push(this.rowToSessionMessage(r.rows[0]));
+      }
+      // Messages and ended sessions older than 30 days are of no use to a
+      // running session, and without this both tables only grow.
+      const cutoff = now - 30 * 24 * 3600_000;
+      await c.query(`DELETE FROM session_messages WHERE tenant=$1 AND owner_sub=$2 AND created_at < $3`, [this.t, ownerSub, cutoff]);
+      await c.query(`DELETE FROM live_sessions WHERE tenant=$1 AND owner_sub=$2 AND state='ended' AND updated_at < $3`, [this.t, ownerSub, cutoff]);
+    });
+    return out;
+  }
+
+  async takeSessionMessages(ownerSub: string, sessionId: string, limit = 50, leaseMs = 60_000): Promise<SessionMessage[]> {
+    // A take only leases. The hook acknowledges after it has written the
+    // messages out: a hook that hit its time limit after the server answered
+    // lost every message in that answer while they were marked received.
+    // SKIP LOCKED: two hook processes of one session that poll at the same
+    // moment never lease the same message.
+    const now = Date.now();
+    const rows = await this.q(
+      `UPDATE session_messages SET leased_until=$5
+        WHERE tenant=$1 AND id IN (
+          SELECT id FROM session_messages
+           WHERE tenant=$1 AND owner_sub=$2 AND to_session=$3 AND delivered_at IS NULL
+             AND (leased_until IS NULL OR leased_until <= $4)
+           ORDER BY created_at LIMIT $6 FOR UPDATE SKIP LOCKED)
+        RETURNING *`,
+      [this.t, ownerSub, sessionId, now, now + Math.max(1, leaseMs), Math.max(1, Math.min(200, limit))]);
+    return rows.map((r) => this.rowToSessionMessage(r)).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  async ackSessionMessages(ownerSub: string, sessionId: string, ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const rows = await this.q(
+      `UPDATE session_messages SET delivered_at=$5
+        WHERE tenant=$1 AND owner_sub=$2 AND to_session=$3 AND id = ANY($4) AND delivered_at IS NULL
+        RETURNING id`,
+      [this.t, ownerSub, sessionId, ids, Date.now()]);
+    return rows.length;
+  }
+
+  async listSessionMessages(ownerSub: string, sessionId: string, limit = 50): Promise<SessionMessage[]> {
+    const rows = await this.q(
+      `SELECT * FROM session_messages
+        WHERE tenant=$1 AND owner_sub=$2 AND (to_session=$3 OR from_session=$3)
+        ORDER BY created_at DESC, id DESC LIMIT $4`,
+      [this.t, ownerSub, sessionId, Math.max(1, Math.min(500, limit))]);
+    return rows.map((r) => this.rowToSessionMessage(r));
   }
 
   async getStats(): Promise<Ret<'getStats'>> {

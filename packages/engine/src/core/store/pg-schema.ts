@@ -935,6 +935,46 @@ CREATE TABLE IF NOT EXISTS team_task_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_team_task_comments_task ON team_task_comments(tenant, task_id, created_at);
 
+-- Running sessions and the messages between them. The message hook upserts a
+-- row on every prompt, tool call and turn end, so a parent session can see
+-- which of its children is working, which is idle and which has ended.
+-- owner_sub is the user behind the token: a session reaches only the sessions
+-- of the same person, also inside a team tenant.
+CREATE TABLE IF NOT EXISTS live_sessions (
+  tenant          TEXT NOT NULL DEFAULT 'default',
+  session_id      TEXT NOT NULL,
+  owner_sub       TEXT NOT NULL,
+  label           TEXT,
+  parent_session  TEXT,
+  cwd             TEXT,
+  doing           TEXT,
+  state           TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('working','idle','ended')),
+  last_event      TEXT,
+  started_at      BIGINT NOT NULL,
+  updated_at      BIGINT NOT NULL,
+  PRIMARY KEY (tenant, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_owner ON live_sessions(tenant, owner_sub, updated_at);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_parent ON live_sessions(tenant, parent_session);
+
+CREATE TABLE IF NOT EXISTS session_messages (
+  tenant        TEXT NOT NULL DEFAULT 'default',
+  id            TEXT NOT NULL,
+  owner_sub     TEXT NOT NULL,
+  from_session  TEXT,
+  to_session    TEXT NOT NULL,
+  body          TEXT NOT NULL,
+  reply_to      TEXT,
+  created_at    BIGINT NOT NULL,
+  -- Set when a hook or the inbox takes the message. It is offered to nobody
+  -- else until then, and again after it, if delivered_at is still null.
+  leased_until  BIGINT,
+  delivered_at  BIGINT,
+  PRIMARY KEY (tenant, id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(tenant, to_session, created_at);
+CREATE INDEX IF NOT EXISTS idx_session_messages_from ON session_messages(tenant, from_session, created_at);
+
 -- ── Row-Level Security: the wall between tenants ─────────────────────────
 -- Every tenant-bearing table is force-RLS'd and isolated by the per-transaction
 -- 'app.tenant' GUC the drivers set (see pg-pool.ts tenantQuery). A non-superuser
@@ -950,7 +990,7 @@ BEGIN
     'summary_errors','summary_leases','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries','sync_intents','raw_sessions',
     'code_projects','code_findings','code_hotspots','code_actions',
-    'client_events','team_tasks','team_task_comments',
+    'client_events','team_tasks','team_task_comments','live_sessions','session_messages',
     'team_installs','vault_uploads','toolkit_presence'
   ] LOOP
     -- IDEMPOTENT: only configure a table that isn't already locked down. The
