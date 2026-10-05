@@ -283,15 +283,16 @@ export class MetadataCache {
     // Column-scoped UPSERT (NOT INSERT OR REPLACE) so the indexer/summary
     // worker never clobbers `user_title` — that column is written only by
     // setUserTitle. INSERT OR REPLACE would delete+reinsert the row and drop
-    // the user's name on every re-index.
+    // the user's name on every re-index. An empty summary keeps the stored
+    // one, as in the Postgres driver (KEEP_SUMMARY_SET in store/caches.ts).
     const stmt = this.db.prepare(`
       INSERT INTO session_metadata
       (session_id, first_prompt, summary, summary_source, mtime, indexed_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         first_prompt=excluded.first_prompt,
-        summary=excluded.summary,
-        summary_source=excluded.summary_source,
+        summary=CASE WHEN excluded.summary <> '' THEN excluded.summary ELSE session_metadata.summary END,
+        summary_source=CASE WHEN excluded.summary <> '' THEN excluded.summary_source ELSE session_metadata.summary_source END,
         mtime=excluded.mtime,
         indexed_at=excluded.indexed_at
     `);
