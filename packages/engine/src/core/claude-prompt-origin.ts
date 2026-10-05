@@ -28,6 +28,7 @@ export type PromptOrigin =
   | 'hook'
   | 'command-output'
   | 'meta'
+  | 'compact-summary'
   | (string & {});
 
 // Claude Code 2.1.284 still writes the output of a `!` or slash command, a
@@ -69,6 +70,10 @@ function declaredOrigin(value: unknown): string | undefined {
 /** Who wrote the text of a `type:'user'` record. */
 export function userRecordOrigin(obj: Record<string, unknown>, text: string): PromptOrigin {
   if (obj.isSidechain === true) return 'subagent';
+  // The summary Claude Code writes when it compacts the context. It has no
+  // origin field, so it was read as a prompt: it became the first prompt of a
+  // session, and the summary worker sent it to the LLM as the user's request.
+  if (obj.isCompactSummary === true) return 'compact-summary';
   const declared = declaredOrigin(obj.origin);
   if (declared && declared !== 'human') return declared;
   if (obj.isMeta === true) return 'meta';

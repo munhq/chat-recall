@@ -49,6 +49,13 @@ describe('userRecordOrigin', () => {
     expect(userRecordOrigin({ type: 'user' }, '<command-name>/exit</command-name>\n<command-message>exit</command-message>')).toBe('human');
   });
 
+  test('the summary written at compaction is not the person', () => {
+    expect(userRecordOrigin(
+      { type: 'user', userType: 'external', isSidechain: false, isVisibleInTranscriptOnly: true, isCompactSummary: true },
+      'This session is being continued from a previous conversation that ran out of context.',
+    )).toBe('compact-summary');
+  });
+
   test('a prompt that quotes a prefix later in its text stays human', () => {
     expect(userRecordOrigin({ type: 'user' }, 'why did the <task-notification> say failed?')).toBe('human');
   });
