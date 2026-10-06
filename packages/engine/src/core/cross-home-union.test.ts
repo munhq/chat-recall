@@ -260,7 +260,74 @@ describe('a copy in a second home, seen by a long-running collector', () => {
   });
 });
 
+describe('a session in two homes, read in chunks', () => {
+  // THE FAILURE: session 8de13d0a had 31 MB in ~/.claude and 2 MB in
+  // ~/.claude-work. Over the build ceiling the sync reads the transcript in
+  // chunks, and readFromOffset gave no text for a session in two homes, so
+  // each sync shipped nothing and the server stayed hours behind.
+  test('readFromOffset reads the copies joined end to end, up to fileSize', async () => {
+    const { claudeBackend } = await mods();
+    const primary = [rec('a', 'one'), rec('b', 'two'), rec('c', 'three')];
+    const live = [rec('x', 'live-one'), rec('y', 'live-two')];
+    writeSession('.claude', primary);
+    writeSession('.claude-t2', live);
+
+    const size = claudeBackend.fileSize(SID);
+    let offset = 0;
+    const texts: string[] = [];
+    const baseLines: Array<number | undefined> = [];
+    for (let i = 0; i < 20 && offset < size; i++) {
+      const r = await claudeBackend.readFromOffset(SID, offset, 120);
+      expect(r.newOffset).toBeGreaterThan(offset);
+      if (r.text) { texts.push(r.text); baseLines.push(r.baseLine); }
+      offset = r.newOffset;
+    }
+    expect(offset).toBe(size);
+    expect(texts.join('')).toBe([...primary, ...live].join('\n') + '\n');
+    // The first line of the live copy is line 4 of the joined copies.
+    const liveIdx = texts.findIndex((t) => t.startsWith(live[0]));
+    expect(baseLines[liveIdx]).toBe(3);
+  });
+
+  test('a copy that ends inside a line is read whole before the next copy', async () => {
+    const { claudeBackend } = await mods();
+    const { appendFileSync } = await import('node:fs');
+    const p = writeSession('.claude', [rec('a', 'one')]);
+    appendFileSync(p, rec('b', 'two'));                     // no final newline
+    writeSession('.claude-t2', [rec('x', 'live')]);
+
+    const first = await claudeBackend.readFromOffset(SID, 0);
+    expect(first.text).toBe(rec('a', 'one') + '\n');
+    const second = await claudeBackend.readFromOffset(SID, first.newOffset);
+    expect(second.text).toBe(rec('b', 'two'));
+    const third = await claudeBackend.readFromOffset(SID, second.newOffset);
+    expect(third.text).toBe(rec('x', 'live') + '\n');
+    expect(third.baseLine).toBe(2);
+    expect(third.newOffset).toBe(claudeBackend.fileSize(SID));
+  });
+
+  test('sourceLayout changes when a copy before the last one changes, and not when the last grows', async () => {
+    const { claudeBackend } = await mods();
+    const { appendFileSync } = await import('node:fs');
+    const primary = writeSession('.claude', [rec('a', 'one')]);
+    const live = writeSession('.claude-t2', [rec('x', 'live')]);
+
+    const before = claudeBackend.sourceLayout(SID);
+    expect(before).not.toBe('');
+    appendFileSync(live, rec('y', 'more') + '\n');
+    expect(claudeBackend.sourceLayout(SID)).toBe(before);
+    appendFileSync(primary, rec('q', 'queued') + '\n');
+    expect(claudeBackend.sourceLayout(SID)).not.toBe(before);
+  });
+});
+
 describe('the single-home case is unchanged', () => {
+  test('a session in one home has no source layout', async () => {
+    const { claudeBackend } = await mods();
+    writeSession('.claude', [rec('a', 'one')]);
+    expect(claudeBackend.sourceLayout(SID)).toBe('');
+  });
+
   test('one home behaves exactly as before', async () => {
     const { findSessionFiles, resolveSessionContentGroups, readSessionGroupText, claudeBackend } = await mods();
     writeSession('.claude', [rec('a', 'one'), rec('b', 'two')]);
