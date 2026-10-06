@@ -242,9 +242,7 @@ export class PgStore implements StorageDriver {
 
   // ── metadata / items ──
   async setItem(item: MemoryItem): Promise<void> {
-    if (item.sourceType === 'session') {
-      await this.q(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, item.id]);
-    }
+    // The session_metadata row stays: see writeItemRows.
     const resolved = !item.projectId && item.projectPath ? resolveProjectId(item.projectPath) : null;
     const projectId = item.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
     const a = currentAuthor();
@@ -877,11 +875,10 @@ export class PgStore implements StorageDriver {
     for (const it of items) byKey.set(`${it.sourceType}\u0000${it.id}`, it);
     const list = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
     const now = Date.now();
-    // A re-synced session's stored summary may no longer match its content.
-    const sessionIds = list.filter((it) => it.sourceType === 'session').map((it) => it.id);
-    if (sessionIds.length > 0) {
-      await client.query(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, sessionIds]);
-    }
+    // A re-synced session keeps its session_metadata row. Deleting it here
+    // dropped the summary the server had generated, and the summary worker sent
+    // the session to the LLM again on every full sync. It also dropped the name
+    // the user gave the session.
     const a = currentAuthor();
     const rows = list.map((it) => {
       const resolved = !it.projectId && it.projectPath ? resolveProjectId(it.projectPath) : null;

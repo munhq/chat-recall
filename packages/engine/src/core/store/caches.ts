@@ -153,15 +153,25 @@ export async function writeSessionMetaRows(
     ['tenant', 'session_id', 'first_prompt', 'summary', 'summary_source', 'mtime', 'indexed_at', 'author_sub', 'author_device'],
     list.map((m) => [tenant, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt, au.sub, au.device]),
     `ON CONFLICT (tenant,session_id) DO UPDATE SET
-       first_prompt=excluded.first_prompt, summary=excluded.summary,
-       summary_source=excluded.summary_source, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
+       first_prompt=excluded.first_prompt, ${KEEP_SUMMARY_SET}, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
        author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
        author_device=COALESCE(session_metadata.author_device, excluded.author_device)
      WHERE session_metadata.first_prompt   IS DISTINCT FROM excluded.first_prompt
-        OR session_metadata.summary        IS DISTINCT FROM excluded.summary
-        OR session_metadata.summary_source IS DISTINCT FROM excluded.summary_source
+        OR (excluded.summary <> ''
+            AND (session_metadata.summary        IS DISTINCT FROM excluded.summary
+              OR session_metadata.summary_source IS DISTINCT FROM excluded.summary_source))
         OR session_metadata.mtime          IS DISTINCT FROM excluded.mtime`);
 }
+
+/**
+ * The SET clause for summary and summary_source on a session_metadata upsert.
+ * An empty summary in the new row keeps the stored one. The collector sends no
+ * summary, so a full re-sync of a session that grew wrote '' over the summary
+ * the server had generated, and the summary worker, which claims rows with
+ * summary = '', sent the session to the LLM again.
+ */
+const KEEP_SUMMARY_SET = `summary=CASE WHEN excluded.summary <> '' THEN excluded.summary ELSE session_metadata.summary END,
+       summary_source=CASE WHEN excluded.summary <> '' THEN excluded.summary_source ELSE session_metadata.summary_source END`;
 
 /**
  * Set `tool_title` for many sessions in one statement, on an open client.
@@ -434,7 +444,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
     const au = currentAuthor();
     await this.q(
       `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,author_sub,author_device) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (tenant,session_id) DO UPDATE SET first_prompt=excluded.first_prompt, summary=excluded.summary, summary_source=excluded.summary_source, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
+       ON CONFLICT (tenant,session_id) DO UPDATE SET first_prompt=excluded.first_prompt, ${KEEP_SUMMARY_SET}, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
          author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
          author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
       [this.t, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt, au.sub, au.device]);
