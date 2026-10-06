@@ -4,6 +4,29 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.19] — 2026-10-06
+
+### Added
+- **Hermes Agent sessions.** chat-recall reads the chats Hermes keeps in
+  `~/.hermes/state.db` (`%LOCALAPPDATA%\hermes` on Windows) and syncs them
+  with the other tools. Ids are `hermes_<id>`, and `hermes --resume <id>`
+  resumes one. A named profile under `~/.hermes/profiles/` is a home of its
+  own and syncs once you approve it. `CHAT_RECALL_HERMES_HOME` overrides the
+  path.
+
+### Fixed
+- **A large session in two Claude homes stopped syncing.** A session resumed
+  under a second profile has one file in each home. When the two were over
+  24 MB together, every sync sent an empty first chunk, and the server stayed
+  hours behind. The sync now reads the two files joined end to end.
+- **A re-sync wiped the session's summary and its name.** Every full sync
+  cleared the stored summary, and the server wrote it again each time. The
+  stored summary and name now stay.
+- **The compaction summary counted as a prompt.** Claude Code writes the
+  summary it makes at compaction as a user record. It is no longer the first
+  prompt of a session, and the summary worker no longer sends it to the model
+  as your request.
+
 ## [0.7.18] — 2026-10-03
 
 ### Fixed
