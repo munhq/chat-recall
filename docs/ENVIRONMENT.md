@@ -43,6 +43,7 @@ Point the collector at non-standard tool locations (useful for fixtures/tests):
 | `CHAT_RECALL_AGY_HOME` | the agy tool home |
 | `CHAT_RECALL_CURSOR_HOME` | `~/.cursor` (the `cursor-agent` CLI store) |
 | `CHAT_RECALL_CURSOR_IDE_HOME` | `~/.config/Cursor` (the DESKTOP app — note the capital C; `~/.config/cursor` is the CLI's auth dir) |
+| `CHAT_RECALL_HERMES_HOME` | `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows; `HERMES_HOME` when it is set. Named profiles in its `profiles/` folder are read too. |
 | `CHAT_RECALL_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` (full file path) |
 | `CHAT_RECALL_DATA_DIR` | `~/.chat-recall` (ledger, shadow archive, credentials) |
 

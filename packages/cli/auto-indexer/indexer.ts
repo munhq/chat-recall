@@ -36,7 +36,7 @@ import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
 import {
-  claudeBackend, codexBackend, opencodeBackend, listAvailableBackends,
+  claudeBackend, codexBackend, opencodeBackend, hermesBackend, listAvailableBackends,
 } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { claudeProjectDirs } from '@chat-recall/engine/core/tool-paths.js';
@@ -423,6 +423,19 @@ const opencodeWatcher = chokidar.watch(
   },
 );
 
+// 8b. Hermes SQLite — the same rule as OpenCode: the db and its WAL, never the
+// -shm that our own read-only opens touch. One db per Hermes profile.
+const HERMES_DB_PATHS = hermesBackend.dbPaths();
+const hermesWatcher = chokidar.watch(
+  HERMES_DB_PATHS.flatMap((p) => [p, `${p}-wal`]),
+  {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 2500, pollInterval: 500 },
+    ...POLL(10000),
+  },
+);
+
 // 9. Per-project agent memory files (Claude Code ~/.claude/projects/<hash>/memory/*.md).
 // Agents write reference/feedback/project-state notes here between sessions —
 // the richest cross-session knowledge surface, now indexed + synced.
@@ -453,6 +466,7 @@ const watchers: Record<string, chokidar.FSWatcher> = {
   diary: diaryWatcher,
   codex: codexWatcher,
   opencode: opencodeWatcher,
+  hermes: hermesWatcher,
   agentMemory: agentMemoryWatcher,
   cleanup: cleanupWatcher,
 };
@@ -497,6 +511,7 @@ daemonLog.info(`  Watching history:  ${HISTORY_PATH}`);
 daemonLog.info(`  Watching diary:    ${DIARY_DIR}`);
 daemonLog.info(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
 daemonLog.info(`  Watching opencode: ${OPENCODE_DB_DIR}`);
+daemonLog.info(`  Watching hermes:   ${HERMES_DB_PATHS.join(', ')}`);
 daemonLog.info(`  Watching agent memory: ${CLAUDE_SESSION_ROOTS.map((root) => `${root}/*/memory/`).join(', ')}`);
 daemonLog.info(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
 daemonLog.info(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);

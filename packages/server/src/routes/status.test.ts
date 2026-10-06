@@ -12,7 +12,7 @@ import { join } from 'node:path';
 // route module loads (import-time path resolution).
 let tmpHome: string;
 const saved: Record<string, string | undefined> = {};
-const VARS = ['CHAT_RECALL_CLAUDE_HOME', 'CHAT_RECALL_GEMINI_HOME', 'CHAT_RECALL_OPENCODE_DB', 'CHAT_RECALL_CODEX_HOME', 'CHAT_RECALL_CURSOR_HOME', 'CHAT_RECALL_CURSOR_IDE_HOME', 'CHAT_RECALL_DATA_DIR'];
+const VARS = ['CHAT_RECALL_CLAUDE_HOME', 'CHAT_RECALL_GEMINI_HOME', 'CHAT_RECALL_OPENCODE_DB', 'CHAT_RECALL_CODEX_HOME', 'CHAT_RECALL_CURSOR_HOME', 'CHAT_RECALL_CURSOR_IDE_HOME', 'CHAT_RECALL_HERMES_HOME', 'CHAT_RECALL_DATA_DIR'];
 
 beforeAll(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'status-route-'));
@@ -23,6 +23,7 @@ beforeAll(() => {
   process.env.CHAT_RECALL_CODEX_HOME = join(tmpHome, '.codex');
   process.env.CHAT_RECALL_CURSOR_HOME = join(tmpHome, '.cursor');
   process.env.CHAT_RECALL_CURSOR_IDE_HOME = join(tmpHome, '.config', 'Cursor');
+  process.env.CHAT_RECALL_HERMES_HOME = join(tmpHome, '.hermes');
   process.env.CHAT_RECALL_DATA_DIR = join(tmpHome, '.chat-recall');
 });
 

@@ -12,7 +12,7 @@
  * CLI is kept for legacy sessions but demoted.
  */
 
-export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
 
 export interface ToolDef {
   id: ToolId;
@@ -32,6 +32,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'opencode', label: 'OpenCode',     color: 'var(--cr-tool-opencode)', surf: 'var(--cr-tool-opencode-surf)', icon: 'zap' },
   { id: 'codex',    label: 'Codex',        color: 'var(--cr-tool-codex)',    surf: 'var(--cr-tool-codex-surf)',    icon: 'zap' },
   { id: 'cursor',   label: 'Cursor',       color: 'var(--cr-tool-cursor)',   surf: 'var(--cr-tool-cursor-surf)',   icon: 'zap' },
+  { id: 'hermes',   label: 'Hermes',       color: 'var(--cr-tool-hermes)',   surf: 'var(--cr-tool-hermes-surf)',   icon: 'zap' },
 ];
 
 /** Tool id → definition, for O(1) lookups in row renderers. */
@@ -41,6 +42,11 @@ export const TOOL_MAP: Record<ToolId, ToolDef> = Object.fromEntries(
 
 /** Ordered list of tool ids (for iteration in filters, counts, etc). */
 export const TOOL_IDS: ToolId[] = TOOLS.map((t) => t.id);
+
+/** Tools whose skills, MCP servers, commands and agents the toolkit page
+ *  manages. chat-recall reads only the chats of Hermes. */
+export type ToolkitToolId = Exclude<ToolId, 'hermes'>;
+export const TOOLKIT_TOOL_IDS: ToolkitToolId[] = TOOL_IDS.filter((t): t is ToolkitToolId => t !== 'hermes');
 
 /** "All" pseudo-tool — prepended to the sidebar source list. */
 export const ALL_SOURCE = { id: 'all', label: 'All Messages', icon: 'list' } as const;

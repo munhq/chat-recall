@@ -130,6 +130,7 @@ export function toolOfId(id: string): string {
   if (id.startsWith('opencode_')) return 'opencode';
   if (id.startsWith('codex_')) return 'codex';
   if (id.startsWith('cursor_')) return 'cursor';
+  if (id.startsWith('hermes_')) return 'hermes';
   return 'claude'; // claude has no prefix
 }
 

@@ -463,12 +463,14 @@ describe('cross-backend listing', () => {
     saved.AGY_HOME       = process.env.CHAT_RECALL_AGY_HOME;
     saved.CURSOR_HOME    = process.env.CHAT_RECALL_CURSOR_HOME;
     saved.CURSOR_IDE_HOME = process.env.CHAT_RECALL_CURSOR_IDE_HOME;
+    saved.HERMES_HOME    = process.env.CHAT_RECALL_HERMES_HOME;
     saved.OPENCODE_DB    = process.env.CHAT_RECALL_OPENCODE_DB;
     process.env.CHAT_RECALL_CLAUDE_HOME = claudeHome;
     process.env.CHAT_RECALL_CODEX_HOME  = codexHome;
     process.env.CHAT_RECALL_AGY_HOME    = agyHome;
     process.env.CHAT_RECALL_CURSOR_HOME = cursorHome;
     process.env.CHAT_RECALL_CURSOR_IDE_HOME = cursorIdeHome;
+    process.env.CHAT_RECALL_HERMES_HOME = join(cursorHome, 'no-hermes');
     process.env.CHAT_RECALL_OPENCODE_DB = opencodeDb;
 
     bootstrapBackends();

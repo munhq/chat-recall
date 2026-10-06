@@ -18,15 +18,17 @@ import { opencodeBackend, OpencodeBackend } from './opencode.js';
 import { codexBackend, CodexBackend } from './codex.js';
 import { agyBackend, AgyBackend } from './agy.js';
 import { cursorBackend, CursorBackend } from './cursor.js';
+import { hermesBackend, HermesBackend } from './hermes.js';
 
 export function bootstrapBackends(): void {
   // Idempotent — registerBackend() calls Map.set, replacing if present, so
   // tests that reset the registry can call this directly to repopulate.
   registerBackend(claudeBackend);
-    registerBackend(opencodeBackend);
+  registerBackend(opencodeBackend);
   registerBackend(codexBackend);
   registerBackend(agyBackend);
   registerBackend(cursorBackend);
+  registerBackend(hermesBackend);
 }
 
 // Defer registration to the first registry access (call time), not import
@@ -42,6 +44,7 @@ export {
   codexBackend, CodexBackend,
   agyBackend, AgyBackend,
   cursorBackend, CursorBackend,
+  hermesBackend, HermesBackend,
 };
 export {
   registerBackend,

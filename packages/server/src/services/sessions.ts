@@ -278,7 +278,7 @@ export interface SessionIndexEntry {
   /** Logical cleartext project id, passed through to the hydrated SessionInfo. */
   projectId?: string;
   mtime: number;
-  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor';
+  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor' | 'hermes';
   filePath?: string;
   /** Pre-computed when available (Claude sessions-index.json). Used to
    *  short-circuit hydration when the index already has it. */
@@ -295,7 +295,7 @@ export interface SessionIndexEntry {
  * other backend has no per-session file to walk, so a tool missing from this
  * set is silently dropped from `recent` and from the project counts.
  */
-const STORE_BACKED_TOOLS = new Set<SessionIndexEntry['tool']>(['gemini', 'opencode', 'agy', 'cursor']);
+const STORE_BACKED_TOOLS = new Set<SessionIndexEntry['tool']>(['gemini', 'opencode', 'agy', 'cursor', 'hermes']);
 
 /**
  * Build the light session index across all tools — single pass, no

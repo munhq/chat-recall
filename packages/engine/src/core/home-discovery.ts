@@ -15,6 +15,7 @@
  *   codex     <home>/sessions/YYYY/MM/DD/rollout-*.jsonl
  *   agy       <home>/brain/<id>/.system_generated/logs/*.jsonl
  *   opencode  <dir>/opencode.db
+ *   hermes    <home>/state.db beside SOUL.md, and <home>/profiles/<name>/
  *
  * ── Three signals, cheapest and most reliable first ──────────────────────
  *  1. DECLARED — where the user actually configured a profile: our own env,
@@ -35,7 +36,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { homedir, platform as osPlatform } from 'os';
 import { join } from 'path';
 
-export type HomeTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor';
+export type HomeTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes';
 
 export interface DiscoveredHome {
   tool: HomeTool;
@@ -101,6 +102,9 @@ export function identifyHome(dir: string): HomeTool | null {
   if (has('chats') && dirHasTranscript(join(dir, 'chats'), (f) => f === 'store.db', 3)) return 'cursor';
   // OpenCode: the db file itself.
   if (has('opencode.db')) return 'opencode';
+  // Hermes: its database beside the SOUL.md every Hermes home and profile has.
+  // `state.db` alone is a name other apps use too.
+  if (has('state.db') && has('SOUL.md')) return 'hermes';
   return null;
 }
 
@@ -126,9 +130,10 @@ function countSessions(dir: string, tool: HomeTool): number {
     agy:      { sub: 'brain',    depth: 4, match: (f) => f.endsWith('.jsonl') },
     cursor:   { sub: 'chats',    depth: 3, match: (f) => f === 'store.db' },
     opencode: { sub: '',         depth: 0, match: () => false },
+    hermes:   { sub: '',         depth: 0, match: () => false },
   };
   const s = spec[tool];
-  if (!s.sub) return 0;                      // opencode: rows, not files
+  if (!s.sub) return 0;                      // opencode, hermes: rows, not files
   let n = 0;
   const walk = (d: string, depth: number) => {
     if (depth < 0 || n > 100_000) return;
@@ -172,6 +177,7 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
     agy: { sub: 'brain', depth: 1, idOf: () => null },   // id is the DIRECTORY name
     cursor: { sub: 'chats', depth: 2, idOf: () => null },// id is the DIRECTORY name
     opencode: { sub: '', depth: 0, idOf: () => null },   // rows, not files
+    hermes: { sub: '', depth: 0, idOf: () => null },     // rows, not files
   };
   const s = spec[tool];
   if (!s.sub) return [];
@@ -233,6 +239,8 @@ export function declaredHomes(env = process.env, plat: NodeJS.Platform = osPlatf
   add(env.CHAT_RECALL_AGY_HOME);
   add(env.CHAT_RECALL_CURSOR_HOME);
   add(env.CHAT_RECALL_CURSOR_IDE_HOME);
+  add(env.CHAT_RECALL_HERMES_HOME);
+  add(env.HERMES_HOME);
   for (const d of (env.CLAUDE_DIRS || '').split(',')) add(d);
 
   if (plat === 'win32') {
@@ -321,6 +329,14 @@ export function discoverHomes(opts: {
     const prior = found.get(real);
     if (prior && !(via === 'declared' && prior.via !== 'declared')) return;
     found.set(real, { tool, path: real, via, sessions: countSessions(real, tool) });
+    // A named Hermes profile is a home of its own, deeper than the walk goes.
+    if (tool === 'hermes') {
+      try {
+        for (const e of readdirSync(join(real, 'profiles'), { withFileTypes: true })) {
+          if (e.isDirectory()) consider(join(real, 'profiles', e.name), via);
+        }
+      } catch { /* no named profiles */ }
+    }
   };
 
   // 1. Declared — strongest signal, and cheap.

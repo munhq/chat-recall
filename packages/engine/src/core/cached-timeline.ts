@@ -172,7 +172,7 @@ export async function cachedRecentEdits(opts: {
    */
   liveFallback?: boolean;
 }): Promise<SessionEdit[]> {
-  const enabled = new Set<AiTool>(opts.tools ?? ['claude', 'opencode', 'codex', 'agy', 'cursor']);
+  const enabled = new Set<AiTool>(opts.tools ?? ['claude', 'opencode', 'codex', 'agy', 'cursor', 'hermes']);
   const needle = opts.pattern?.toLowerCase();
   const out: SessionEdit[] = [];
 

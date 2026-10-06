@@ -19,7 +19,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 const TOOLS: Array<[string, string]> = [
-  ['claude', 'Claude Code'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'], ['cursor', 'Cursor'],
+  ['claude', 'Claude Code'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'], ['cursor', 'Cursor'], ['hermes', 'Hermes'],
 ];
 
 export default function SyncRules() {

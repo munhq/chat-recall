@@ -39,6 +39,7 @@ function defaultSourceSettings(): SourceSettings {
       opencode: { sessions: true, plans: true, todos: true, skills: true },
       codex:    { sessions: true, plugins: true, skills: true },
       cursor:   { sessions: true, skills: true, agents: true, commands: true },
+      hermes:   { sessions: true },
       common:   { mcps: true, agentMd: true },
     },
   };
@@ -717,6 +718,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
       {groupRow('Codex',        'codex',    ['sessions','plugins','skills'])}
       {groupRow('Antigravity',  'agy',      ['sessions','plans','brain','extensions'])}
       {groupRow('Cursor',       'cursor',   ['sessions','skills','agents','commands'])}
+      {groupRow('Hermes',       'hermes',   ['sessions'])}
       {groupRow('Cross-tool',   'common',   ['mcps','agentMd'])}
 
       <Disclosure open={pathsOpen} onToggle={setPathsOpen} label="Path overrides (advanced)">
@@ -737,6 +739,9 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
           <TextField label="Cursor IDE home" value={value.cursorIdeHome ?? ''} placeholder="~/.config/Cursor"
             help="The desktop app's user-data dir. Note the capital C — ~/.config/cursor is the CLI's auth dir."
             onChange={(v) => onChange({ ...value, cursorIdeHome: v || undefined })} />
+          <TextField label="Hermes home"   value={value.hermesHome ?? ''}     placeholder="~/.hermes"
+            help="Named profiles in its profiles/ folder are read too."
+            onChange={(v) => onChange({ ...value, hermesHome: v || undefined })} />
           <TextField label="Extra Claude homes (comma-separated)"
             value={(value.extraClaudeHomes ?? []).join(', ')}
             placeholder="~/.claude-work, ~/.claude-personal"
@@ -812,7 +817,7 @@ function SyncCard({
   const setUpload = (k: keyof SyncSettings['upload'], on: boolean) => {
     onChange({ ...value, upload: { ...value.upload, [k]: on } });
   };
-  const tools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'> = ['claude','opencode','codex','agy','cursor'];
+  const tools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes'> = ['claude','opencode','codex','agy','cursor','hermes'];
 
   return (
     <Card title="Sync to remote"

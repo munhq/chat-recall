@@ -107,6 +107,8 @@
   --cr-tool-agy-surf: color-mix(in srgb, var(--cr-tool-agy) 10%, var(--cr-ink-0));
   --cr-tool-cursor: #F0A868;
   --cr-tool-cursor-surf: color-mix(in srgb, var(--cr-tool-cursor) 10%, var(--cr-ink-0));
+  --cr-tool-hermes: #E3C565;
+  --cr-tool-hermes-surf: color-mix(in srgb, var(--cr-tool-hermes) 10%, var(--cr-ink-0));
 
   /* Radii */
   /* ZERO, everywhere. A drawing has square corners; the one circle in this
@@ -210,6 +212,9 @@
 
   --cr-tool-cursor: #A34B08;
   --cr-tool-cursor-surf: color-mix(in srgb, var(--cr-tool-cursor) 8%, var(--cr-ink-0));
+
+  --cr-tool-hermes: #7A5E00;
+  --cr-tool-hermes-surf: color-mix(in srgb, var(--cr-tool-hermes) 8%, var(--cr-ink-0));
 }
 /* TOKENS:END */
 

@@ -507,7 +507,7 @@ const RecallEditsTimelineSchema = z.object({
     .describe('Filter by project name (matched against the encoded project directory name)'),
   include_reads: z.boolean().optional().default(false)
     .describe('Include read-type tool calls in addition to write/edit ones'),
-  tools: z.array(z.enum(['claude', 'opencode', 'codex', 'agy', 'cursor'])).optional()
+  tools: z.array(z.enum(['claude', 'opencode', 'codex', 'agy', 'cursor', 'hermes'])).optional()
     .describe('Restrict to a subset of AI tools. Default: every tool this machine has.'),
   group_by_repo: z.boolean().optional().default(false)
     .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
@@ -1508,7 +1508,7 @@ aggregate per session instead — "which sessions edited auth.rs in the last mon
             include_reads:  { type: 'boolean', default: false, description: 'Include Read tool_uses too' },
             tools:          {
               type: 'array',
-              items: { type: 'string', enum: ['claude', 'opencode', 'codex', 'agy', 'cursor'] },
+              items: { type: 'string', enum: ['claude', 'opencode', 'codex', 'agy', 'cursor', 'hermes'] },
               description: 'Restrict to specific AI tools. Default: every tool this machine has.',
             },
             group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },

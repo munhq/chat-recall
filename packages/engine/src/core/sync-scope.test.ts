@@ -42,7 +42,7 @@ beforeEach(() => {
   process.env.CHAT_RECALL_DATA_DIR = join(root, 'data');
   // Every other backend points at nothing, so the counts are the fixtures alone.
   for (const v of ['CHAT_RECALL_GEMINI_HOME', 'CHAT_RECALL_CODEX_HOME', 'CHAT_RECALL_AGY_HOME',
-    'CHAT_RECALL_CURSOR_HOME', 'CHAT_RECALL_CURSOR_IDE_HOME']) process.env[v] = join(root, 'none');
+    'CHAT_RECALL_CURSOR_HOME', 'CHAT_RECALL_CURSOR_IDE_HOME', 'CHAT_RECALL_HERMES_HOME']) process.env[v] = join(root, 'none');
   process.env.CHAT_RECALL_OPENCODE_DB = join(root, 'none.db');
   mkdirSync(join(root, 'claude', 'projects'), { recursive: true });
   _resetSettingsCacheForTests?.();

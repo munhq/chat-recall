@@ -18,7 +18,7 @@ import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
 // Local approval decisions + the one-shot upgrade migration. Imported directly
 // (no cycle: home-approval reads settings, which knows nothing about paths).
-import { isHomeSynced, grandfatherLegacyHomes } from './home-approval.js';
+import { isHomeSynced, grandfatherLegacyHomes, defaultHermesHome } from './home-approval.js';
 import { loadSourceSettings, _resetSourceSettingsCache } from './settings.js';
 
 // Re-export so existing test imports from this module keep working.
@@ -96,6 +96,17 @@ export function opencodeDbPath(): string {
   return process.env.CHAT_RECALL_OPENCODE_DB
     || sources().opencodeDbPath
     || join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+}
+
+/**
+ * Hermes Agent root: `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows.
+ * Hermes itself reads `HERMES_HOME`, so a machine that sets it is read there.
+ */
+export function hermesHomeDir(): string {
+  return process.env.CHAT_RECALL_HERMES_HOME
+    || sources().hermesHome
+    || process.env.HERMES_HOME?.trim()
+    || defaultHermesHome();
 }
 
 /** Codex root (`~/.codex` by default). */
@@ -280,6 +291,24 @@ export function opencodeDbPaths(opts: RootsOpts = {}): string[] {
   // The primary may not exist yet (fresh install) — keep it so callers that
   // create/open it still get a path.
   if (dbs.length === 0) dbs.push(primary);
+  return applyExclusions(dbs, opts.includeExcluded);
+}
+
+/**
+ * Every Hermes database: `<root>/state.db`, then `<root>/profiles/<name>/state.db`
+ * for each named profile. A profile is its own home, so it syncs once approved.
+ */
+export function hermesDbPaths(opts: RootsOpts = {}): string[] {
+  const root = hermesHomeDir();
+  const dbs = [join(root, 'state.db')];
+  try {
+    const profiles = join(root, 'profiles');
+    for (const entry of readdirSync(profiles, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const p = join(profiles, entry.name, 'state.db');
+      if (existsSync(p)) dbs.push(p);
+    }
+  } catch { /* no named profiles */ }
   return applyExclusions(dbs, opts.includeExcluded);
 }
 
