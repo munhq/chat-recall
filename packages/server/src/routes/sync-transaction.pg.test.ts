@@ -135,4 +135,26 @@ const MEMBER = 'sync-tx-member';
     expect(await rows(`SELECT status FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [tenant, id]))
       .toEqual([{ status: 'shipped' }]);
   });
+
+  // The collector sends no summary, so every full re-sync of a session that
+  // grew wrote '' over the summary the server had generated. The summary
+  // worker claims rows with summary = '' and sent the session to the LLM again.
+  test('a full re-sync without a summary keeps the summary the server generated, and the name the user gave', async () => {
+    const id = '10000000-0000-0000-0000-000000000004';
+    expect((await post({ conversations: [conversation(id, 'first version')] })).status).toBe(200);
+    await admin.query(
+      `UPDATE session_metadata SET summary='Generated summary.', summary_source='ai', user_title='Named by the user' WHERE tenant=$1 AND session_id=$2`,
+      [tenant, id]);
+
+    const grown = { ...conversation(id, 'first version'), mtime: MTIME + 60_000 };
+    expect((await post({ conversations: [grown] })).status).toBe(200);
+    expect(await rows(`SELECT summary, summary_source, user_title, mtime FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [tenant, id]))
+      .toEqual([{ summary: 'Generated summary.', summary_source: 'ai', user_title: 'Named by the user', mtime: MTIME + 60_000 }]);
+
+    // A summary the collector does send still replaces the stored one.
+    const withSummary = { ...grown, meta: { summary: 'Summary from the collector.', summarySource: 'gemini' } };
+    expect((await post({ conversations: [withSummary] })).status).toBe(200);
+    expect(await rows(`SELECT summary, summary_source FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [tenant, id]))
+      .toEqual([{ summary: 'Summary from the collector.', summary_source: 'gemini' }]);
+  });
 });

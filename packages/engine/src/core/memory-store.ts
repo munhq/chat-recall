@@ -274,18 +274,7 @@ export class MemoryStore {
 
   /** Upsert a memory item's metadata */
   setItem(item: MemoryItem): void {
-    // When a session is re-indexed, clear cached summary — the content may have
-    // changed (e.g., session resumed and migrated to new subagent format).
-    // setItem is only called when the indexer decides the item needs updating,
-    // so unconditional clear here is safe.
-    if (item.sourceType === 'session') {
-      // session_metadata is owned by MetadataCache (same db file, separate
-      // schema init) — on a virgin db it doesn't exist yet, and a missing
-      // table just means there's no stale summary to clear.
-      try { this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(item.id); }
-      catch { /* table not created yet */ }
-    }
-
+    // The session_metadata row stays: see writeItemRows in store/pg.ts.
     // Resolve project_id from the path. Pure + cached in the resolver, so
     // this stays cheap even on bulk writes. `ignored` short-circuits to
     // empty so dossier queries naturally skip these rows.
