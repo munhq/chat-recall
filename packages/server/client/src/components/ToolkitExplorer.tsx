@@ -11,7 +11,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps, Plate, Schedule, Note } from './primitives';
 import { formatMoney } from '../utils/money';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
-import { TOOL_IDS, VALID_TOOL_FILTERS, type ToolId } from '../services/tools';
+import { TOOLKIT_TOOL_IDS as TOOL_IDS, VALID_TOOL_FILTERS, type ToolkitToolId as ToolId } from '../services/tools';
 import { sourceToolOnDevice, deviceHasArtifact, noSourceMessage } from '../services/toolkit-sync-plan';
 import {
   browseToolkit,
@@ -76,6 +76,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   const [activeTab, setActiveTab] = useState<ToolkitType>('skill');
   // Sidebar drives the filter; coerce 'unknown' values back to 'all'.
   const toolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string)
+    && (toolFilterProp === 'all' || (TOOL_IDS as string[]).includes(toolFilterProp as string))
     ? (toolFilterProp as ToolFilter)
     : 'all';
   const [items, setItems] = useState<MemoryMetadataRow[]>([]);

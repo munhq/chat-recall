@@ -1610,6 +1610,8 @@ router.get('/:id', async (req, res) => {
         tool = 'opencode';
       } else if (id.startsWith('cursor_')) {
         tool = 'cursor';
+      } else if (id.startsWith('hermes_')) {
+        tool = 'hermes';
       }
 
       if (tool === 'claude' && !filePath) {
@@ -1721,8 +1723,8 @@ router.get('/:id', async (req, res) => {
       // 3. Parse and cache
       let messages;
       let subagents: Subagent[] = [];
-      if (tool === 'agy' || tool === 'cursor') {
-        // Antigravity and Cursor — parse through the generic event bridge (no
+      if (tool === 'agy' || tool === 'cursor' || tool === 'hermes') {
+        // Antigravity, Cursor and Hermes — parse through the generic event bridge (no
         // hand-written parser; the ToolBackend's readEvents() feeds
         // canonicalEventsToMessages). Same path parseTranscript uses.
         const backend = getBackendForId(id);
@@ -1826,15 +1828,15 @@ router.get('/:id/raw', async (req, res) => {
       }
     }
 
-    // Cursor — both surfaces are SQLite-backed and neither has a per-session
-    // file, so the raw view is the decoded event stream. The backend already
-    // picks store.db vs the JSONL fallback.
-    if (id.startsWith('cursor_')) {
+    // Cursor and Hermes are SQLite-backed with no per-session file, so the raw
+    // view is the decoded event stream. The Cursor backend already picks
+    // store.db vs the JSONL fallback.
+    if (id.startsWith('cursor_') || id.startsWith('hermes_')) {
       const backend = getBackendForId(id);
       if (!backend) return res.status(404).json({ error: 'Session not found' });
       const lines = backend.readEvents(backend.toRawId(id));
       if (lines.length === 0) return res.status(404).json({ error: 'Session not found' });
-      return res.json({ sessionId: id, tool: 'cursor', lines, count: lines.length });
+      return res.json({ sessionId: id, tool: backend.id, lines, count: lines.length });
     }
 
     // Gemini — single JSON file under ~/.gemini/tmp/<hash>/chats/.

@@ -39,9 +39,9 @@ export function _resetSourcePolicyCache(): void {
   cache = null;
 }
 
-type Tool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
+type Tool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
 
-const TOOLS: readonly Tool[] = ['claude', 'opencode', 'codex', 'agy', 'cursor'];
+const TOOLS: readonly Tool[] = ['claude', 'opencode', 'codex', 'agy', 'cursor', 'hermes'];
 
 /** Pull the originating AI tool from `extra.tool`. Falls back per sourceType. */
 function toolOf(item: MemoryItem): Tool | null {

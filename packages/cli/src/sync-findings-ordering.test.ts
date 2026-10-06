@@ -96,6 +96,7 @@ function runCli(args: string[], home: string): Promise<{ out: string; status: nu
     CHAT_RECALL_AGY_HOME: join(home, 'agy'),
     CHAT_RECALL_CURSOR_HOME: join(home, 'cursor'),
     CHAT_RECALL_CURSOR_IDE_HOME: join(home, 'cursor-ide'),
+    CHAT_RECALL_HERMES_HOME: join(home, 'hermes'),
     CHAT_RECALL_OPENCODE_DB: join(home, 'none.db'),
     CHAT_RECALL_TELEMETRY: '0',
     HOME: home, USERPROFILE: home,

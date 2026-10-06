@@ -4357,9 +4357,9 @@ exclude
 
 exclude
   .command('tool <tool>')
-  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy | cursor)')
+  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy | cursor | hermes)')
   .action(async (tool: string) => {
-    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor'];
+    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor', 'hermes'];
     if (!valid.includes(tool)) {
       console.error(chalk.red(`Unknown tool '${tool}'.`) + chalk.dim(` Use one of: ${valid.join(' | ')}`));
       process.exit(1);

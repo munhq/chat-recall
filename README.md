@@ -130,7 +130,7 @@ Exclusions live on the machine that holds the data, so the CLI owns them; they a
 
 ## Four things it actually does
 
-1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity (`~/.gemini/antigravity-cli/`) and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
+1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity (`~/.gemini/antigravity-cli/`), Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE) and Hermes Agent (`~/.hermes/`). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
 2. **The agent recalls itself.** 63 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
 3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
 4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
@@ -405,7 +405,7 @@ e2e/                     Playwright tests for the dashboard
 Two extension points, both registry-driven:
 
 - **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
-- **Adding a new AI tool** (a sixth backend alongside Claude/OpenCode/Codex/Antigravity/Cursor) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. All paths are env-overridable via `CHAT_RECALL_{CLAUDE,CODEX,AGY,CURSOR,CURSOR_IDE}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
+- **Adding a new AI tool** (a seventh backend alongside Claude/OpenCode/Codex/Antigravity/Cursor/Hermes) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. All paths are env-overridable via `CHAT_RECALL_{CLAUDE,CODEX,AGY,CURSOR,CURSOR_IDE,HERMES}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 

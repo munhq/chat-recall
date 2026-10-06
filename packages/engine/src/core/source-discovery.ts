@@ -27,10 +27,11 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import {
   claudeProjectDirs, geminiTmpDirs, codexSessionDirs, agyBrainDirs, cursorChatDirs, opencodeDbPaths,
+  hermesDbPaths,
   _setSourceExclusionFilter,
 } from './tool-paths.js';
 
-export type SourceTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor';
+export type SourceTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes';
 
 export interface SessionSource {
   /** Stable id derived from the path — what the dashboard toggles and the
@@ -137,9 +138,9 @@ function countTranscripts(root: string, tool: SourceTool): { sessions: number; n
   return { sessions, newestMtime };
 }
 
-/** Count sessions in an OpenCode database — one row per session, so the file
- *  itself is the unit rather than a directory of transcripts. */
-function countOpencodeSessions(dbPath: string): { sessions: number; newestMtime: number } {
+/** Count sessions in an OpenCode or Hermes database — one row per session, so
+ *  the file itself is the unit rather than a directory of transcripts. */
+function countDbSessions(dbPath: string): { sessions: number; newestMtime: number } {
   try {
     const st = statSync(dbPath);
     // Reading the db here would mean loading better-sqlite3 just to render a
@@ -173,8 +174,14 @@ export function discoverSessionSources(): SessionSource[] {
 
   for (const [i, path] of opencodeDbPaths({ includeExcluded: true }).entries()) {
     if (!existsSync(path)) continue;
-    const { sessions, newestMtime } = countOpencodeSessions(path);
+    const { sessions, newestMtime } = countDbSessions(path);
     out.push({ id: sourceId(path), tool: 'opencode', path, sessions, newestMtime, isPrimary: i === 0 });
+  }
+
+  for (const [i, path] of hermesDbPaths({ includeExcluded: true }).entries()) {
+    if (!existsSync(path)) continue;
+    const { sessions, newestMtime } = countDbSessions(path);
+    out.push({ id: sourceId(path), tool: 'hermes', path, sessions, newestMtime, isPrimary: i === 0 });
   }
 
   return out;

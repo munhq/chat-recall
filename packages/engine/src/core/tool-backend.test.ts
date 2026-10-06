@@ -104,7 +104,7 @@ describe('ToolBackend registry', () => {
   it('production bootstrap registers every AI tool', async () => {
     await bootstrapProduction();
     const ids = listAllBackends().map((b) => b.id).sort();
-    expect(ids).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode']);
+    expect(ids).toEqual(['agy', 'claude', 'codex', 'cursor', 'hermes', 'opencode']);
   });
 });
 

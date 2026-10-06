@@ -52,7 +52,7 @@ import { resolveProjectDirName } from './project-dir-name.js';
  * ~/.gemini/antigravity/brain. Those paths stay, and so does the Gemini API
  * (GEMINI_API_KEY) as an embedding and summary provider — the API was never
  * deprecated, only the CLI. */
-export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
 
 // Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
 // so backends and this dispatcher share a single source of truth.
