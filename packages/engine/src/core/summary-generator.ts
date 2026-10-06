@@ -278,37 +278,7 @@ export class SummaryGenerator {
   }
 
   private buildContext(content: SessionContent): string {
-    const parts: string[] = [];
-
-    // Add first prompt (most important)
-    if (content.firstPrompt) {
-      parts.push(`User's initial request:\n${content.firstPrompt.slice(0, 1000)}`);
-    }
-
-    // Add user messages (context)
-    if (content.userMessages.length > 0) {
-      const userMsgs = content.userMessages
-        .slice(0, 5) // First 5 user messages
-        .map(m => m.text.slice(0, 300))
-        .join('\n\n');
-      parts.push(`\nUser messages:\n${userMsgs}`);
-    }
-
-    // Add assistant responses (what was done)
-    if (content.assistantMessages.length > 0) {
-      const assistantMsgs = content.assistantMessages
-        .slice(0, 5) // First 5 assistant messages
-        .map(m => m.text.slice(0, 300))
-        .join('\n\n');
-      parts.push(`\nAssistant responses:\n${assistantMsgs}`);
-    }
-
-    // Add tools used (technical context)
-    if (content.toolsUsed.size > 0) {
-      parts.push(`\nTools used: ${Array.from(content.toolsUsed).join(', ')}`);
-    }
-
-    return parts.join('\n\n');
+    return buildSummaryContext(content);
   }
 
   /**
@@ -596,6 +566,8 @@ export class SummaryGenerator {
 
 Be specific and technical. Include file names, error messages, and specific changes. Use bullet points.
 
+The conversation below runs from the start of the session to its end, in order. A line in square brackets marks messages left out between two shown ones. The last messages show where the session stopped.
+
 Conversation:
 ${context}
 
@@ -622,4 +594,90 @@ Summary:`;
 
     return results;
   }
+}
+
+/** Characters of conversation one summary request carries. */
+export const SUMMARY_CONTEXT_CHARS =
+  Math.max(2000, Number(process.env.SUMMARY_CONTEXT_CHARS) || 16000);
+
+const USER_MESSAGE_CHARS = 600;
+const ASSISTANT_MESSAGE_CHARS = 400;
+/** Messages always shown at each end: how the session began, and where it stopped. */
+const HEAD_MESSAGES = 3;
+const TAIL_MESSAGES = 8;
+
+/**
+ * The conversation text the summary model reads.
+ *
+ * This read the first 5 user and the first 5 assistant messages. A Hermes
+ * session of 262 messages over 346 minutes was summarised from its first 15
+ * minutes, and the summary said the session "was cut off" while starting a UI.
+ *
+ * Now every message is a candidate, in order, within `budget` characters. A
+ * session that fits is sent whole. A larger one keeps its first and last
+ * messages, then the person's messages, then the assistant's, each spread
+ * evenly over the session, and marks each gap with the count it leaves out.
+ */
+export function buildSummaryContext(content: SessionContent, budget: number = SUMMARY_CONTEXT_CHARS): string {
+  const parts: string[] = [];
+  if (content.firstPrompt) parts.push(`User's initial request:\n${content.firstPrompt.slice(0, 1000)}`);
+  if (content.toolsUsed.size > 0) parts.push(`Tools used: ${Array.from(content.toolsUsed).join(', ')}`);
+
+  const messages = [
+    ...content.userMessages.map((m) => ({ line: m.lineNumber, text: `User: ${clip(m.text, USER_MESSAGE_CHARS)}`, user: true })),
+    ...content.assistantMessages.map((m) => ({ line: m.lineNumber, text: `Assistant: ${clip(m.text, ASSISTANT_MESSAGE_CHARS)}`, user: false })),
+  ].sort((a, b) => a.line - b.line);
+  if (messages.length === 0) return parts.join('\n\n');
+
+  const cost = (i: number) => messages[i].text.length + 2;
+  const chosen = new Set<number>();
+  let used = 0;
+  const take = (i: number) => {
+    if (chosen.has(i) || used + cost(i) > budget) return;
+    chosen.add(i);
+    used += cost(i);
+  };
+  const all = messages.map((_, i) => i);
+  for (const i of [...all.slice(0, HEAD_MESSAGES), ...all.slice(-TAIL_MESSAGES)]) take(i);
+  for (const i of spreadOrder(all.filter((i) => messages[i].user))) take(i);
+  for (const i of spreadOrder(all.filter((i) => !messages[i].user))) take(i);
+
+  const lines: string[] = [];
+  let skipped = 0;
+  for (const i of all) {
+    if (!chosen.has(i)) { skipped++; continue; }
+    if (skipped > 0) lines.push(`[${skipped} message${skipped === 1 ? '' : 's'} left out]`);
+    skipped = 0;
+    lines.push(messages[i].text);
+  }
+  if (skipped > 0) lines.push(`[${skipped} message${skipped === 1 ? '' : 's'} left out]`);
+  parts.push(`Conversation (${messages.length} messages):\n${lines.join('\n\n')}`);
+  return parts.join('\n\n');
+}
+
+function clip(text: string, max: number): string {
+  const t = text.trim();
+  return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
+
+/**
+ * `items` reordered so that every prefix is spread over the whole range: the
+ * ends first, then the middle, then the middles of each half, and so on. Taking
+ * items in this order until a budget runs out samples the session evenly.
+ */
+export function spreadOrder<T>(items: T[]): T[] {
+  if (items.length <= 2) return items.slice();
+  const out: T[] = [items[0], items[items.length - 1]];
+  let ranges: Array<[number, number]> = [[0, items.length - 1]];
+  while (ranges.length > 0) {
+    const next: Array<[number, number]> = [];
+    for (const [lo, hi] of ranges) {
+      if (hi - lo < 2) continue;
+      const mid = (lo + hi) >> 1;
+      out.push(items[mid]);
+      next.push([lo, mid], [mid, hi]);
+    }
+    ranges = next;
+  }
+  return out;
 }
