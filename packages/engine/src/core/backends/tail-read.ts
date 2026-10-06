@@ -141,6 +141,67 @@ export function readTailFromOffset(path: string, offset: number, maxBytes: numbe
   }
 }
 
+/**
+ * `readTailFromOffset` over several files read as one stream, in the order
+ * given. Offset `o` addresses byte `o` of the files joined end to end, which
+ * is the order the union of a session's copies puts their records in.
+ *
+ * A read never crosses into the next file: the caller asks again from the
+ * returned offset. Only the last file can still be written, so a line without
+ * a final `\n` at the end of an earlier file is complete, and it is returned
+ * as it is.
+ */
+export function readSourcesFromOffset(paths: string[], offset: number, maxBytes: number = TAIL_READ_MAX_BYTES): TailRead {
+  let start = 0;
+  let linesBefore = 0;
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    let size = 0;
+    try { size = statSync(path).size; } catch { size = 0; }
+    const last = i === paths.length - 1;
+    if (!last && offset >= start + size) {
+      const lines = linesBeforeOffset(path, size);
+      if (lines === undefined) return { text: '', newOffset: offset };
+      linesBefore += lines + (size > 0 && !endsWithNewline(path, size) ? 1 : 0);
+      start += size;
+      continue;
+    }
+    const local = offset - start;
+    const read = readTailFromOffset(path, local, maxBytes);
+    const shift = (r: TailRead): TailRead => ({
+      ...r,
+      newOffset: start + r.newOffset,
+      ...(r.baseLine !== undefined ? { baseLine: linesBefore + r.baseLine } : {}),
+    });
+    if (last || read.newOffset > local || local >= size) return shift(read);
+    // An earlier file ends inside a line. That line is complete.
+    if (size - local > maxBytes) return { text: '', newOffset: start + size, skippedBytes: size - local };
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, 'r');
+      const text = readAt(fd, local, size - local).toString('utf-8');
+      return shift({ text, newOffset: size, baseLine: linesBeforeOffset(path, local) });
+    } catch {
+      return { text: '', newOffset: offset };
+    } finally {
+      if (fd !== null) { try { closeSync(fd); } catch { /* best-effort */ } }
+    }
+  }
+  return { text: '', newOffset: offset };
+}
+
+function endsWithNewline(path: string, size: number): boolean {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    return readAt(fd, size - 1, 1)[0] === 0x0a;
+  } catch {
+    return true;
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* best-effort */ } }
+  }
+}
+
 /** Byte position of the first `\n` at or after `from`, or -1 when the file
  *  ends first (the line is still being written). Reads in fixed blocks, so the
  *  line itself is never held in memory. */

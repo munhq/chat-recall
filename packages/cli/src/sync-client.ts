@@ -1420,6 +1420,14 @@ const refs = listAvailableBackends().flatMap((b) => {
   // that re-classifies the session as FULL on an mtime-only change then matches
   // this hash and skips the rebuild entirely.
   const shippedHash = new Map<string, string>();
+  // session_id → the backend's sourceLayout when this run read the session.
+  // Every ack records it with the cursor, so the cursor and the bytes it
+  // addresses come from the same read.
+  const shippedLayout = new Map<string, string>();
+  const layoutOf = (id: string): { layout?: string } => {
+    const layout = shippedLayout.get(id);
+    return layout ? { layout } : {};
+  };
 
   // `flatten`: each add() is a GROUP of rows that must land in the same
   // POST (e.g. one session's findings — the server replaces a session's
@@ -1492,7 +1500,7 @@ const refs = listAvailableBackends().flatMap((b) => {
         // acked: the server accepted the batch containing this conversation, so
         // the cursor is a real delivery receipt.
         return off > 0
-          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash, acked: true, full: true }
+          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash, acked: true, full: true, ...layoutOf(r.session_id) }
           : { id: r.session_id, mtime: r.mtime, hash };
       }));
     }
@@ -1549,6 +1557,7 @@ const refs = listAvailableBackends().flatMap((b) => {
             size: c.from_offset as number, // size = new offset (file grew to here)
             acked: true,                   // server merged this tail
             chunkFinal: c.final === true,  // completes a chunked full sync
+            ...layoutOf(c.session_id as string),
           })));
         } catch { /* ledger — never fail an upload over it */ }
       }
@@ -1585,9 +1594,9 @@ const refs = listAvailableBackends().flatMap((b) => {
       const mtime = conv.mtime as number;
       try {
         if (staged || !guarded) {
-          markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true, chunkedHead: true }]);
+          markSynced(base, [{ id, mtime, offset: conv.from_offset as number, size: conv.from_offset as number, acked: true, chunkedHead: true, ...layoutOf(id) }]);
         } else if (typeof guarded.o === 'number' && guarded.o > 0 && guarded.o <= fileSize) {
-          markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true, chunkedHead: true }]);
+          markSynced(base, [{ id, mtime, offset: guarded.o, size: guarded.o, acked: true, chunkedHead: true, ...layoutOf(id) }]);
         } else {
           // The server holds more than this file has: the file was truncated in
           // place. The server keeps the fuller copy; stop here at this mtime.
@@ -1743,12 +1752,12 @@ const refs = listAvailableBackends().flatMap((b) => {
     if (!ledger) return ref.mtime >= (opts.sinceMs ?? 0) ? 'full' : 'skip';
     const ack = ledger.get(ref.prefixedId);
     const backend = backendFor(ref);
-    // A session that exists in more than one home cannot be tail-appended: the
-    // size is the SUM across copies while a byte offset addresses one file, so
-    // an append would ship bytes that do not match the recorded offset. Force
-    // FULL, which ships the unioned container and is correct either way.
-    const split = !!backend?.spansMultipleSources?.(ref.prefixedId);
-    const isAO = !!backend?.isAppendOnly?.() && !split;
+    // The cursor of a session in more than one home is an offset into its
+    // copies joined end to end. It addresses the same bytes only while the
+    // copies before the last are unchanged; any other change is a FULL sync,
+    // which ships the union and records the new layout.
+    const sameLayout = (ack?.L ?? '') === (backend?.sourceLayout?.(ref.prefixedId) ?? '');
+    const isAO = !!backend?.isAppendOnly?.() && sameLayout;
     const size = isAO ? (backend?.fileSize?.(ref.prefixedId) ?? 0) : 0;
     return syncMode(ack, ref.mtime, size, extractorVersionForTool(ref.toolId), isAO);
   };
@@ -1870,6 +1879,8 @@ const refs = listAvailableBackends().flatMap((b) => {
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
     if (mode === 'skip') { skipped++; continue; }
+    const layout = backendFor(ref)?.sourceLayout?.(ref.prefixedId) ?? '';
+    if (layout) shippedLayout.set(ref.prefixedId, layout); else shippedLayout.delete(ref.prefixedId);
     trace?.(`build (${mode}) ${ref.prefixedId} · ${(sessionFileBytes(ref) / 1048576).toFixed(1)}MB`);
 
     // ── APPEND: tail-only ship (no raw_b64, no telemetry, no derived) ──
@@ -1966,7 +1977,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           const priorCursor = ackRow?.s ?? 0;
           const safeToAck = off > 0 && off <= priorCursor;
           markSynced(base, [safeToAck
-            ? { id: ref.prefixedId, mtime: ref.mtime, offset: off, size: off, hash: built.srcHash, acked: true }
+            ? { id: ref.prefixedId, mtime: ref.mtime, offset: off, size: off, hash: built.srcHash, acked: true, ...layoutOf(ref.prefixedId) }
             : { id: ref.prefixedId, mtime: ref.mtime, hash: built.srcHash }]);
         }
         catch { /* ledger is local bookkeeping — never fail a sync over it */ }

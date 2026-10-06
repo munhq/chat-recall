@@ -296,10 +296,15 @@ export interface ToolBackend {
    *  offset and always full-sync. */
   isAppendOnly?(): boolean;
   /** True when this session's content lives in MORE THAN ONE source (e.g. two
-   *  profile homes holding disjoint halves). Such a session cannot be
-   *  tail-appended — size is the sum across copies while a byte offset
-   *  addresses one file — so the caller forces a FULL sync. */
+   *  profile homes holding disjoint halves). `fileSize` is then the sum across
+   *  the sources and `readFromOffset` reads them joined end to end. */
   spansMultipleSources?(prefixedId: string): boolean;
+
+  /** Every source of the session except the last, with its size. A byte
+   *  offset into the joined sources addresses the same bytes only while this
+   *  is unchanged, so the caller records it with the cursor and appends only
+   *  while it matches. '' for a session with one source. */
+  sourceLayout?(prefixedId: string): string;
 
   /** Current byte size of the transcript file. Returns 0 when unknown or the
    *  backend is not append-only (the freshness gate treats 0 as "no tail
