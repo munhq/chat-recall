@@ -66,6 +66,9 @@ export interface SyncedRow {
   /** A chunked full sync is in progress: its head was acked, and its final
    *  append completes it (and sets F). */
   k?: 1;
+  /** The backend's `sourceLayout` when `o` was captured, for a session whose
+   *  copies are read joined end to end. Absent for a session with one copy. */
+  L?: string;
 }
 /** On disk a row is the {m,v[,f,o,s]} shape OR a legacy bare mtime number. */
 type LedgerEntry = SyncedRow | number;
@@ -427,6 +430,9 @@ export function markSynced(
   server: string,
   rows: Array<{
     id: string; mtime: number; offset?: number; size?: number; hash?: string;
+    /** `sourceLayout` of the session when `offset` was read. Recorded with an
+     *  acked cursor; a row without an ack keeps the layout of its cursor. */
+    layout?: string;
     /** The server confirmed a write covering `offset`/`size`. Required for the
      *  cursor to advance; without it those fields are ignored. */
     acked?: boolean;
@@ -475,6 +481,8 @@ export function markSynced(
     else if (prev?.F !== undefined) base.F = prev.F;
     if (cursorFromCaller && r.chunkedHead) base.k = 1;
     else if (prev?.k && !completesChunked && !(cursorFromCaller && r.full)) base.k = 1;
+    const layout = cursorFromCaller ? r.layout : prev?.L;
+    if (layout) base.L = layout;
     forServer[r.id] = base;
   }
   persist(data);

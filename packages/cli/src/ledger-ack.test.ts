@@ -104,6 +104,24 @@ describe('the cursor only advances on an acknowledged write', () => {
   });
 });
 
+describe('the source layout travels with the cursor', () => {
+  const SPLIT = '99999999-8888-7777-6666-555555555555';
+  test('an acked cursor records the layout, and an unacked stamp keeps it', async () => {
+    const { markSynced, getSyncedRows } = await ledger();
+    markSynced(SRV, [{ id: SPLIT, mtime: 1000, offset: 5000, size: 5000, acked: true, layout: 'a.jsonl:4000' }]);
+    expect(getSyncedRows(SRV).get(SPLIT)!.L).toBe('a.jsonl:4000');
+    markSynced(SRV, [{ id: SPLIT, mtime: 2000 }]);
+    expect(getSyncedRows(SRV).get(SPLIT)!.L).toBe('a.jsonl:4000');
+  });
+
+  test('an acked cursor without a layout clears the old one', async () => {
+    const { markSynced, getSyncedRows } = await ledger();
+    markSynced(SRV, [{ id: SPLIT, mtime: 1000, offset: 5000, size: 5000, acked: true, layout: 'a.jsonl:4000' }]);
+    markSynced(SRV, [{ id: SPLIT, mtime: 2000, offset: 6000, size: 6000, acked: true, full: true }]);
+    expect(getSyncedRows(SRV).get(SPLIT)!.L).toBeUndefined();
+  });
+});
+
 describe('forceFullResync un-strands a session', () => {
   test('clears the cursor, hash and mtime so the next pass is a FULL', async () => {
     const { markSynced, getSyncedRows, syncMode, _resetLedgerCacheForTests } = await ledger();

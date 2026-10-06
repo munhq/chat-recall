@@ -36,7 +36,7 @@ import {
 import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
-import { readTailFromOffset, type TailRead } from './tail-read.js';
+import { readTailFromOffset, readSourcesFromOffset, type TailRead } from './tail-read.js';
 import { resolveProjectDirName } from '../project-dir-name.js';
 import { originFromText, queuedCommandPrompt, userRecordOrigin } from '../claude-prompt-origin.js';
 import {
@@ -629,29 +629,41 @@ export class ClaudeBackend implements ToolBackend {
   /**
    * True when this session exists in MORE THAN ONE home.
    *
-   * Such a session cannot be tail-appended: `fileSize()` is the SUM across
-   * copies while a byte offset addresses ONE file, so the two disagree by
-   * construction and the "tail" is either empty or the wrong bytes. The caller
-   * uses this to force a FULL sync, which ships the unioned container and is
-   * correct regardless of how the halves are arranged.
-   *
    * Measured on ec05f266: ~/.claude 1715 records, ~/.claude-work 205 records,
-   * zero overlap. An offset-based append against a 5846662-byte "size" that no
-   * single file has could only ever ship nonsense.
+   * zero overlap. `fileSize()` is the sum across the copies, and
+   * `readFromOffset()` reads them joined end to end, primary first.
    */
   spansMultipleSources(prefixedId: string): boolean {
     return findSessionFiles(this.toRawId(prefixedId)).length > 1;
   }
 
+  /**
+   * The copies before the last one, each with its size. Claude Code writes to
+   * the home of the profile that runs the session, so the live copy can grow,
+   * appear, vanish or merge back into the primary. Each of those moves bytes
+   * under an offset into the joined copies; this key changes with all of them.
+   */
+  sourceLayout(prefixedId: string): string {
+    const copies = findSessionFiles(this.toRawId(prefixedId));
+    if (copies.length < 2) return '';
+    return copies.slice(0, -1).map((c) => {
+      let size = -1;
+      try { size = statSync(c.path).size; } catch { /* missing */ }
+      return `${c.path}:${size}`;
+    }).join('|');
+  }
+
+  /**
+   * Session 8de13d0a had 31 MB in ~/.claude and 2 MB in ~/.claude-work. Over
+   * the 24 MB build ceiling a sync ships the transcript in chunks read here,
+   * and this returned no text for a session in two homes. Each sync shipped
+   * nothing, and the server stayed three hours behind.
+   */
   async readFromOffset(prefixedId: string, offset: number, maxBytes?: number): Promise<TailRead> {
-    const rawId = this.toRawId(prefixedId);
-    const copies = findSessionFiles(rawId);
+    const copies = findSessionFiles(this.toRawId(prefixedId));
     if (copies.length === 0) return { text: '', newOffset: offset };
-    // Refuse to serve a tail for a split session — see spansMultipleSources.
-    // Returning the primary's tail here would ship bytes that do not correspond
-    // to the offset the ledger recorded.
-    if (copies.length > 1) return { text: '', newOffset: offset };
-    return readTailFromOffset(copies[0].path, offset, maxBytes);
+    if (copies.length === 1) return readTailFromOffset(copies[0].path, offset, maxBytes);
+    return readSourcesFromOffset(copies.map((c) => c.path), offset, maxBytes);
   }
 }
 
