@@ -37,6 +37,7 @@ export const SESSION_ID_PREFIXES = {
   opencode: 'opencode_',
   agy: 'agy_',
   cursor: 'cursor_',
+  hermes: 'hermes_',
   gemini: 'gemini_',
 } as const;
 
@@ -67,6 +68,7 @@ export function resumeCommandFor(sessionId: string, tool?: string): string | nul
     // shell, but both surfaces share the `cursor_` prefix, so this is the best
     // available answer for either.
     case 'cursor':   return `cursor-agent --resume ${raw('cursor_')}`;
+    case 'hermes':   return `hermes --resume ${raw('hermes_')}`;
     // Gemini's `--resume` takes an index or "latest", never a session id.
     default:         return null;
   }

@@ -44,6 +44,9 @@ export interface CanonicalEvent {
 
   // user / assistant_text
   text?: string;
+  /** A user event the person did not type (see PromptOrigin). Absent for a
+   *  prompt the person wrote. */
+  origin?: string;
 
   // tool_use
   toolName?: string;
@@ -175,7 +178,7 @@ export interface ToolBackend {
   /**
    * String prefix the system uses on raw ids to make them globally unique
    * across tools. Claude has '' (raw uuid is already unique). Other tools
-   * use 'gemini_', 'opencode_', 'codex_', 'agy_', 'cursor_'.
+   * use 'gemini_', 'opencode_', 'codex_', 'agy_', 'cursor_', 'hermes_'.
    */
   readonly idPrefix: string;
 

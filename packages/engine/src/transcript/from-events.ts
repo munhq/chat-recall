@@ -28,7 +28,7 @@ export function canonicalEventsToMessages(events: CanonicalEvent[]): TranscriptM
     switch (e.kind) {
       case 'user':
         cur = null;
-        messages.push({ line: e.line, role: 'user', content: e.text ?? '', timestamp: e.tsIso });
+        messages.push({ line: e.line, role: 'user', content: e.text ?? '', timestamp: e.tsIso, ...(e.origin ? { origin: e.origin } : {}) });
         break;
       case 'assistant_text':
         cur = { line: e.line, role: 'assistant', content: e.text ?? '', timestamp: e.tsIso };

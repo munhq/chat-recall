@@ -1,8 +1,8 @@
 # Adding an AI coding tool
 
-chat-recall reads five tools today: Claude Code, Codex, OpenCode, Antigravity
-and Cursor. Adding a sixth means writing one format adapter and then extending
-the places that enumerate the five by name.
+chat-recall reads six tools today: Claude Code, Codex, OpenCode, Antigravity,
+Cursor and Hermes Agent. Adding a seventh means writing one format adapter and
+then extending the places that enumerate the six by name.
 
 The shared engine in `packages/engine/src/core/generic-engine.ts` runs the same
 `extractTurnsFromEvents` / `liveScanEditsFromEvents` / `replayFromEvents`
@@ -15,7 +15,7 @@ works once that function does.
 `AiTool` in `packages/engine/src/core/live-session-scan.ts`:
 
 ```ts
-export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
 ```
 
 Add yours. The compiler will now point at most of the work in step 3.
@@ -38,6 +38,8 @@ Create `packages/engine/src/core/backends/<tool>.ts`, implementing
 | `extractTurns()`, `liveScanEdits()`, `replay()`, `computeOutcome()`, `getCommits()`, `collectRecentEdits()`, `exportRawSession()` | delegate these to the generic engine |
 
 Read `backends/codex.ts` first: it is the smallest complete adapter. Read
+`backends/hermes.ts` if your tool keeps its chats in SQLite rows in the OpenAI
+message shape. Read
 `backends/cursor.ts` if your tool has more than one surface — Cursor covers both
 the `cursor-agent` CLI and the desktop IDE, and splits its readers into
 `cursor-store.ts` and `cursor-ide.ts`.
@@ -75,6 +77,14 @@ accept a short list without complaint.
 `backends/backends.test.ts` runs the contract every backend must satisfy, and
 `backends/integration.test.ts` runs the generic engine against real fixture
 transcripts. Add fixtures for your format to both.
+
+Several tests point every tool at an empty folder, so that only their fixtures
+are counted. Add your tool's home variable to each of them, or they read the
+real data of the machine that runs them:
+
+```bash
+grep -rl CHAT_RECALL_CURSOR_HOME packages | grep '\.test\.ts$'
+```
 
 Fixtures use invented paths and invented project names — `/home/user/code/example-app`,
 `acme`, `owner/repo`. See the rule at the foot of `CLAUDE.md`: a path test asserts

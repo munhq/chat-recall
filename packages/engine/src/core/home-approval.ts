@@ -108,6 +108,16 @@ export function grandfatherLegacyHomes(): { seeded: string[] } {
 
 const dirOf = (filePath: string): string => dirname(filePath);
 
+/** Hermes Agent's own default root: `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows. */
+export function defaultHermesHome(): string {
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local');
+    return join(local, 'hermes');
+  }
+  return join(homedir(), '.hermes');
+}
+
+
 /** Explicit per-tool primary overrides — implicitly approved. */
 function primaryHomes(): string[] {
   const home = homedir();
@@ -126,6 +136,7 @@ function primaryHomes(): string[] {
     env.CHAT_RECALL_AGY_HOME    || s?.agyHome    || join(home, '.gemini', 'antigravity-cli'),
     env.CHAT_RECALL_CURSOR_HOME || s?.cursorHome || join(home, '.cursor'),
     dirOf(opencodeDb),
+    env.CHAT_RECALL_HERMES_HOME || s?.hermesHome || env.HERMES_HOME?.trim() || defaultHermesHome(),
   ];
   return candidates.map(normalizeHomePath);
 }

@@ -142,6 +142,7 @@ export interface SourcesEnabled {
   // No `rules` flag: `.cursor/rules/*.mdc` has no MemorySource reading it yet,
   // and a toggle that switches nothing is worse than an absent one.
   cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
+  hermes:   { sessions: boolean };
   // `shared` covers the tool-neutral ~/.agents/{skills} standard read by all tools.
   shared:   { skills: boolean };
   common:   { mcps: boolean; agentMd: boolean };
@@ -157,6 +158,8 @@ export interface SourceSettings {
   cursorHome?: string;
   /** Cursor IDE user-data root (`~/.config/Cursor`) — the desktop app, not the CLI. */
   cursorIdeHome?: string;
+  /** Hermes Agent root (`~/.hermes`). */
+  hermesHome?: string;
   /** Additional Claude home directories (multi-install: ~/.claude-work, …). */
   extraClaudeHomes?: string[];
   /**
@@ -256,7 +259,7 @@ export interface SyncSettings {
    */
   pathsCleartext?: boolean;
   /** Tools whose findings/meta never leave the device. */
-  excludeTools: Array<'claude' | 'codex' | 'opencode' | 'agy' | 'cursor'>;
+  excludeTools: Array<'claude' | 'codex' | 'opencode' | 'agy' | 'cursor' | 'hermes'>;
   /** Project paths whose findings/meta never leave the device. */
   excludeProjects: string[];
   /**
@@ -409,6 +412,7 @@ function defaultSourcesEnabled(): SourcesEnabled {
     agy:      { sessions: true, plans: true, brain: true, extensions: true,
                 skills: true, agents: true, commands: true },
     cursor:   { sessions: true, skills: true, agents: true, commands: true },
+    hermes:   { sessions: true },
     shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
   };
@@ -522,6 +526,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     codex:    { ...base.enabled.codex,    ...(partial.enabled?.codex    ?? {}) },
     agy:      { ...base.enabled.agy, ...inherited, ...(partial.enabled?.agy ?? {}) },
     cursor:   { ...base.enabled.cursor,   ...(partial.enabled?.cursor   ?? {}) },
+    hermes:   { ...base.enabled.hermes,   ...(partial.enabled?.hermes   ?? {}) },
     shared:   { ...base.enabled.shared,   ...(partial.enabled?.shared   ?? {}) },
     common:   { ...base.enabled.common,   ...(partial.enabled?.common   ?? {}) },
   };
@@ -533,6 +538,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     agyHome:          partial.agyHome          ?? base.agyHome,
     cursorHome:       partial.cursorHome       ?? base.cursorHome,
     cursorIdeHome:    partial.cursorIdeHome    ?? base.cursorIdeHome,
+    hermesHome:       partial.hermesHome       ?? base.hermesHome,
     extraClaudeHomes: partial.extraClaudeHomes ?? base.extraClaudeHomes,
     approvedHomes:    partial.approvedHomes    ?? base.approvedHomes,
     declinedHomes:    partial.declinedHomes    ?? base.declinedHomes,

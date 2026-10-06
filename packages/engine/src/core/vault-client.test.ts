@@ -183,6 +183,7 @@ beforeEach(() => {
   setEnv('CHAT_RECALL_AGY_HOME',    join(tmp, 'agy'));
   setEnv('CHAT_RECALL_CURSOR_HOME', join(tmp, 'cursor'));
   setEnv('CHAT_RECALL_CURSOR_IDE_HOME', join(tmp, 'cursor-ide'));
+  setEnv('CHAT_RECALL_HERMES_HOME', join(tmp, 'hermes'));
   setEnv('VAULT_TEST_TOKEN', 'fake-bearer-for-test');
 
   // Mark Claude as installed and seed a session JSONL.
