@@ -5,7 +5,7 @@
  * generic transcript bridge and the archive dump.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -114,7 +114,9 @@ beforeEach(() => {
   mkdirSync(hermesHome, { recursive: true });
   writeFileSync(join(hermesHome, 'SOUL.md'), 'You are Hermes.\n');
   for (const k of ['CHAT_RECALL_HERMES_HOME', 'HERMES_HOME', 'CHAT_RECALL_DATA_DIR']) savedEnv[k] = process.env[k];
-  delete process.env.CHAT_RECALL_HERMES_HOME;
+  // The default home is `%LOCALAPPDATA%\hermes` on Windows and `~/.hermes`
+  // elsewhere, so the fixture home is set explicitly.
+  process.env.CHAT_RECALL_HERMES_HOME = hermesHome;
   delete process.env.HERMES_HOME;
   process.env.CHAT_RECALL_DATA_DIR = join(home, '.chat-recall');
   seedRoot();
@@ -227,8 +229,9 @@ describe('HermesBackend', () => {
     writeFileSync(join(hermesHome, 'profiles', 'work', 'SOUL.md'), 'You are Hermes.\n');
     const { identifyHome, discoverHomes } = await import('../home-discovery.js');
     expect(identifyHome(hermesHome)).toBe('hermes');
+    // Discovery reports resolved paths: a macOS temp dir is under /private.
     const found = discoverHomes({ includeRunning: false }).filter((h) => h.tool === 'hermes').map((h) => h.path);
-    expect(found).toContain(hermesHome);
-    expect(found).toContain(join(hermesHome, 'profiles', 'work'));
+    expect(found).toContain(realpathSync(hermesHome));
+    expect(found).toContain(realpathSync(join(hermesHome, 'profiles', 'work')));
   });
 });
