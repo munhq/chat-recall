@@ -40,7 +40,7 @@ import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
-  gunzipContainer, gzipContainer, mergeContainer, repairContainer, parseTranscriptFromContainer, RAW_PARSE_MAX_BYTES,
+  gunzipContainer, gzipContainerStreamed, mergeContainer, repairContainer, parseTranscriptFromContainer, RAW_PARSE_MAX_BYTES,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import type { StorageDriver } from '@chat-recall/engine/core/store/driver.js';
@@ -313,7 +313,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
           const rep = repairContainer(container);
           if (rep.repaired > 0) {
             container = rep.container;
-            ({ gz, size: rawSize } = gzipContainer(container));
+            ({ gz, size: rawSize } = await gzipContainerStreamed(container));
           }
           // The archive metadata came with the batch's prefetch, so this
           // no longer reads per session — `?? null` says "prefetched, and
@@ -341,7 +341,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
               const priorContainer = prior?.gz ? gunzipContainer(prior.gz) : null;
               if (priorContainer) {
                 const merged = mergeContainer(priorContainer, container);
-                const { gz: mergedGz, size: mergedSize } = gzipContainer(merged.container);
+                const { gz: mergedGz, size: mergedSize } = await gzipContainerStreamed(merged.container);
                 if (mergedSize > Number(prior!.size)) {
                   rawArchiveResult = await store.putRawSession(
                     cv.session_id, merged.container.tool, mtime, mergedGz, mergedSize,

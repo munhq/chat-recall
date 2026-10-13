@@ -319,6 +319,49 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  // The worker ran out of heap after the repair and before the write, so every
+  // sweep met the same archive with the same broken line, 138 times.
+  test('the repaired archive is written before the view, so a failure after the repair does not repeat it', async () => {
+    const { createStore, buildRawContainer, gzipContainer, gunzipContainer } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const store = await createStore();
+    const id = 'heal-repair-first';
+    const mtime = 1760000700000;
+    const first = JSON.stringify({ type: 'user', uuid: 'p1', message: { role: 'user', content: 'deploy the gateway please' } });
+    const broken = String.raw`{"type":"user","uuid":"p2","parentUuid":"p1","message":{"role":"user","content":"why does curl -H \"Authorization: Bearer [REDACTED:auth-header]" fail"}}`;
+    const { gz, size } = gzipContainer(buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(first + '\n' + broken + '\n') }] }));
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+    await store.setItem({
+      id, sourceType: 'session', title: 'deploy', projectPath: '/home/user/code/example',
+      contentPreview: 'deploy', filePath: '', mtime, extra: { tool: 'claude', synced: true },
+    } as Parameters<typeof store.setItem>[0]);
+
+    const failing = Object.create(store) as typeof store;
+    failing.setCachedContent = async () => { throw new Error('out of heap'); };
+    expect(await healSessionFromArchive(failing, id)).toMatchObject({ healed: false, reason: 'error' });
+
+    const archived = gunzipContainer((await store.getRawSession(id))!.gz)!;
+    for (const l of archived.files[0].text.split('\n').filter(Boolean)) expect(() => JSON.parse(l)).not.toThrow();
+    await store.close();
+  });
+
+  test('the sweep skips an archive by its listed size and does not download it', async () => {
+    const { createStore, RAW_PARSE_MAX_BYTES } = await import('../imports.js');
+    const { selfHealTenant } = await import('./self-heal.js');
+    const { gzipSync } = await import('zlib');
+    const store = await createStore();
+    const gz = gzipSync(Buffer.from(JSON.stringify({ type: 'user', message: { role: 'user', content: 'big' } }) + '\n'));
+    await store.putRawSession('listed-too-large', 'claude', 1760000800000, gz, RAW_PARSE_MAX_BYTES + 1);
+
+    const fetched: string[] = [];
+    const spy = Object.create(store) as typeof store;
+    spy.getRawSession = async (sid: string) => { fetched.push(sid); return store.getRawSession(sid); };
+    const r = await selfHealTenant(spy, { sinceMs: 1760000800000, dryRun: true });
+    expect(r.scanned).toBe(1);
+    expect(fetched).not.toContain('listed-too-large');
+    await store.close();
+  });
+
   // Appends do not update the archive, so a view can hold messages the archive
   // lacks. Rebuilding it from that archive would drop them.
   test('an archive with fewer messages than the view leaves the prompt row and the view alone', async () => {

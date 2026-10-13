@@ -11,8 +11,9 @@
  * Container format v1 (all our sources are UTF-8 text):
  *   { v: 1, tool, mtime, files: [{ name, text }] }
  */
-import { gzipSync, gunzipSync } from 'zlib';
+import { gzipSync, gunzipSync, createGzip } from 'zlib';
 import { createHash } from 'crypto';
+import { getHeapStatistics } from 'v8';
 import type { AiTool, RawSessionExport } from '../core/tool-backend.js';
 import { tryGetBackend } from '../core/tool-backend.js';
 import type { Transcript, TranscriptMessage, Subagent } from './types.js';
@@ -63,14 +64,77 @@ export function gzipContainer(c: RawContainer): { gz: Buffer; size: number } {
   return { gz: gzipSync(json, { level: 6 }), size: Buffer.byteLength(json) };
 }
 
+/** Characters of file text that are escaped and compressed in one step. */
+const STREAM_PIECE_CHARS = 1 << 20;
+
+/**
+ * gzipContainer for a server that must not hold the whole JSON text. The
+ * JSON is the same as JSON.stringify(c), so `size` is the unit the shrink
+ * guard compares, but it goes to the compressor one piece of file text at a
+ * time. JSON.stringify(c) of a 40 MB archive is a second string as large as
+ * the archive, and with the container it took a worker past its 259 MB heap.
+ */
+export async function gzipContainerStreamed(c: RawContainer): Promise<{ gz: Buffer; size: number }> {
+  // Each text becomes a placeholder that holds U+0000. File names are paths,
+  // and a path holds no U+0000, so no other value of the JSON matches it.
+  const mark = (i: number) => `\u0000cr-text-${i}\u0000`;
+  const skeleton = JSON.stringify({ ...c, files: c.files.map((f, i) => ({ ...f, text: mark(i) })) });
+  const gzip = createGzip({ level: 6 });
+  const out: Buffer[] = [];
+  gzip.on('data', (b: Buffer) => out.push(b));
+  const done = new Promise<void>((resolve, reject) => { gzip.on('end', resolve); gzip.on('error', reject); });
+  let size = 0;
+  const write = async (piece: string) => {
+    size += Buffer.byteLength(piece);
+    if (!gzip.write(piece)) await new Promise<void>((resolve) => gzip.once('drain', resolve));
+  };
+  let at = 0;
+  for (let i = 0; i < c.files.length; i++) {
+    const placeholder = JSON.stringify(mark(i));
+    const pos = skeleton.indexOf(placeholder, at);
+    if (pos < 0) throw new Error(`container text ${i} has no placeholder in its JSON`);
+    await write(skeleton.slice(at, pos) + '"');
+    const text = c.files[i].text;
+    for (let from = 0; from < text.length;) {
+      let to = Math.min(from + STREAM_PIECE_CHARS, text.length);
+      // A surrogate pair split over two pieces would be escaped as two lone
+      // surrogates, and the JSON would differ from JSON.stringify(c).
+      const last = text.charCodeAt(to - 1);
+      if (to < text.length && last >= 0xd800 && last <= 0xdbff) to--;
+      const escaped = JSON.stringify(text.slice(from, to));
+      await write(escaped.slice(1, -1));
+      from = to;
+    }
+    await write('"');
+    at = pos + placeholder.length;
+  }
+  await write(skeleton.slice(at));
+  gzip.end();
+  await done;
+  return { gz: Buffer.concat(out), size };
+}
+
+/** Heap one archive needs at its peak, per byte of the archive. The self-heal
+ *  of a 40 MB archive with one line to repair needed a 224 MB heap. */
+export const RAW_PARSE_HEAP_PER_BYTE = 6;
+/** Heap the rest of a server process keeps while it unpacks an archive. */
+export const RAW_PARSE_HEAP_RESERVE = 128 * 1024 * 1024;
+const RAW_PARSE_CEILING = 40 * 1024 * 1024;
+
+/** The largest archive that a process with this V8 heap limit unpacks whole. */
+export function rawParseMaxBytes(heapLimit: number): number {
+  return Math.max(0, Math.min(RAW_PARSE_CEILING, Math.floor((heapLimit - RAW_PARSE_HEAP_RESERVE) / RAW_PARSE_HEAP_PER_BYTE)));
+}
+
 /**
  * The largest archive (uncompressed bytes) the server unpacks whole. Unpacking
- * holds the text, the parsed container and the parsed transcript at once, and a
- * server pod has 512 MiB. The largest archive stored before chunked uploads was
- * 36 MB. A larger one is stored and can be downloaded, and every server path
- * that would unpack it whole skips it.
+ * holds the text, a repaired copy of it, the parsed container and the parsed
+ * transcript, so the limit follows the heap of this process, up to 40 MB. A
+ * worker with 512 MiB has a 259 MB heap, and at 40 MB its self-heal ran out of
+ * heap on every start. A larger archive is stored and can be downloaded, and
+ * every server path that would unpack it whole skips it.
  */
-export const RAW_PARSE_MAX_BYTES = 40 * 1024 * 1024;
+export const RAW_PARSE_MAX_BYTES = rawParseMaxBytes(getHeapStatistics().heap_size_limit);
 
 export function gunzipContainer(gz: Buffer): RawContainer | null {
   try {

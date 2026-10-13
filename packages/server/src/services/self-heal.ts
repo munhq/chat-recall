@@ -26,7 +26,7 @@
  */
 import {
   createStore, createControlPlane, createMetadataCache, runWithTenant, runWithAuthor,
-  gunzipContainer, gzipContainer, repairContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION, RAW_PARSE_MAX_BYTES,
+  gunzipContainer, gzipContainerStreamed, repairContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION, RAW_PARSE_MAX_BYTES,
   getBackend,
   type SourceType,
 } from '../imports.js';
@@ -78,12 +78,27 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       log.info({ session: sessionId, size: raw.size }, 'self-heal: archive too large to unpack here');
       return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'too-large' };
     }
-    const stored0 = gunzipContainer(raw.gz);
+    let stored0 = gunzipContainer(raw.gz);
     if (!stored0) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
     // Lines a pre-0.7.12 redactor made unparseable. Every reader skipped them,
     // so their records are absent from the view, and the repaired archive
     // parses to more messages, which the check below rebuilds from.
     const { container, repaired: repairedLines } = repairContainer(stored0);
+    // The unrepaired text is as large as the repaired text and nothing reads it again.
+    stored0 = null;
+
+    // The archive, with its broken lines repaired, is written before the
+    // transcript is parsed. Written after the parse, its JSON text and the
+    // parsed transcript took a 40 MB archive past the 259 MB heap of a
+    // 512 MiB worker. The worker died before the write, so
+    // every sweep met the same archive and the worker restarted 138 times.
+    // The repaired archive is one byte longer per line, so the shrink guard
+    // accepts it, and the next pass finds nothing to repair.
+    if (repairedLines > 0 && !opts.dryRun) {
+      const { gz, size } = await gzipContainerStreamed(container);
+      await store.putRawSession(sessionId, container.tool, raw.mtime, gz, size, raw.project_id, raw.project_path);
+      log.info({ session: sessionId, repairedLines }, 'raw archive: repaired lines an older redactor broke');
+    }
 
     const parsed = parseTranscriptFromContainer(container);
     const archiveMsgs = parsed.messages.length;
@@ -235,15 +250,6 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       await opts.metaCache.setCompute(sessionId, 'markers', mtime, newMarkers);
     }
 
-    // 5. The archive itself, with its broken lines repaired. It is one byte
-    //    longer per line, so the shrink guard accepts it. An archive that is
-    //    not written here is repaired in memory again on the next pass.
-    if (repairedLines > 0) {
-      const { gz, size } = gzipContainer(container);
-      await store.putRawSession(sessionId, container.tool, raw.mtime, gz, size, raw.project_id, raw.project_path);
-      log.info({ session: sessionId, repairedLines }, 'raw archive: repaired lines an older redactor broke');
-    }
-
     return { sessionId, damaged: true, healed: true, from: itemMsgs, to: archiveMsgs, prompts: promptsStale };
   } catch (err) {
     log.error({ err, session: sessionId }, 'self-heal failed for session');
@@ -310,12 +316,17 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     // a silent cap would read as "your whole history is healthy".
     eligible = rows.length;
     if (opts.limit && rows.length > opts.limit) { rows = rows.slice(0, opts.limit); truncated = true; }
+    // The listed size decides before the download: healSessionFromArchive
+    // would fetch each of these archives from object storage only to skip it.
+    let tooLarge = 0;
     for (const r of rows) {
       scanned++;
+      if (r.size > RAW_PARSE_MAX_BYTES) { tooLarge++; continue; }
       const res = await healSessionFromArchive(store, r.session_id, { dryRun: opts.dryRun, metaCache });
       if (res.damaged) { damaged++; if (damagedIds.length < 200) damagedIds.push(`${r.session_id}:${res.from}->${res.to}${res.prompts ? ':prompts' : ''}`); }
       if (res.healed) healed++;
     }
+    if (tooLarge > 0) log.info({ tooLarge, maxBytes: RAW_PARSE_MAX_BYTES }, 'self-heal: archives too large to unpack here');
   } finally {
     await metaCache.close();
   }
