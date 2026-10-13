@@ -235,7 +235,8 @@ router.get('/heal-audit', async (req, res) => {
     const { selfHealTenant } = await import('../services/self-heal.js');
     const r = await selfHealTenant(store, { sinceMs, dryRun: !apply, limit: HEAL_AUDIT_MAX_SESSIONS });
     res.json({
-      scanned: r.scanned, damaged: r.damaged, healed: r.healed, healthy: r.scanned - r.damaged,
+      // An archive larger than this server unpacks is neither healthy nor damaged.
+      scanned: r.scanned, damaged: r.damaged, healed: r.healed, healthy: r.scanned - r.damaged - r.tooLarge, tooLarge: r.tooLarge,
       applied: apply, damagedIds: r.damagedIds,
       // What the caller did NOT see. Never leave a cap implicit.
       sinceHours, eligible: r.eligible, truncated: r.truncated,

@@ -262,6 +262,7 @@ export {
   canonicalEventsToMessages,
   buildRawContainer,
   gzipContainer,
+  gzipContainerStreamed,
   gunzipContainer,
   RAW_PARSE_MAX_BYTES,
   // Record-level container union — the server needs it to merge a disjoint
