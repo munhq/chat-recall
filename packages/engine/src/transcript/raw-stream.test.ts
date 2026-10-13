@@ -34,6 +34,13 @@ describe('gzipContainerStreamed', () => {
     await same({ v: 1, tool: 'claude', mtime: 3, files: [{ name: 's.jsonl', text }] });
   });
 
+  test('a file name from a client that holds U+0000 or a placeholder shape gives the same JSON', async () => {
+    await same({ v: 1, tool: 'claude', mtime: 5, files: [
+      { name: '\u0000cr-text-0\u0000', text: 'first' },
+      { name: 'cr-text-0', text: 'second "x"' },
+    ] });
+  });
+
   test('a lone surrogate is escaped as JSON.stringify escapes it', async () => {
     await same({ v: 1, tool: 'claude', mtime: 4, files: [{ name: 's.jsonl', text: 'x\ud800y' + '"'.repeat(PIECE + 5) }] });
   });

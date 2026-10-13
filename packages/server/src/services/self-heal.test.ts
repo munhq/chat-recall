@@ -358,6 +358,7 @@ describe('healSessionFromArchive', () => {
     spy.getRawSession = async (sid: string) => { fetched.push(sid); return store.getRawSession(sid); };
     const r = await selfHealTenant(spy, { sinceMs: 1760000800000, dryRun: true });
     expect(r.scanned).toBe(1);
+    expect(r.tooLarge).toBe(1);
     expect(fetched).not.toContain('listed-too-large');
     await store.close();
   });

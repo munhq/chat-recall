@@ -92,12 +92,14 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     // parsed transcript took a 40 MB archive past the 259 MB heap of a
     // 512 MiB worker. The worker died before the write, so
     // every sweep met the same archive and the worker restarted 138 times.
-    // The repaired archive is one byte longer per line, so the shrink guard
-    // accepts it, and the next pass finds nothing to repair.
+    // A repair that escapes a quote adds a byte, and the shrink guard stores
+    // the archive. A repair that removes a stray backslash takes a byte away,
+    // and when the archive gets shorter the guard keeps the stored one. That
+    // archive is repaired in memory again on each pass.
     if (repairedLines > 0 && !opts.dryRun) {
       const { gz, size } = await gzipContainerStreamed(container);
-      await store.putRawSession(sessionId, container.tool, raw.mtime, gz, size, raw.project_id, raw.project_path);
-      log.info({ session: sessionId, repairedLines }, 'raw archive: repaired lines an older redactor broke');
+      const stored = await store.putRawSession(sessionId, container.tool, raw.mtime, gz, size, raw.project_id, raw.project_path);
+      log.info({ session: sessionId, repairedLines, result: stored }, 'raw archive: repaired lines an older redactor broke');
     }
 
     const parsed = parseTranscriptFromContainer(container);
@@ -268,10 +270,10 @@ export interface SweepResult { scanned: number; healed: number; damaged: number;
  *  fuller than its view; then enqueue client-recheck intents for sessions the
  *  server CANNOT heal (an envelope but no raw archive — the client may hold the
  *  fuller copy in its shadow). Returns per-tenant counts. */
-export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean; limit?: number } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[]; eligible: number; truncated: boolean; deletedPurged: number }> {
+export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean; limit?: number } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[]; eligible: number; truncated: boolean; deletedPurged: number; tooLarge: number }> {
   const sinceMs = opts.sinceMs ?? 0;
   let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
-  let eligible = 0, truncated = false;
+  let eligible = 0, truncated = false, tooLarge = 0;
   const damagedIds: string[] = [];
 
   // 0. Finish every delete that left rows behind. Before the purge deleted its
@@ -318,7 +320,6 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     if (opts.limit && rows.length > opts.limit) { rows = rows.slice(0, opts.limit); truncated = true; }
     // The listed size decides before the download: healSessionFromArchive
     // would fetch each of these archives from object storage only to skip it.
-    let tooLarge = 0;
     for (const r of rows) {
       scanned++;
       if (r.size > RAW_PARSE_MAX_BYTES) { tooLarge++; continue; }
@@ -355,7 +356,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     }
   }
 
-  return { scanned, healed, damaged, recheckEnqueued, damagedIds, eligible, truncated, deletedPurged };
+  return { scanned, healed, damaged, recheckEnqueued, damagedIds, eligible, truncated, deletedPurged, tooLarge };
 }
 
 /**

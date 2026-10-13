@@ -12,7 +12,7 @@
  *   { v: 1, tool, mtime, files: [{ name, text }] }
  */
 import { gzipSync, gunzipSync, createGzip } from 'zlib';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { getHeapStatistics } from 'v8';
 import type { AiTool, RawSessionExport } from '../core/tool-backend.js';
 import { tryGetBackend } from '../core/tool-backend.js';
@@ -75,42 +75,61 @@ const STREAM_PIECE_CHARS = 1 << 20;
  * the archive, and with the container it took a worker past its 259 MB heap.
  */
 export async function gzipContainerStreamed(c: RawContainer): Promise<{ gz: Buffer; size: number }> {
-  // Each text becomes a placeholder that holds U+0000. File names are paths,
-  // and a path holds no U+0000, so no other value of the JSON matches it.
-  const mark = (i: number) => `\u0000cr-text-${i}\u0000`;
-  const skeleton = JSON.stringify({ ...c, files: c.files.map((f, i) => ({ ...f, text: mark(i) })) });
+  // Each text becomes a placeholder with a random id. A file name comes from
+  // the client, so a placeholder that is not found exactly once in the JSON
+  // sends the container to gzipContainer.
+  const id = randomUUID();
+  const placeholders = c.files.map((_, i) => JSON.stringify(`cr-text-${id}-${i}`));
+  const skeleton = JSON.stringify({ ...c, files: c.files.map((f, i) => ({ ...f, text: `cr-text-${id}-${i}` })) });
+  if (placeholders.some((p) => skeleton.indexOf(p) !== skeleton.lastIndexOf(p) || !skeleton.includes(p))) return gzipContainer(c);
+
   const gzip = createGzip({ level: 6 });
   const out: Buffer[] = [];
   gzip.on('data', (b: Buffer) => out.push(b));
-  const done = new Promise<void>((resolve, reject) => { gzip.on('end', resolve); gzip.on('error', reject); });
+  let failed: Error | null = null;
+  const done = new Promise<void>((resolve, reject) => {
+    gzip.on('end', resolve);
+    gzip.on('error', (e) => { failed = e; reject(e); });
+  });
+  done.catch(() => { /* rethrown below */ });
   let size = 0;
   const write = async (piece: string) => {
+    if (failed) throw failed;
     size += Buffer.byteLength(piece);
-    if (!gzip.write(piece)) await new Promise<void>((resolve) => gzip.once('drain', resolve));
+    if (gzip.write(piece)) return;
+    await new Promise<void>((resolve, reject) => {
+      const onDrain = () => { gzip.off('error', onError); resolve(); };
+      const onError = (e: Error) => { gzip.off('drain', onDrain); reject(e); };
+      gzip.once('drain', onDrain);
+      gzip.once('error', onError);
+    });
   };
-  let at = 0;
-  for (let i = 0; i < c.files.length; i++) {
-    const placeholder = JSON.stringify(mark(i));
-    const pos = skeleton.indexOf(placeholder, at);
-    if (pos < 0) throw new Error(`container text ${i} has no placeholder in its JSON`);
-    await write(skeleton.slice(at, pos) + '"');
-    const text = c.files[i].text;
-    for (let from = 0; from < text.length;) {
-      let to = Math.min(from + STREAM_PIECE_CHARS, text.length);
-      // A surrogate pair split over two pieces would be escaped as two lone
-      // surrogates, and the JSON would differ from JSON.stringify(c).
-      const last = text.charCodeAt(to - 1);
-      if (to < text.length && last >= 0xd800 && last <= 0xdbff) to--;
-      const escaped = JSON.stringify(text.slice(from, to));
-      await write(escaped.slice(1, -1));
-      from = to;
+  try {
+    let at = 0;
+    for (let i = 0; i < c.files.length; i++) {
+      const pos = skeleton.indexOf(placeholders[i], at);
+      await write(skeleton.slice(at, pos) + '"');
+      const text = c.files[i].text;
+      for (let from = 0; from < text.length;) {
+        let to = Math.min(from + STREAM_PIECE_CHARS, text.length);
+        // A surrogate pair split over two pieces would be escaped as two lone
+        // surrogates, and the JSON would differ from JSON.stringify(c).
+        const last = text.charCodeAt(to - 1);
+        if (to < text.length && last >= 0xd800 && last <= 0xdbff) to--;
+        const escaped = JSON.stringify(text.slice(from, to));
+        await write(escaped.slice(1, -1));
+        from = to;
+      }
+      await write('"');
+      at = pos + placeholders[i].length;
     }
-    await write('"');
-    at = pos + placeholder.length;
+    await write(skeleton.slice(at));
+    gzip.end();
+    await done;
+  } catch (e) {
+    gzip.destroy();
+    throw e;
   }
-  await write(skeleton.slice(at));
-  gzip.end();
-  await done;
   return { gz: Buffer.concat(out), size };
 }
 
