@@ -26,6 +26,8 @@ const router = express.Router();
 // + engine but not here. Single source of truth = no drift.
 const VALID_TYPES = new Set<string>(ALL_SYNC_TYPES);
 const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor', 'hermes']);
+/** Types a remove intent can name. Instruction files need a project, so they are not listed. */
+const REMOVABLE_TYPES: string[] = ['skill', 'mcp', 'command', 'agent'];
 
 /** Agent tokens resolve to userId `device:<id>`; pull the bare device id out. */
 function deviceIdFromUserId(userId?: string): string | null {
@@ -46,8 +48,8 @@ function deviceIdFromUserId(userId?: string): string | null {
 router.post('/', requireFeature('toolkit'), express.json(), async (req, res) => {
   const b = req.body ?? {};
   const kind = b.kind;
-  if (kind !== 'copy' && kind !== 'sync_all' && kind !== 'pull') {
-    return res.status(400).json({ error: "kind must be 'copy', 'sync_all' or 'pull'" });
+  if (kind !== 'copy' && kind !== 'sync_all' && kind !== 'pull' && kind !== 'remove') {
+    return res.status(400).json({ error: "kind must be 'copy', 'sync_all', 'pull' or 'remove'" });
   }
   const input: SyncIntentInput = { kind, createdBy: req.userId ?? null, deviceId: b.deviceId ?? null };
 
@@ -84,6 +86,18 @@ router.post('/', requireFeature('toolkit'), express.json(), async (req, res) => 
     input.artifactType = b.artifactType;
     input.name = b.name;
     input.fromTool = b.fromTool;
+    input.toTool = b.toTool;
+  }
+
+  // A removal edits one machine's config, so it names that machine. Without a
+  // deviceId, any agent in the tenant would drain it and delete from its own disk.
+  if (kind === 'remove') {
+    if (typeof b.deviceId !== 'string' || !b.deviceId) return res.status(400).json({ error: 'remove requires deviceId' });
+    if (!REMOVABLE_TYPES.includes(b.artifactType)) return res.status(400).json({ error: `artifactType must be one of ${REMOVABLE_TYPES.join(', ')}` });
+    if (typeof b.name !== 'string' || !b.name) return res.status(400).json({ error: 'name required' });
+    if (!VALID_TOOLS.has(b.toTool)) return res.status(400).json({ error: 'toTool must be a valid tool' });
+    input.artifactType = b.artifactType;
+    input.name = b.name;
     input.toTool = b.toTool;
   }
 

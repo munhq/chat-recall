@@ -2277,12 +2277,12 @@ export interface SyncIntentInput {
    * distinction is the whole reason a second machine used to get nothing —
    * a `copy` tells a device to copy from a disk that does not have the file.
    */
-  kind: 'copy' | 'sync_all' | 'pull' | 'code_apply' | 'recheck_session';
-  /** Target device (null/undefined = any device in the tenant). */
+  kind: 'copy' | 'sync_all' | 'pull' | 'remove' | 'code_apply' | 'recheck_session';
+  /** Target device (null/undefined = any device in the tenant). `remove` requires one. */
   deviceId?: string | null;
-  /** copy: skill|mcp|command|agent. pull: comma-separated types to install. */
+  /** copy: skill|mcp|command|agent. pull: comma-separated types to install. remove: skill|mcp. */
   artifactType?: string | null;
-  /** copy: the artifact name. pull: one artifact name, or null for all. */
+  /** copy: the artifact name. pull: one artifact name, or null for all. remove: the artifact name. */
   name?: string | null;
   fromTool?: string | null;
   toTool?: string | null;
@@ -2293,7 +2293,7 @@ export interface SyncIntentInput {
 export interface SyncIntentRow {
   id: string;
   device_id: string | null;
-  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
+  kind: 'copy' | 'sync_all' | 'remove' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;

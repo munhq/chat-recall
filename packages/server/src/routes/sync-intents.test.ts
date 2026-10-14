@@ -144,3 +144,46 @@ describe('enqueue → pending → ack round-trip', () => {
     expect(row.to_tool).toBe('gemini');
   });
 });
+
+describe('POST /api/sync-intents (remove)', () => {
+  test('a remove intent without deviceId is refused, so no agent deletes from its own disk', async () => {
+    const res = await request(app).post('/api/sync-intents')
+      .send({ kind: 'remove', artifactType: 'mcp', name: 'alpha', toTool: 'claude' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('remove requires deviceId');
+  });
+  test('a remove intent accepts only skill or mcp', async () => {
+    const res = await request(app).post('/api/sync-intents')
+      .send({ kind: 'remove', artifactType: 'instructions', name: 'CLAUDE.md', toTool: 'claude', deviceId: 'desk-1' });
+    expect(res.status).toBe(400);
+  });
+  test('a remove intent names a command or an agent, and refuses instruction files', async () => {
+    const instr = await request(app).post('/api/sync-intents')
+      .send({ kind: 'remove', artifactType: 'instructions', name: 'CLAUDE.md', toTool: 'claude', deviceId: 'desk-1' });
+    expect(instr.status).toBe(400);
+    for (const artifactType of ['command', 'agent']) {
+      const ok = await request(app).post('/api/sync-intents')
+        .send({ kind: 'remove', artifactType, name: 'review', toTool: 'claude', deviceId: 'remove-test-device' });
+      expect(ok.status).toBe(200);
+    }
+  });
+  test('a remove intent rejects an unknown tool', async () => {
+    const res = await request(app).post('/api/sync-intents')
+      .send({ kind: 'remove', artifactType: 'mcp', name: 'alpha', toTool: 'notatool', deviceId: 'desk-1' });
+    expect(res.status).toBe(400);
+  });
+  test('a valid remove intent is pending for its device only, with its fields', async () => {
+    const enq = await request(app).post('/api/sync-intents')
+      .send({ kind: 'remove', artifactType: 'mcp', name: 'alpha', toTool: 'opencode', deviceId: 'remove-test-device' });
+    expect(enq.status).toBe(200);
+    const mine = await request(app).get('/api/sync-intents/pending?deviceId=remove-test-device&limit=100');
+    const row = (mine.body.intents as any[]).find(i => i.id === enq.body.id);
+    expect(row.kind).toBe('remove');
+    expect(row.artifact_type).toBe('mcp');
+    expect(row.name).toBe('alpha');
+    expect(row.to_tool).toBe('opencode');
+    expect(row.device_id).toBe('remove-test-device');
+    const other = await request(app).get('/api/sync-intents/pending?deviceId=another-device&limit=100');
+    expect((other.body.intents as any[]).find(i => i.id === enq.body.id)).toBeUndefined();
+  });
+});
