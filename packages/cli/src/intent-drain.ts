@@ -19,8 +19,8 @@ import { loadAllCredentials, syncIncremental } from './sync-client.js';
 // MemoryIndex -> @lancedb/lancedb, and a static barrel import hoists that
 // native dep to boot-time in the published bundle (breaks fresh installs).
 import {
-  executeSyncAll, executeCopy,
-  type SyncType, type TargetTool as SyncTargetTool,
+  executeSyncAll, executeCopy, removeArtifactFromTool,
+  type SyncType, type RemovableType, type TargetTool as SyncTargetTool,
 } from '@chat-recall/engine/core/toolkit-sync.js';
 import {
   instructionsFilename, instructionsPath, type ToolId,
@@ -32,9 +32,12 @@ import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
 import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
 import { pushProjectTaskStatuses } from './project-tasks.js';
 
+/** Artifact types a remove intent can name. Matches the server's list in sync-intents.ts. */
+const REMOVABLE_INTENT_TYPES: string[] = ['skill', 'mcp', 'command', 'agent'];
+
 export interface PendingIntent {
   id: string;
-  kind: 'copy' | 'sync_all' | 'pull' | 'code_apply' | 'recheck_session';
+  kind: 'copy' | 'sync_all' | 'pull' | 'remove' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;
@@ -192,7 +195,7 @@ async function runPull(
   };
 }
 
-async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<{ status: 'done' | 'error'; result: string }> {
+export async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<{ status: 'done' | 'error'; result: string }> {
   try {
     if (intent.kind === 'recheck_session') {
       // The server has a thin/absent copy of this session and is asking us to
@@ -224,6 +227,17 @@ async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<
       const report = await executeSyncAll();
       const status = report.failed.length > 0 ? 'error' : 'done';
       return { status, result: JSON.stringify({ copied: report.copied.length, skipped: report.skipped.length, failed: report.failed }) };
+    }
+    if (intent.kind === 'remove') {
+      // The server queues a removal only for the device that holds the config,
+      // so this machine is the one that edits it.
+      if (!REMOVABLE_INTENT_TYPES.includes(intent.artifact_type ?? '') || !intent.name || !intent.to_tool) {
+        return { status: 'error', result: JSON.stringify({ error: 'remove intent missing fields' }) };
+      }
+      const r = await removeArtifactFromTool(intent.artifact_type as RemovableType, intent.name, intent.to_tool as SyncTargetTool);
+      // 404 means the artifact is already absent, so the requested state holds.
+      const status = r.ok || r.status === 404 ? 'done' : 'error';
+      return { status, result: JSON.stringify(r) };
     }
     // copy
     if (!intent.artifact_type || !intent.name || !intent.from_tool || !intent.to_tool) {
@@ -290,6 +304,7 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
         const label = intent.kind === 'sync_all' ? 'sync_all'
           : intent.kind === 'pull' ? `pull ${intent.artifact_type || 'all'}${intent.name ? ` "${intent.name}"` : ''}`
           : intent.kind === 'recheck_session' ? `recheck ${intent.name}`
+          : intent.kind === 'remove' ? `remove ${intent.artifact_type} "${intent.name}" from ${intent.to_tool}`
           : `${intent.artifact_type} "${intent.name}" ${intent.from_tool}→${intent.to_tool}`;
         console.error(`[sync-intent] ${label}: ${status}`);
       }

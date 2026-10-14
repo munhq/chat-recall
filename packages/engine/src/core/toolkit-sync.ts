@@ -14,9 +14,10 @@
  * `executeSyncAll` do the rest. Never overwrites an existing target.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
+import { getDataDir } from './paths.js';
 
 import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
@@ -56,6 +57,8 @@ export interface CopyResult {
   error?: string;
   /** 409 = already exists (skipped), 404 = source missing, 500 = write failed. */
   status?: number;
+  /** Removals only: the trash copies made before the change, one per file changed. */
+  backupPaths?: string[];
 }
 
 export const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent', 'instructions'];
@@ -164,27 +167,38 @@ function copySkill(row: ArtifactRow, toTool: TargetTool): CopyResult {
 
 // ── MCP servers (JSON ↔ TOML config merge) ─────────────────────────
 
-export function readMcpEntry(tool: string, name: string): any | null {
+/**
+ * The JSON config files a tool reads its MCP servers from, in lookup order.
+ * Codex keeps its servers in TOML and is not listed here.
+ */
+function mcpJsonCandidates(tool: string): { path: string; key: string }[] {
   const home = homedir();
-  const tries: { path: string; key: string }[] = [];
-  if (tool === 'claude') {
-    tries.push({ path: join(home, '.mcp.json'), key: 'mcpServers' });
-    tries.push({ path: join(home, '.claude.json'), key: 'mcpServers' });
-  } else if (tool === 'gemini') {
-    tries.push({ path: join(home, '.gemini', 'settings.json'), key: 'mcpServers' });
-  } else if (tool === 'agy') {
-    tries.push({ path: join(home, '.gemini', 'config', 'mcp_config.json'), key: 'mcpServers' });
-  } else if (tool === 'cursor') {
-    tries.push({ path: join(cursorHomeDir(), 'mcp.json'), key: 'mcpServers' });
-  } else if (tool === 'opencode') {
-    tries.push({ path: join(home, '.config', 'opencode', 'opencode.json'), key: 'mcp' });
-    tries.push({ path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' });
-    tries.push({ path: join(home, '.opencode', 'config.json'), key: 'mcp' });
-  } else if (tool === 'codex') {
-    const entry = readCodexMcpEntry(join(home, '.codex', 'config.toml'), name);
-    if (entry) return entry;
+  switch (tool) {
+    case 'claude':
+      return [
+        { path: join(home, '.mcp.json'), key: 'mcpServers' },
+        { path: join(home, '.claude.json'), key: 'mcpServers' },
+      ];
+    case 'gemini':
+      return [{ path: join(home, '.gemini', 'settings.json'), key: 'mcpServers' }];
+    case 'agy':
+      return [{ path: join(home, '.gemini', 'config', 'mcp_config.json'), key: 'mcpServers' }];
+    case 'cursor':
+      return [{ path: join(cursorHomeDir(), 'mcp.json'), key: 'mcpServers' }];
+    case 'opencode':
+      return [
+        { path: join(home, '.config', 'opencode', 'opencode.json'), key: 'mcp' },
+        { path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' },
+        { path: join(home, '.opencode', 'config.json'), key: 'mcp' },
+      ];
+    default:
+      return [];
   }
-  for (const t of tries) {
+}
+
+export function readMcpEntry(tool: string, name: string): any | null {
+  if (tool === 'codex') return readCodexMcpEntry(join(homedir(), '.codex', 'config.toml'), name);
+  for (const t of mcpJsonCandidates(tool)) {
     if (!existsSync(t.path)) continue;
     try {
       const cfg = JSON.parse(readFileSync(t.path, 'utf-8'));
@@ -343,6 +357,122 @@ export function copyArtifactToTool(type: SyncType, row: ArtifactRow, toTool: Tar
   if (type === 'mcp')   return copyMcp(row, toTool);
   if (type === 'instructions') return copyInstructions(row, toTool);
   return copyCommandOrAgent(type, row, toTool);
+}
+
+// ── Removal (the local agent's path for a remove intent) ───────────
+
+/**
+ * Artifact types a removal can name. Instruction files are not listed: an
+ * instruction file belongs to one project, and a name alone does not pick one.
+ */
+export type RemovableType = 'skill' | 'mcp' | 'command' | 'agent';
+
+/**
+ * Remove one named artifact from `tool`.
+ *
+ * Every removal copies what it is about to change into the chat-recall trash
+ * first. When that copy fails, the removal stops and nothing is deleted.
+ *
+ * A name becomes a path segment for skills, commands and agents, so a name that
+ * is not one plain segment is refused before anything is read or deleted.
+ */
+export async function removeArtifactFromTool(type: string, name: string, tool: TargetTool): Promise<CopyResult> {
+  if (type !== 'skill' && type !== 'mcp' && type !== 'command' && type !== 'agent') {
+    return { ok: false, status: 400, error: `Cannot remove a ${type} by name` };
+  }
+  if (!name || name === '.' || name === '..' || /[/\\\0]/.test(name)) {
+    return { ok: false, status: 400, error: `Invalid artifact name: ${JSON.stringify(name)}` };
+  }
+  if (type === 'skill') return removeSkill(name, tool);
+  if (type === 'mcp') return removeMcp(name, tool);
+  return removeCommandOrAgent(type, name, tool);
+}
+
+/** The trash holds the state from before each removal, so a removal can be undone by hand. */
+function backupToTrash(src: string, label: string): string {
+  const dest = join(getDataDir(), 'trash', `${Date.now()}-${label.replace(/[^A-Za-z0-9._-]/g, '_')}`);
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(src, dest, { recursive: true });
+  return dest;
+}
+
+function removeFailed(e: unknown, fallback: string): CopyResult {
+  return { ok: false, status: 500, error: e instanceof Error ? e.message : fallback };
+}
+
+function removeSkill(name: string, tool: TargetTool): CopyResult {
+  const dir = join(skillsDirFor(tool), name);
+  if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
+  try {
+    const backupPaths = [backupToTrash(dir, `skill-${tool}-${name}`)];
+    rmSync(dir, { recursive: true, force: true });
+    return { ok: true, targetPath: dir, backupPaths };
+  } catch (e) { return removeFailed(e, 'rm failed'); }
+}
+
+/** A command or agent is one file. Two rows with the same name for one tool are refused, not guessed between. */
+async function removeCommandOrAgent(type: 'command' | 'agent', name: string, tool: TargetTool): Promise<CopyResult> {
+  const rows = (await discoverLocalArtifacts())[type].filter(r => r.tool === tool && r.name === name);
+  if (rows.length === 0) return { ok: false, status: 404, error: `No ${type} named "${name}" for ${tool}` };
+  if (rows.length > 1) return { ok: false, status: 409, error: `${rows.length} ${type}s named "${name}" for ${tool}; none removed` };
+  const [row] = rows;
+  if (row.readonly) return { ok: false, status: 400, error: 'Artifact is read-only (system/bundled).' };
+  if (!row.filePath || !existsSync(row.filePath)) return { ok: false, status: 404, error: 'Source has no file on disk' };
+  try {
+    const backupPaths = [backupToTrash(row.filePath, `${type}-${tool}-${name}`)];
+    rmSync(row.filePath);
+    return { ok: true, targetPath: row.filePath, backupPaths };
+  } catch (e) { return removeFailed(e, 'rm failed'); }
+}
+
+function removeMcp(name: string, tool: TargetTool): CopyResult {
+  if (tool === 'codex') {
+    const path = join(homedir(), '.codex', 'config.toml');
+    if (!existsSync(path)) return { ok: false, status: 404, error: 'config.toml not found' };
+    const before = readFileSync(path, 'utf-8');
+    const after = stripCodexMcpBlock(before, name);
+    if (before === after) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
+    try {
+      const backupPaths = [backupToTrash(path, `mcp-codex-${name}`)];
+      writeFileSync(path, after);
+      return { ok: true, targetPath: path, backupPaths };
+    } catch (e) { return removeFailed(e, 'write failed'); }
+  }
+  // Every JSON file that holds the entry loses it. A name present in two
+  // configs would otherwise still show as present in the matrix afterwards.
+  let removedFrom: string | undefined;
+  const backupPaths: string[] = [];
+  for (const c of mcpJsonCandidates(tool)) {
+    if (!existsSync(c.path)) continue;
+    try {
+      const cfg = JSON.parse(readFileSync(c.path, 'utf-8'));
+      if (!cfg[c.key]?.[name]) continue;
+      backupPaths.push(backupToTrash(c.path, `mcp-${tool}-${name}-${basename(c.path)}`));
+      delete cfg[c.key][name];
+      writeFileSync(c.path, JSON.stringify(cfg, null, 2));
+      if (!removedFrom) removedFrom = c.path;
+    } catch (e) { return removeFailed(e, 'failed'); }
+  }
+  if (!removedFrom) return { ok: false, status: 404, error: `MCP "${name}" not found for ${tool}` };
+  return { ok: true, targetPath: removedFrom, backupPaths };
+}
+
+/**
+ * Strip a `[mcp_servers.<name>]` table and its `.env` sub-table from a Codex
+ * config.toml. Every other table header ends the strip, so the tables after the
+ * removed server stay in the file.
+ */
+export function stripCodexMcpBlock(content: string, name: string): string {
+  const out: string[] = [];
+  let inTarget = false;
+  for (const line of content.split('\n')) {
+    if (/^\s*\[/.test(line)) {
+      const m = line.match(/^\s*\[mcp_servers\.([^.\]]+)(?:\.[^\]]+)?\]\s*$/);
+      inTarget = m !== null && m[1] === name;
+    }
+    if (!inTarget) out.push(line);
+  }
+  return out.join('\n');
 }
 
 // ── Planning ───────────────────────────────────────────────────────
