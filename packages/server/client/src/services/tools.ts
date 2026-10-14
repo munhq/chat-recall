@@ -44,9 +44,10 @@ export const TOOL_MAP: Record<ToolId, ToolDef> = Object.fromEntries(
 export const TOOL_IDS: ToolId[] = TOOLS.map((t) => t.id);
 
 /** Tools whose skills, MCP servers, commands and agents the toolkit page
- *  manages. chat-recall reads only the chats of Hermes. */
-export type ToolkitToolId = Exclude<ToolId, 'hermes'>;
-export const TOOLKIT_TOOL_IDS: ToolkitToolId[] = TOOL_IDS.filter((t): t is ToolkitToolId => t !== 'hermes');
+ *  manages. Hermes takes part for skills and MCP servers only. */
+/** Tools the toolkit matrix syncs. Every tool in the registry takes part. */
+export type ToolkitToolId = ToolId;
+export const TOOLKIT_TOOL_IDS: ToolkitToolId[] = TOOL_IDS;
 
 /** "All" pseudo-tool — prepended to the sidebar source list. */
 export const ALL_SOURCE = { id: 'all', label: 'All Messages', icon: 'list' } as const;

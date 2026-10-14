@@ -14,7 +14,7 @@
  * `executeSyncAll` do the rest. Never overwrites an existing target.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
 import { getDataDir } from './paths.js';
@@ -22,6 +22,10 @@ import { getDataDir } from './paths.js';
 import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { cursorHomeDir } from './tool-paths.js';
+import { hermesBackend as HERMES } from './backends/hermes.js';
+import {
+  addHermesMcpServer, deleteHermesMcpServer, hermesConfigPath, hermesServerEntry, readHermesMcpServers,
+} from './hermes-config.js';
 import { codexBackend as CODEX } from './backends/codex.js';
 import { agyBackend as AGY } from './backends/agy.js';
 import {
@@ -75,16 +79,16 @@ export const NAME_FIELD: Record<SyncType, string> = {
  * copy of this table, and the three drifted. They now import this one.
  */
 export const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'agy', 'opencode', 'codex', 'cursor'],
-  mcp:     ['claude', 'opencode', 'agy', 'codex', 'cursor'],
+  skill:   ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'],
+  mcp:     ['claude', 'opencode', 'agy', 'codex', 'cursor', 'hermes'],
   command: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
   agent:   ['claude', 'agy', 'opencode', 'codex', 'cursor'],
   instructions: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
 };
 
 export const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'agy', 'cursor'],
-  mcp:     ['claude', 'codex', 'agy', 'opencode', 'cursor'],
+  skill:   ['claude', 'codex', 'opencode', 'agy', 'cursor', 'hermes'],
+  mcp:     ['claude', 'codex', 'agy', 'opencode', 'cursor', 'hermes'],
   command: ['claude', 'opencode', 'codex', 'agy', 'cursor'],
   agent:   ['claude', 'opencode', 'agy', 'codex', 'cursor'],
   instructions: ['claude', 'codex', 'opencode', 'agy', 'cursor'],
@@ -147,7 +151,25 @@ export function skillsDirFor(tool: TargetTool): string {
     case 'opencode': return OPENCODE.skillsDir();
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system
     case 'cursor':   return join(cursorHomeDir(), 'skills');
+    case 'hermes':   return join(HERMES.homeDir(), 'skills');
   }
+}
+
+/**
+ * Every folder of a skill named `name` under the tool's skills root. Hermes
+ * groups its skills in category folders (`skills/<category>/<name>/SKILL.md`),
+ * so it is searched one level down as well.
+ */
+function skillDirsNamed(tool: TargetTool, name: string): string[] {
+  const root = skillsDirFor(tool);
+  const found: string[] = [];
+  if (existsSync(join(root, name))) found.push(join(root, name));
+  if (tool !== 'hermes' || !existsSync(root)) return found;
+  for (const category of readdirSync(root)) {
+    const candidate = join(root, category, name);
+    if (existsSync(join(candidate, 'SKILL.md'))) found.push(candidate);
+  }
+  return found;
 }
 
 function copySkill(row: ArtifactRow, toTool: TargetTool): CopyResult {
@@ -155,7 +177,8 @@ function copySkill(row: ArtifactRow, toTool: TargetTool): CopyResult {
   if (!existsSync(skillDir)) return { ok: false, status: 404, error: `Source dir missing: ${skillDir}` };
   const name = (row.extra.skillName as string) || basename(skillDir);
   const targetDir = join(skillsDirFor(toTool), name);
-  if (existsSync(targetDir)) return { ok: false, status: 409, error: `Already exists: ${targetDir}` };
+  const existing = skillDirsNamed(toTool, name);
+  if (existing.length) return { ok: false, status: 409, error: `Already exists: ${existing[0]}` };
   try {
     mkdirSync(dirname(targetDir), { recursive: true });
     cpSync(skillDir, targetDir, { recursive: true });
@@ -198,6 +221,7 @@ function mcpJsonCandidates(tool: string): { path: string; key: string }[] {
 
 export function readMcpEntry(tool: string, name: string): any | null {
   if (tool === 'codex') return readCodexMcpEntry(join(homedir(), '.codex', 'config.toml'), name);
+  if (tool === 'hermes') return readHermesMcpServers()?.[name] ?? null;
   for (const t of mcpJsonCandidates(tool)) {
     if (!existsSync(t.path)) continue;
     try {
@@ -261,6 +285,7 @@ function writeCodexMcpEntry(path: string, name: string, entry: any): boolean {
 }
 
 export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): CopyResult {
+  if (toTool === 'hermes') return writeHermesMcp(name, entry);
   const home = homedir();
   if (toTool === 'codex') {
     const path = join(home, '.codex', 'config.toml');
@@ -347,10 +372,25 @@ function copyInstructions(row: ArtifactRow, toTool: TargetTool): CopyResult {
   } catch (e) { return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' }; }
 }
 
+/** Add one server to Hermes's `mcp_servers:`. The config is backed up to the trash before it changes. */
+function writeHermesMcp(name: string, entry: any): CopyResult {
+  if (!entry?.command && !entry?.url) return { ok: false, status: 400, error: `MCP "${name}" has no command or url to write.` };
+  const path = hermesConfigPath();
+  if (!existsSync(path)) return { ok: false, status: 404, error: `${path} not found` };
+  try {
+    const after = addHermesMcpServer(readFileSync(path, 'utf-8'), name, hermesServerEntry(entry));
+    if (after === null) return { ok: false, status: 409, error: `MCP "${name}" already exists in ${path}` };
+    const backupPaths = [backupToTrash(path, `mcp-hermes-${name}-config.yaml`)];
+    writeFileSync(path, after);
+    return { ok: true, targetPath: path, backupPaths };
+  } catch (e) { return removeFailed(e, 'write failed'); }
+}
+
 // ── Unified copy dispatch ──────────────────────────────────────────
 
 /** Copy one artifact into `toTool`. Never overwrites (409 if present). */
 export function copyArtifactToTool(type: SyncType, row: ArtifactRow, toTool: TargetTool): CopyResult {
+  if (!SUPPORTED_TARGETS[type].includes(toTool)) return { ok: false, status: 400, error: `A ${type} cannot be copied to ${toTool}.` };
   if (row.readonly) return { ok: false, status: 400, error: 'Artifact is read-only (system/bundled).' };
   if (row.tool === toTool) return { ok: false, status: 400, error: 'Source and target are the same tool.' };
   if (type === 'skill') return copySkill(row, toTool);
@@ -401,8 +441,10 @@ function removeFailed(e: unknown, fallback: string): CopyResult {
 }
 
 function removeSkill(name: string, tool: TargetTool): CopyResult {
-  const dir = join(skillsDirFor(tool), name);
-  if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
+  const found = skillDirsNamed(tool, name);
+  if (found.length === 0) return { ok: false, status: 404, error: `Not found: ${join(skillsDirFor(tool), name)}` };
+  if (found.length > 1) return { ok: false, status: 409, error: `${found.length} skills named "${name}" for ${tool}; none removed` };
+  const dir = found[0];
   try {
     const backupPaths = [backupToTrash(dir, `skill-${tool}-${name}`)];
     rmSync(dir, { recursive: true, force: true });
@@ -426,6 +468,17 @@ async function removeCommandOrAgent(type: 'command' | 'agent', name: string, too
 }
 
 function removeMcp(name: string, tool: TargetTool): CopyResult {
+  if (tool === 'hermes') {
+    const path = hermesConfigPath();
+    if (!existsSync(path)) return { ok: false, status: 404, error: `${path} not found` };
+    try {
+      const after = deleteHermesMcpServer(readFileSync(path, 'utf-8'), name);
+      if (after === null) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
+      const backupPaths = [backupToTrash(path, `mcp-hermes-${name}-config.yaml`)];
+      writeFileSync(path, after);
+      return { ok: true, targetPath: path, backupPaths };
+    } catch (e) { return removeFailed(e, 'write failed'); }
+  }
   if (tool === 'codex') {
     const path = join(homedir(), '.codex', 'config.toml');
     if (!existsSync(path)) return { ok: false, status: 404, error: 'config.toml not found' };

@@ -8,6 +8,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { parse } from 'yaml';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 import {
   discoverLocalArtifacts, planSync, executeSyncAll, executeCopy, writeMcpEntry,
@@ -225,5 +226,58 @@ describe('stripCodexMcpBlock', () => {
     const left = readFileSync(join(tmp, '.codex', 'config.toml'), 'utf-8');
     expect(left).not.toContain('gone');
     expect(left).toContain('[model_settings]');
+  });
+});
+
+describe('Hermes in the sync', () => {
+  const hermesConfig = () => join(tmp, '.hermes', 'config.yaml');
+
+  test('an MCP server is copied from Claude into the Hermes config, which is backed up first', async () => {
+    w(hermesConfig(), '# Hermes\nmodel:\n  name: m\nmcp_servers:\n  keep:\n    command: /bin/keep\n');
+    w(join(tmp, '.mcp.json'), JSON.stringify({ mcpServers: { sample: { command: '/bin/sample', args: ['--s'] } } }));
+    const r = await executeCopy('mcp', 'sample', 'claude', 'hermes');
+    expect(r.ok).toBe(true);
+    const text = readFileSync(hermesConfig(), 'utf-8');
+    expect(text).toContain('# Hermes');
+    const cfg = parse(text);
+    expect(cfg.mcp_servers.sample).toEqual({ command: '/bin/sample', args: ['--s'] });
+    expect(cfg.mcp_servers.keep.command).toBe('/bin/keep');
+    expect(readFileSync(r.backupPaths![0], 'utf-8')).not.toContain('sample');
+  });
+
+  test('a Hermes MCP server is discovered and removed, and its config is kept in the trash', async () => {
+    w(hermesConfig(), 'mcp_servers:\n  gone:\n    command: /bin/g\n  keep:\n    command: /bin/k\n');
+    const rows = await discoverLocalArtifacts();
+    expect(rows.mcp.some(r => r.tool === 'hermes' && r.name === 'gone')).toBe(true);
+    const r = await removeArtifactFromTool('mcp', 'gone', 'hermes');
+    expect(r.ok).toBe(true);
+    const cfg = parse(readFileSync(hermesConfig(), 'utf-8'));
+    expect(cfg.mcp_servers.gone).toBeUndefined();
+    expect(cfg.mcp_servers.keep.command).toBe('/bin/k');
+    expect(readFileSync(r.backupPaths![0], 'utf-8')).toContain('gone:');
+  });
+
+  test('a skill copied from Claude lands in the Hermes skills folder', async () => {
+    w(join(tmp, '.claude', 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: d\n---\nbody');
+    const r = await executeCopy('skill', 'deploy', 'claude', 'hermes');
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(tmp, '.hermes', 'skills', 'deploy', 'SKILL.md'))).toBe(true);
+  });
+
+  test('a Hermes skill inside a category folder is discovered and removed', async () => {
+    w(join(tmp, '.hermes', 'skills', 'research', 'paper-scan', 'SKILL.md'), '---\nname: paper-scan\ndescription: p\n---\nbody');
+    const rows = await discoverLocalArtifacts();
+    expect(rows.skill.some(r => r.tool === 'hermes' && r.name === 'paper-scan')).toBe(true);
+    const r = await removeArtifactFromTool('skill', 'paper-scan', 'hermes');
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(tmp, '.hermes', 'skills', 'research', 'paper-scan'))).toBe(false);
+    expect(readFileSync(join(r.backupPaths![0], 'SKILL.md'), 'utf-8')).toContain('body');
+  });
+
+  test('a command cannot be copied to Hermes', async () => {
+    w(join(tmp, '.claude', 'commands', 'review.md'), '---\nname: review\ndescription: r\n---\nbody');
+    const r = await executeCopy('command', 'review', 'claude', 'hermes');
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(400);
   });
 });
