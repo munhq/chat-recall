@@ -1647,7 +1647,7 @@ export async function getPatterns(): Promise<PatternsResponse> {
 export type ToolkitType = 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
 
 export interface ToolkitStatus {
-  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'opencode' | 'codex' | 'cursor', number>>;
+  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes', number>>;
 }
 
 export async function getToolkitStatus(): Promise<ToolkitStatus> {

@@ -802,7 +802,7 @@ function EmptyListState({
 // show presence and accept clicks to queue add/remove. Apply runs all
 // queued mutations in parallel and refreshes the matrix.
 
-const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'opencode', 'codex', 'cursor'];
+const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'];
 
 type CellAction = 'add' | 'remove';
 type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<deviceId>:<tool>"
