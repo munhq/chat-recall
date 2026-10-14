@@ -20,6 +20,7 @@ import {
   getToolkitMatrix,
   removeToolkitItem,
   enqueueSyncIntent,
+  type RemovableSyncType,
   listSyncIntents,
   DEVICE_OFFLINE_MS,
   FeatureGateError,
@@ -70,9 +71,11 @@ async function pollIntent(id: string, timeoutMs = 90_000): Promise<SyncIntentRow
 interface ToolkitExplorerProps {
   /** Source filter from the global Sidebar. */
   toolFilter?: string;
+  /** Deployment runs in server mode (/api/capabilities): removals queue for the local agent. */
+  serverMode?: boolean;
 }
 
-export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: ToolkitExplorerProps) {
+export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all', serverMode = false }: ToolkitExplorerProps) {
   const [activeTab, setActiveTab] = useState<ToolkitType>('skill');
   // Sidebar drives the filter; coerce 'unknown' values back to 'all'.
   const toolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string)
@@ -253,6 +256,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
         <SyncMatrix
           onClose={() => setMatrixOpen(false)}
           onMutated={refreshAfterMutation}
+          serverMode={serverMode}
         />
       )}
 
@@ -268,6 +272,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
             </div>
           )}
           <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
+                      serverMode={serverMode}
                       onGated={setCoverageGated}
                       type={activeTab as SyncType}
                       onTypeChange={(t) => setActiveTab(t as ToolkitType)} />
@@ -810,8 +815,32 @@ const SYNC_TYPE_TABS: Array<{ id: SyncType; label: string }> = [
   { id: 'agent',   label: 'Subagents' },
   { id: 'instructions', label: 'Rules (MD)' },
 ];
-/** DELETE is only implemented server-side for skills, MCPs, and instructions. */
-const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp', 'instructions']);
+/**
+ * Every type that can be removed from a tool, through the same two paths
+ * (the local route and the remove intent). Instruction files are left out: a
+ * rule file belongs to one project, and a name alone does not pick one.
+ */
+const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp', 'command', 'agent']);
+
+/** Style for the row actions. Both options look alike apart from the tone. */
+function rowActionStyle(tone: 'brand' | 'danger', disabled: boolean): React.CSSProperties {
+  const danger = tone === 'danger';
+  return {
+    marginLeft: 6,
+    padding: '2px 6px',
+    fontSize: '12px',
+    fontWeight: 500,
+    color: danger ? 'var(--cr-err-500)' : 'var(--cr-on-brand)',
+    background: danger ? 'transparent' : 'var(--cr-brand-500)',
+    border: danger ? '1px solid var(--cr-err-line)' : 'none',
+    borderRadius: 0,
+    cursor: disabled ? 'default' : 'pointer',
+    opacity: disabled ? 0.45 : 1,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 3,
+  };
+}
 
 /**
  * The plan boundary, sold rather than reported.
@@ -1039,8 +1068,10 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
   );
 }
 
-function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }: {
+function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange, serverMode = false }: {
   onClose: () => void; onMutated: () => void; inline?: boolean;
+  /** Server mode queues removals for the local agent instead of calling the local route. */
+  serverMode?: boolean;
   /** Reports the plan gate upward, so the surrounding copy can stand down. */
   onGated?: (gated: boolean) => void;
   /** Driven from the sidebar when inline. The matrix owns it in the overlay. */
@@ -1250,9 +1281,20 @@ function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }:
             });
             if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
           }
+        } else if (serverMode) {
+          // The server cannot edit this machine's configs. The local agent removes
+          // the entry when it drains the intent, so the intent names the device.
+          const r = await enqueueSyncIntent({
+            kind: 'remove',
+            artifactType: op.type as RemovableSyncType,
+            name: op.name,
+            toTool: op.tool,
+            deviceId: op.deviceId === 'local' ? null : op.deviceId,
+          });
+          if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
         } else {
           // Guarded by togglePending → only skill/mcp/instructions reach here.
-          const r = await removeToolkitItem(op.type as 'skill' | 'mcp', op.name, op.tool);
+          const r = await removeToolkitItem(op.type as RemovableSyncType, op.name, op.tool);
           if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
         }
       } catch (e) {
@@ -1268,7 +1310,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }:
     if (queued > 0) setOneClickMsg(`Queued ${queued} change${queued === 1 ? '' : 's'} — your local agent will apply them and they'll appear here after the next index.`);
     onMutated();
     await reload();
-  }, [matrix, pending, onMutated, reload]);
+  }, [matrix, pending, onMutated, reload, serverMode]);
 
   // Build the visible row list.
   const rows = useMemo(() => {
@@ -1292,6 +1334,19 @@ function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }:
   }, [matrix, activeType, search, filter, devices]);
 
   const supportedTools = matrix ? matrix.supportedTargets[activeType] : ALL_TOOLS_ORDERED;
+
+  /** Queue the removal of one row from every tool it is present in, on every device. */
+  const removeRowFromAll = useCallback((name: string, rowPresence: Record<string, any>) => {
+    setPending((prev) => {
+      const next = new Map(prev);
+      devices.forEach(d => {
+        supportedTools.forEach(t => {
+          if (rowPresence[`${d}:${t}`]) next.set(cellKey(activeType, name, d, t), 'remove');
+        });
+      });
+      return next;
+    });
+  }, [devices, supportedTools, activeType]);
 
   const syncRowToAll = useCallback((name: string, rowPresence: Record<string, any>) => {
     setPending((prev) => {
@@ -1545,30 +1600,40 @@ function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }:
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <code style={{ color: 'var(--cr-fg-1)' }}>{row.name}</code>
                         {row.incomplete && <Chip kind="warn" size="sm">{row.presentCount}/{row.supportedCount}</Chip>}
-                        {row.incomplete && (
-                          <button
-                            type="button"
-                            onClick={() => syncRowToAll(row.name, row.presence)}
-                            title={`Queue sync of ${row.name} to all tools on all devices`}
-                            style={{
-                              marginLeft: 6,
-                              padding: '2px 6px',
-                              fontSize: '12px',
-                              fontWeight: 500,
-                              color: 'var(--cr-on-brand)',
-                              background: 'var(--cr-brand-500)',
-                              border: 'none',
-                              borderRadius: 0,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 3,
-                            }}
-                          >
-                            <Icon name="zap" size={13} />
-                            <span>Sync to all</span>
-                          </button>
-                        )}
+                        {(() => {
+                          const removable = REMOVABLE_TYPES.has(activeType);
+                          const addDisabled = !row.incomplete;
+                          const removeDisabled = !removable || row.presentCount === 0;
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                disabled={addDisabled}
+                                onClick={() => syncRowToAll(row.name, row.presence)}
+                                title={addDisabled
+                                  ? `${row.name} is already in every tool on every device`
+                                  : `Queue ${row.name} into every tool it is missing from`}
+                                style={rowActionStyle('brand', addDisabled)}
+                              >
+                                <Icon name="zap" size={13} />
+                                <span>Add everywhere</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={removeDisabled}
+                                onClick={() => removeRowFromAll(row.name, row.presence)}
+                                title={!removable
+                                  ? 'Instruction files belong to one project, so they cannot be removed by name'
+                                  : row.presentCount === 0
+                                    ? `${row.name} is not in any tool`
+                                    : `Queue the removal of ${row.name} from every tool it is in`}
+                                style={rowActionStyle('danger', removeDisabled)}
+                              >
+                                <span>Remove everywhere</span>
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                     </td>
                     {devices.flatMap(d =>
