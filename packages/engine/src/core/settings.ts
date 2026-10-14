@@ -142,7 +142,7 @@ export interface SourcesEnabled {
   // No `rules` flag: `.cursor/rules/*.mdc` has no MemorySource reading it yet,
   // and a toggle that switches nothing is worse than an absent one.
   cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
-  hermes:   { sessions: boolean };
+  hermes:   { sessions: boolean; skills: boolean };
   // `shared` covers the tool-neutral ~/.agents/{skills} standard read by all tools.
   shared:   { skills: boolean };
   common:   { mcps: boolean; agentMd: boolean };
@@ -412,7 +412,7 @@ function defaultSourcesEnabled(): SourcesEnabled {
     agy:      { sessions: true, plans: true, brain: true, extensions: true,
                 skills: true, agents: true, commands: true },
     cursor:   { sessions: true, skills: true, agents: true, commands: true },
-    hermes:   { sessions: true },
+    hermes:   { sessions: true, skills: true },
     shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
   };

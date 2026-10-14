@@ -39,6 +39,7 @@ import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
+import { hermesBackend as HERMES } from '../core/backends/hermes.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 import { redactInlineSecrets } from '../core/redact-inline.js';
@@ -75,7 +76,7 @@ function rebuildBody(content: string): Record<string, unknown> {
 // own, and where every install writes. ~/.gemini/skills is the shared root
 // Gemini CLI created and Antigravity still reads; it is attributed to
 // Antigravity because no other tool is left there.
-export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
+export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
 
 interface SkillRoot {
   path: string;
@@ -84,6 +85,8 @@ interface SkillRoot {
   skipChildren?: string[];
   /** Mark every skill found here read-only (bundled/system — never sync target). */
   readonly?: boolean;
+  /** Skills sit one folder down, in category folders (`<root>/<category>/<skill>/SKILL.md`). */
+  nested?: boolean;
 }
 
 function resolveRoots(): SkillRoot[] {
@@ -97,6 +100,9 @@ function resolveRoots(): SkillRoot[] {
   }
   if (isSourceEnabled('claude', 'skills')) {
     all.push({ path: CLAUDE.skillsDir(), tool: 'claude' });
+  }
+  if (isSourceEnabled('hermes', 'skills')) {
+    all.push({ path: join(HERMES.homeDir(), 'skills'), tool: 'hermes', nested: true });
   }
   if (isSourceEnabled('agy', 'skills')) {
     all.push({ path: join(AGY.homeDir(), 'skills'), tool: 'agy' });
@@ -169,7 +175,10 @@ export class SkillsSource implements MemorySource {
       if (!st.isDirectory()) continue;
 
       const skillMd = join(skillDir, 'SKILL.md');
-      if (!existsSync(skillMd)) continue;
+      if (!existsSync(skillMd)) {
+        if (root.nested) yield* this.fromSkillRoot({ ...root, path: skillDir, nested: false });
+        continue;
+      }
 
       let content: string;
       try { content = readFileSync(skillMd, 'utf-8'); } catch { continue; }

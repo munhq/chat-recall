@@ -33,6 +33,7 @@ import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
+import { hermesConfigPath, readHermesMcpServers } from '../core/hermes-config.js';
 import { redactInlineSecrets } from '../core/redact-inline.js';
 
 export { redactInlineSecrets };
@@ -162,6 +163,14 @@ export class McpsSource implements MemorySource {
       scope: 'user',
     });
 
+    // Hermes — `mcp_servers:` in config.yaml, the same name → config map.
+    const hermesConfig = hermesConfigPath();
+    yield* this.fromObject(readHermesMcpServers(hermesConfig), {
+      tool: 'hermes',
+      filePath: hermesConfig,
+      scope: 'user',
+    });
+
     // Antigravity — its own mcp_config.json under the Gemini config dir.
     const agyMcp = join(home, '.gemini', 'config', 'mcp_config.json');
     yield* this.fromObject(readJson(agyMcp)?.mcpServers, {
@@ -184,7 +193,7 @@ export class McpsSource implements MemorySource {
 
   private async *fromObject(
     obj: Record<string, McpConfig> | undefined | null,
-    ctx: { tool: 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'; filePath: string; scope: string },
+    ctx: { tool: 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes'; filePath: string; scope: string },
   ): AsyncGenerator<MemoryItem> {
     if (!obj || typeof obj !== 'object') return;
 
