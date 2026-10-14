@@ -1351,7 +1351,7 @@ function AppInner() {
 
           {view === 'toolkit' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-              <ToolkitExplorer toolFilter={toolFilter} />
+              <ToolkitExplorer toolFilter={toolFilter} serverMode={capabilities?.mode === 'server'} />
             </div>
           )}
           {view === 'team' && (

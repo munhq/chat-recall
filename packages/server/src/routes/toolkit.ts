@@ -9,10 +9,7 @@
  */
 
 import express from 'express';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
-import { dirname, join } from 'path';
-import { homedir } from 'os';
-import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor, currentTenant, createControlPlane } from '../imports.js';
+import { createStore, copyArtifactToTool, rowFromStore, currentTenant, createControlPlane } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { requireLocalMode } from '../util/mode.js';
 import { listItemsPaged } from '../util/paged-items.js';
@@ -20,6 +17,7 @@ import { createLogger } from '@chat-recall/engine/core/logger.js';
 import {
   SUPPORTED_TARGETS as ENGINE_SUPPORTED_TARGETS,
   SOURCE_PRECEDENCE as ENGINE_SOURCE_PRECEDENCE,
+  removeArtifactFromTool,
 } from '@chat-recall/engine/core/toolkit-sync.js';
 
 const log = createLogger('toolkit');
@@ -110,7 +108,7 @@ router.get('/item/:type/:id', async (req, res) => {
 // Note:  cp CLAUDE.md → GEMINI.md or AGENTS.md in same project dir
 // ─────────────────────────────────────────────────────────────────
 
-const TARGET_TOOLS = ['claude', 'agy', 'opencode', 'codex', 'cursor'] as const;
+const TARGET_TOOLS = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */
@@ -166,13 +164,6 @@ router.post('/promote', requireLocalMode, express.json(), async (req, res) => {
   } finally { await store.close(); }
 });
 
-interface PromoteResult {
-  ok: boolean;
-  targetPath?: string;
-  error?: string;
-  status?: number;
-}
-
 // ─────────────────────────────────────────────────────────────────
 // DELETE /api/toolkit/item
 //
@@ -183,129 +174,26 @@ interface PromoteResult {
 // [mcp_servers.<name>] block.
 // ─────────────────────────────────────────────────────────────────
 
-router.delete('/item', requireLocalMode, express.json(), (req, res) => {
+/** Types a removal can name. Instruction files need a project, so they are not listed. */
+const REMOVABLE_TYPES: string[] = ['skill', 'mcp', 'command', 'agent'];
+
+router.delete('/item', requireLocalMode, express.json(), async (req, res) => {
   const { type, name, tool } = req.body || {};
-  if (type !== 'skill' && type !== 'mcp') return res.status(400).json({ error: 'type must be "skill" or "mcp"' });
+  if (!REMOVABLE_TYPES.includes(type)) return res.status(400).json({ error: `type must be one of ${REMOVABLE_TYPES.join(', ')}` });
   if (typeof name !== 'string' || !name) return res.status(400).json({ error: 'name required' });
   if (!(TARGET_TOOLS as readonly string[]).includes(tool)) {
     return res.status(400).json({ error: `invalid tool: ${tool}` });
   }
 
   try {
-    if (type === 'skill') {
-      const r = removeSkillFromTool(name, tool as TargetTool);
-      if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
-      return res.json({ ok: true, removedPath: r.targetPath });
-    }
-    const r = removeMcpFromTool(name, tool as TargetTool);
+    const r = await removeArtifactFromTool(type, name, tool as TargetTool);
     if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
-    return res.json({ ok: true, removedPath: r.targetPath });
+    return res.json({ ok: true, removedPath: r.targetPath, backupPaths: r.backupPaths ?? [] });
   } catch (error) {
     log.error({ err: error }, 'remove error');
     return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   }
 });
-
-function removeSkillFromTool(name: string, tool: TargetTool): PromoteResult {
-  const root = skillsDirFor(tool);
-  const dir = join(root, name);
-  if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
-  try {
-    rmSync(dir, { recursive: true, force: true });
-    return { ok: true, targetPath: dir };
-  } catch (e) {
-    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'rm failed' };
-  }
-}
-
-function removeMcpFromTool(name: string, tool: TargetTool): PromoteResult {
-  const home = homedir();
-
-  if (tool === 'codex') {
-    const path = join(home, '.codex', 'config.toml');
-    if (!existsSync(path)) return { ok: false, status: 404, error: 'config.toml not found' };
-    const before = readFileSync(path, 'utf-8');
-    const after = stripCodexMcpBlock(before, name);
-    if (before === after) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
-    try {
-      writeFileSync(path, after);
-      return { ok: true, targetPath: path };
-    } catch (e) {
-      return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
-    }
-  }
-
-  let path: string; let key: string;
-  if (tool === 'claude') {
-    // ~/.mcp.json is the conventional global file. ~/.claude.json carries
-    // user-level entries; we only delete from the file that actually has it.
-    const cands = [
-      { path: join(home, '.mcp.json'),    key: 'mcpServers' },
-      { path: join(home, '.claude.json'), key: 'mcpServers' },
-    ];
-    for (const c of cands) {
-      if (!existsSync(c.path)) continue;
-      try {
-        const cfg = JSON.parse(readFileSync(c.path, 'utf-8'));
-        if (cfg[c.key] && cfg[c.key][name]) {
-          delete cfg[c.key][name];
-          writeFileSync(c.path, JSON.stringify(cfg, null, 2));
-          return { ok: true, targetPath: c.path };
-        }
-      } catch { /* try next */ }
-    }
-    return { ok: false, status: 404, error: `MCP "${name}" not found in claude configs` };
-  } else if (tool === 'agy') {
-    path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers';
-  } else {
-    // opencode — try both possible locations
-    const cands = [
-      { path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' },
-      { path: join(home, '.opencode', 'config.json'),           key: 'mcp' },
-    ];
-    for (const c of cands) {
-      if (!existsSync(c.path)) continue;
-      try {
-        const cfg = JSON.parse(readFileSync(c.path, 'utf-8'));
-        if (cfg[c.key] && cfg[c.key][name]) {
-          delete cfg[c.key][name];
-          writeFileSync(c.path, JSON.stringify(cfg, null, 2));
-          return { ok: true, targetPath: c.path };
-        }
-      } catch { /* try next */ }
-    }
-    return { ok: false, status: 404, error: `MCP "${name}" not found in opencode configs` };
-  }
-
-  if (!existsSync(path)) return { ok: false, status: 404, error: `${path} not found` };
-  try {
-    const cfg = JSON.parse(readFileSync(path, 'utf-8'));
-    if (!cfg[key] || !cfg[key][name]) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
-    delete cfg[key][name];
-    writeFileSync(path, JSON.stringify(cfg, null, 2));
-    return { ok: true, targetPath: path };
-  } catch (e) {
-    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'failed' };
-  }
-}
-
-/**
- * Strip a `[mcp_servers.<name>]` section (and its `.env` sub-section)
- * from a Codex config.toml without disturbing other entries.
- */
-function stripCodexMcpBlock(content: string, name: string): string {
-  const out: string[] = [];
-  let inTarget = false;
-  for (const line of content.split('\n')) {
-    const m = line.match(/^\[mcp_servers\.([^\.\]]+)(?:\.([^\]]+))?\]$/);
-    if (m) {
-      inTarget = m[1] === name;
-      if (inTarget) continue;
-    }
-    if (!inTarget) out.push(line);
-  }
-  return out.join('\n');
-}
 
 // ─────────────────────────────────────────────────────────────────
 // GET /api/toolkit/matrix

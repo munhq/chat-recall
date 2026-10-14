@@ -35,7 +35,7 @@ import {
   stringifyScalarToml,
 } from './toolkit-format.js';
 
-export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
 export type CodecType = 'command' | 'agent' | 'instructions';
 export type Encoding = 'md' | 'toml';
 
@@ -118,6 +118,8 @@ function commandPath(tool: ToolId, name: string): string {
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
     case 'cursor':   return join(cursorHomeDir(), 'commands', `${name}.md`);
+    // Hermes has no command files. copyArtifactToTool refuses this target first.
+    case 'hermes':   throw new Error('Hermes has no command files');
   }
 }
 
@@ -128,6 +130,8 @@ function agentPath(tool: ToolId, name: string): string {
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
     case 'cursor':   return join(cursorHomeDir(), 'agents', `${name}.md`);
+    // Hermes has no agent files. copyArtifactToTool refuses this target first.
+    case 'hermes':   throw new Error('Hermes has no agent files');
   }
 }
 
@@ -147,6 +151,8 @@ export function instructionsFilename(tool: ToolId): string {
     case 'codex':
     // Cursor reads AGENTS.md too (alongside .cursor/rules and CLAUDE.md).
     case 'cursor': return 'AGENTS.md';
+    // Hermes instruction files are not mapped. copyArtifactToTool refuses this target first.
+    case 'hermes': throw new Error('Hermes has no instruction file mapping');
   }
 }
 
@@ -167,6 +173,7 @@ export function instructionsPath(tool: ToolId, projectPath?: string): string {
     // is User Rules plus ~/.cursor/rules/*.mdc. AGENTS.md at the home root is
     // the closest equivalent and is what a mirror can actually write.
     case 'cursor':   return join(cursorHomeDir(), file);
+    case 'hermes':   throw new Error('Hermes has no instruction file mapping');
   }
 }
 
