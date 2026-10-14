@@ -21,20 +21,32 @@
  * one and restores the other leaks a sandbox path into the rest of the run.
  */
 
+import { join } from 'path';
+
 export interface HomeEnvSnapshot {
   HOME?: string;
   USERPROFILE?: string;
+  CHAT_RECALL_HERMES_HOME?: string;
 }
 
-/** Make `os.homedir()` return `dir` on Linux, macOS and Windows. */
+/**
+ * Make `os.homedir()` return `dir` on Linux, macOS and Windows, and point the
+ * Hermes home at `dir/.hermes`. Hermes's default home is not under the home
+ * directory on Windows (%LOCALAPPDATA%\hermes), so it needs its own override.
+ */
 export function useHomeDir(dir: string): void {
   process.env.HOME = dir;        // POSIX: what uv_os_homedir reads
   process.env.USERPROFILE = dir; // Windows: what uv_os_homedir reads
+  process.env.CHAT_RECALL_HERMES_HOME = join(dir, '.hermes');
 }
 
-/** Capture both home variables so a test can restore exactly what it found. */
+/** Capture the home variables so a test can restore exactly what it found. */
 export function homeEnvSnapshot(): HomeEnvSnapshot {
-  return { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  return {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    CHAT_RECALL_HERMES_HOME: process.env.CHAT_RECALL_HERMES_HOME,
+  };
 }
 
 /**
@@ -49,4 +61,6 @@ export function restoreHomeEnv(snapshot: HomeEnvSnapshot): void {
   else process.env.HOME = snapshot.HOME;
   if (snapshot.USERPROFILE === undefined) delete process.env.USERPROFILE;
   else process.env.USERPROFILE = snapshot.USERPROFILE;
+  if (snapshot.CHAT_RECALL_HERMES_HOME === undefined) delete process.env.CHAT_RECALL_HERMES_HOME;
+  else process.env.CHAT_RECALL_HERMES_HOME = snapshot.CHAT_RECALL_HERMES_HOME;
 }

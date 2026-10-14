@@ -231,14 +231,6 @@ describe('stripCodexMcpBlock', () => {
 
 describe('Hermes in the sync', () => {
   const hermesConfig = () => join(tmp, '.hermes', 'config.yaml');
-  // The Hermes home is not under $HOME on Windows (%LOCALAPPDATA%\hermes), so the
-  // tests point it at the sandbox explicitly.
-  const origHermesHome = process.env.CHAT_RECALL_HERMES_HOME;
-  beforeEach(() => { process.env.CHAT_RECALL_HERMES_HOME = join(tmp, '.hermes'); });
-  afterEach(() => {
-    if (origHermesHome === undefined) delete process.env.CHAT_RECALL_HERMES_HOME;
-    else process.env.CHAT_RECALL_HERMES_HOME = origHermesHome;
-  });
 
   test('an MCP server is copied from Claude into the Hermes config, which is backed up first', async () => {
     w(hermesConfig(), '# Hermes\nmodel:\n  name: m\nmcp_servers:\n  keep:\n    command: /bin/keep\n');
