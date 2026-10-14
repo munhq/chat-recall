@@ -1912,7 +1912,7 @@ export async function getToolkitMatrix(): Promise<ToolkitMatrix> {
 export interface SyncIntentRow {
   id: string;
   device_id: string | null;
-  kind: 'copy' | 'sync_all';
+  kind: 'copy' | 'sync_all' | 'remove';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;
@@ -1923,9 +1923,15 @@ export interface SyncIntentRow {
   updated_at: number;
 }
 
+/** Artifact types that can be removed. Instruction files are not listed: they belong to one project. */
+export type RemovableSyncType = 'skill' | 'mcp' | 'command' | 'agent';
+
 export type SyncIntentBody =
   | { kind: 'sync_all'; deviceId?: string | null }
   | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool; deviceId?: string | null }
+  // Removes one skill or MCP server from one device's tool. The server needs the
+  // device, because only that device's agent can edit its config.
+  | { kind: 'remove'; artifactType: RemovableSyncType; name: string; toTool: SyncTool; deviceId: string | null }
   // Cross-device. `copy`/`sync_all` move artifacts between the tools on ONE
   // machine, reading that machine's disk — which is why they can never set up
   // a second machine. `pull` installs what the ACCOUNT has onto the target
@@ -1953,7 +1959,7 @@ export async function listSyncIntents(limit = 50): Promise<SyncIntentRow[]> {
 }
 
 export async function removeToolkitItem(
-  type: 'skill' | 'mcp',
+  type: RemovableSyncType,
   name: string,
   tool: SyncTool,
 ): Promise<{ ok: boolean; removedPath?: string; error?: string }> {
