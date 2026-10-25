@@ -21,6 +21,7 @@
  * traffic. The cached pool is shared; drivers must NOT end() it (their close()
  * is a no-op for pooled pg connections — see closePgPools for process shutdown).
  */
+import { EMBEDDABLE_CHUNK_INDEX_PREDICATE } from './embed-policy.js';
 import { createHash } from 'node:crypto';
 import { currentViewer } from './tenant-context.js';
 
@@ -208,6 +209,17 @@ const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: r
     name: 'idx_chunks_tenant_trgm',
     create: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_tenant_trgm ON memory_chunks USING GIN (tenant, text gin_trgm_ops)',
     drops: ['idx_chunks_text_trgm'],
+  },
+  {
+    // The embed worker and the pending-vectors metric both look for chunks that
+    // the embed policy keeps and that have no vector. Without this index each
+    // run reads all 275,470 chunks of the largest tenant from the heap and
+    // discards 221,963 of them: 2.3 s per metric call and 9.2 s cold. The
+    // index holds the 53,560 embeddable rows, and item_id and source_type are
+    // included because the row-level-security filter reads them.
+    name: 'idx_chunks_embeddable',
+    create: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embeddable ON memory_chunks (tenant, chunk_id) INCLUDE (item_id, source_type) WHERE ${EMBEDDABLE_CHUNK_INDEX_PREDICATE}`,
+    drops: [],
   },
 ];
 
