@@ -28,6 +28,22 @@ export function embedPolicy(env: NodeJS.ProcessEnv = process.env): EmbedPolicy {
 }
 
 /**
+ * The chunk types the worker embeds, as a WHERE clause over `<alias>.chunk_type`
+ * (no alias: bare column names, for an index predicate).
+ */
+export function embeddableChunkTypeSql(alias = ''): string {
+  const col = alias ? `${alias}.chunk_type` : 'chunk_type';
+  return `NOT (${col} = 'assistant' OR ${col} = 'harness' OR ${col} LIKE 'subagent%')`;
+}
+
+/**
+ * The predicate of idx_chunks_embeddable. A query that repeats it, as
+ * embeddableChunkSql does together with `c.text <> ''`, reads the index (about
+ * 53,000 rows on the largest tenant) and never touches the 275,000 chunks.
+ */
+export const EMBEDDABLE_CHUNK_INDEX_PREDICATE = `text <> '' AND ${embeddableChunkTypeSql()}`;
+
+/**
  * The `AND ...` clauses that keep only embeddable chunks, for a query over
  * `memory_chunks <alias>`. `minTurnsParam` and `maxOutParam` are the bind
  * placeholders ('$3', '$4') that the caller fills with `policy.minTurns` and
@@ -40,9 +56,7 @@ export function embeddableChunkSql(
   maxOutParam: string,
 ): string {
   const c = alias;
-  const chunkFilter = policy.includeAll
-    ? ''
-    : `AND NOT (${c}.chunk_type = 'assistant' OR ${c}.chunk_type = 'harness' OR ${c}.chunk_type LIKE 'subagent%')`;
+  const chunkFilter = policy.includeAll ? '' : `AND ${embeddableChunkTypeSql(c)}`;
   return `${chunkFilter}
              AND NOT (
                ${c}.source_type = 'session'
