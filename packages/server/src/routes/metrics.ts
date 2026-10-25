@@ -251,6 +251,11 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * Work backlog across tenants — the KEDA scale signal. `pendingRealSummaries`
  * excludes trivial sessions (<= SUMMARY_MIN_TURNS) that resolve to first_prompt
  * with NO LLM call, so KEDA scales OVMS on summaries that actually need compute.
+ *
+ * `c.text <> ''` is the test for a non-empty chunk. The comparison reads the
+ * stored length of a TOAST value, and length(c.text) decompresses every chunk:
+ * the count took 16.4 s with length() and 5.0 s with the comparison on the
+ * largest tenant (275,365 chunks).
  */
 async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
@@ -262,7 +267,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
       SELECT
         (SELECT count(*) FROM memory_chunks c
            LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id AND v.tenant = c.tenant
-           WHERE c.tenant = $1 AND length(c.text) > 0 AND v.chunk_id IS NULL) AS pending_vectors,
+           WHERE c.tenant = $1 AND c.text <> '' AND v.chunk_id IS NULL) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
         (SELECT count(*) FROM session_metadata sm
@@ -391,13 +396,28 @@ async function refreshBacklog(): Promise<void> {
   }
 }
 
+/** Default pause between two backlog refreshes, per pod. */
+export const DEFAULT_BACKLOG_REFRESH_MS = 120_000;
+
+/**
+ * Pause between two backlog refreshes, from BACKLOG_REFRESH_MS.
+ *
+ * Every pod runs the refresh for every billed tenant. At 15 s the pending
+ * vectors count ran 157,902 times in four days at 4.4 s each, 690,034 s of
+ * database time. The consumers are the KEDA scalers (30 s poll, 300 s
+ * cooldown) and two alerts that wait 2 h, so two minutes is fresh enough.
+ */
+export function backlogRefreshMs(raw: string | undefined = process.env.BACKLOG_REFRESH_MS): number {
+  return Math.max(5000, Number(raw) || DEFAULT_BACKLOG_REFRESH_MS);
+}
+
 let backlogStarted = false;
 /** Start the background backlog refresher (server mode). Idempotent. */
 export function startBacklogRefresher(): void {
   if (backlogStarted) return;
   backlogStarted = true;
   void refreshBacklog();                                   // warm immediately at boot
-  const ms = Math.max(5000, Number(process.env.BACKLOG_REFRESH_MS) || 15000);
+  const ms = backlogRefreshMs();
   setInterval(() => { void refreshBacklog(); }, ms).unref();
 }
 
