@@ -1,3 +1,4 @@
+import { embedPolicy, embeddableChunkSql } from './embed-policy.js';
 import { currentTenant } from './tenant-context.js';
 import { tenantQuery, tenantTx, openPgPoolRo } from './pg-pool.js';
 /**
@@ -427,20 +428,7 @@ export class PgVectorStore implements VectorStore {
     // tens of thousands of output tokens of real work). Generic (no hardcoded
     // patterns) and applies to source_type='session' only — plan/task/claude_md/
     // etc. chunks always embed. Both counters live in memory_metadata.extra_json.
-    const minTurns = Math.max(0, Number(process.env.EMBED_MIN_TURNS ?? process.env.SUMMARY_MIN_TURNS) || 4);
-    const maxTrivialOut = Math.max(0, Number(
-      process.env.EMBED_TRIVIAL_MAX_OUTPUT_TOKENS ?? process.env.SUMMARY_TRIVIAL_MAX_OUTPUT_TOKENS) || 2000);
-    // Item 5 — embed-less policy. Plain `assistant` chatter (~64% of chunks) and
-    // `subagent:*` internal fan-out (~8%) are low-signal for semantic recall, and
-    // so is `harness` text the tool wrote into the transcript. They
-    // stay fully keyword-searchable via FTS, so we DON'T vectorize them: ~72%
-    // fewer vectors with ~zero semantic-recall loss. CLASSIFIED assistant chunks
-    // (assistant:decision:impN, …) and user_context are high-value and kept.
-    // Override with EMBED_INCLUDE_ALL_CHUNKS=1 to vectorize everything (e.g. to
-    // A/B recall). No new bind params — the predicate is literal.
-    const chunkFilter = process.env.EMBED_INCLUDE_ALL_CHUNKS
-      ? ''
-      : `AND NOT (c.chunk_type = 'assistant' OR c.chunk_type = 'harness' OR c.chunk_type LIKE 'subagent%')`;
+    const policy = embedPolicy();
     return tenantTx(this.pool, this.t, async (client: any) => {
       const rows: any[] = (await client.query(
         `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
@@ -448,20 +436,10 @@ export class PgVectorStore implements VectorStore {
            WHERE c.tenant = $1 AND length(c.text) > 0
              AND NOT EXISTS (
                SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
-             ${chunkFilter}
-             AND NOT (
-               c.source_type = 'session'
-               AND EXISTS (
-                 SELECT 1 FROM memory_metadata m
-                  WHERE m.tenant = c.tenant AND m.id = c.item_id AND m.source_type = 'session'
-                    AND m.extra_json LIKE '{%'
-                    AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) <= $3
-                    AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'outputTokens', '')::bigint, 0) < $4
-               )
-             )
+             ${embeddableChunkSql('c', policy, '$3', '$4')}
            LIMIT $2
            FOR UPDATE OF c SKIP LOCKED`,
-        [this.t, limit, minTurns, maxTrivialOut])).rows;
+        [this.t, limit, policy.minTurns, policy.maxTrivialOut])).rows;
       if (rows.length === 0) return { embedded: 0, scanned: 0 };
       let embeddings: number[][] | null = null;
       try { embeddings = await (this.embedder as any).embed(rows.map((r: any) => r.text)); }
