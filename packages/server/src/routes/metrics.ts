@@ -22,6 +22,7 @@
 import express from 'express';
 import { openPgPool, openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { embedPolicy, embeddableChunkSql } from '@chat-recall/engine/core/store/embed-policy.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 import { edition } from '../util/mode.js';
 import { billingEnabled } from '../util/billing.js';
@@ -252,13 +253,14 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * excludes trivial sessions (<= SUMMARY_MIN_TURNS) that resolve to first_prompt
  * with NO LLM call, so KEDA scales OVMS on summaries that actually need compute.
  *
- * `c.text <> ''` is the test for a non-empty chunk. The comparison reads the
- * stored length of a TOAST value, and length(c.text) decompresses every chunk:
- * the count took 16.4 s with length() and 5.0 s with the comparison on the
- * largest tenant (275,365 chunks).
+ * `pendingVectors` counts the chunks the embed worker will embed
+ * (embed-policy.ts), not every chunk without a vector: 109,434 of the 275,470
+ * non-empty chunks of the largest tenant are embeddable. The count took 5.0 s
+ * over all chunks and 1.1 s with the policy filter.
  */
 async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
+  const policy = embedPolicy();
   let pendingVectors = 0, pendingSummaries = 0, pendingRealSummaries = 0;
   for (const t of slugs) {
     let r: Record<string, unknown> | undefined;
@@ -266,8 +268,9 @@ async function collectBacklog(pool: any, slugs: string[]) {
       r = (await tenantQuery(pool, t, `
       SELECT
         (SELECT count(*) FROM memory_chunks c
-           LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id AND v.tenant = c.tenant
-           WHERE c.tenant = $1 AND c.text <> '' AND v.chunk_id IS NULL) AS pending_vectors,
+           WHERE c.tenant = $1 AND c.text <> ''
+             AND NOT EXISTS (SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+             ${embeddableChunkSql('c', policy, '$3', '$4')}) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
         (SELECT count(*) FROM session_metadata sm
@@ -277,7 +280,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
                             AND m.extra_json LIKE '{%'
                             AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
         ) AS pending_real_summaries
-      `, [t, minTurns], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+      `, [t, minTurns, policy.minTurns, policy.maxTrivialOut], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
     } catch (e) {
       // Same rule as collectCapacity: skip the tenant, keep the scrape. The
       // backlog feeds KEDA, and a slightly low number scales correctly while a
