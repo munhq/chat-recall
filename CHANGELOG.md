@@ -4,6 +4,8 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.20] — 2026-10-27
+
 ### Added
 - **Pi sessions.** chat-recall reads the JSONL transcripts Pi writes under
   `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<id>.jsonl` and syncs them with
