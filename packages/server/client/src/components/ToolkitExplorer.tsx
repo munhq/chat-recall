@@ -532,10 +532,10 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
 /** Per-primitive: which AI tools natively expose this surface today.
  *  Antigravity kept Gemini CLI's on-disk formats after Google retired it. */
 const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<ToolId>> = {
-  skill:   new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
-  mcp:     new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
+  skill:   new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes', 'pi']),
+  mcp:     new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes', 'pi']),
   plugin:  new Set<ToolId>(['claude', 'agy', 'codex']),
-  command: new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
+  command: new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor', 'pi']),
   agent:   new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
   // Hooks remain Claude-specific (settings.json event handlers).
   hook:    new Set<ToolId>(['claude']),
@@ -802,7 +802,7 @@ function EmptyListState({
 // show presence and accept clicks to queue add/remove. Apply runs all
 // queued mutations in parallel and refreshes the matrix.
 
-const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'];
+const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes', 'pi'];
 
 type CellAction = 'add' | 'remove';
 type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<deviceId>:<tool>"

@@ -1,8 +1,8 @@
 # Adding an AI coding tool
 
-chat-recall reads six tools today: Claude Code, Codex, OpenCode, Antigravity,
-Cursor and Hermes Agent. Adding a seventh means writing one format adapter and
-then extending the places that enumerate the six by name.
+chat-recall reads seven tools today: Claude Code, Codex, OpenCode, Antigravity,
+Cursor, Hermes Agent and Pi. Adding an eighth means writing one format adapter
+and then extending the places that enumerate the seven by name.
 
 The shared engine in `packages/engine/src/core/generic-engine.ts` runs the same
 `extractTurnsFromEvents` / `liveScanEditsFromEvents` / `replayFromEvents`
@@ -15,7 +15,7 @@ works once that function does.
 `AiTool` in `packages/engine/src/core/live-session-scan.ts`:
 
 ```ts
-export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes' | 'pi';
 ```
 
 Add yours. The compiler will now point at most of the work in step 3.
@@ -39,7 +39,8 @@ Create `packages/engine/src/core/backends/<tool>.ts`, implementing
 
 Read `backends/codex.ts` first: it is the smallest complete adapter. Read
 `backends/hermes.ts` if your tool keeps its chats in SQLite rows in the OpenAI
-message shape. Read
+message shape. Read `backends/pi.ts` if your tool writes one JSONL file per
+session with a header line. Read
 `backends/cursor.ts` if your tool has more than one surface — Cursor covers both
 the `cursor-agent` CLI and the desktop IDE, and splits its readers into
 `cursor-store.ts` and `cursor-ide.ts`.

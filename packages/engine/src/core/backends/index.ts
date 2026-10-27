@@ -19,6 +19,7 @@ import { codexBackend, CodexBackend } from './codex.js';
 import { agyBackend, AgyBackend } from './agy.js';
 import { cursorBackend, CursorBackend } from './cursor.js';
 import { hermesBackend, HermesBackend } from './hermes.js';
+import { piBackend, PiBackend } from './pi.js';
 
 export function bootstrapBackends(): void {
   // Idempotent — registerBackend() calls Map.set, replacing if present, so
@@ -29,6 +30,7 @@ export function bootstrapBackends(): void {
   registerBackend(agyBackend);
   registerBackend(cursorBackend);
   registerBackend(hermesBackend);
+  registerBackend(piBackend);
 }
 
 // Defer registration to the first registry access (call time), not import
@@ -45,6 +47,7 @@ export {
   agyBackend, AgyBackend,
   cursorBackend, CursorBackend,
   hermesBackend, HermesBackend,
+  piBackend, PiBackend,
 };
 export {
   registerBackend,

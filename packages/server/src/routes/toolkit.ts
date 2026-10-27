@@ -108,7 +108,7 @@ router.get('/item/:type/:id', async (req, res) => {
 // Note:  cp CLAUDE.md → GEMINI.md or AGENTS.md in same project dir
 // ─────────────────────────────────────────────────────────────────
 
-const TARGET_TOOLS = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'] as const;
+const TARGET_TOOLS = ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes', 'pi'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */

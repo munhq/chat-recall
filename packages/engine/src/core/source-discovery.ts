@@ -27,11 +27,11 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import {
   claudeProjectDirs, geminiTmpDirs, codexSessionDirs, agyBrainDirs, cursorChatDirs, opencodeDbPaths,
-  hermesDbPaths,
+  hermesDbPaths, piSessionDirs,
   _setSourceExclusionFilter,
 } from './tool-paths.js';
 
-export type SourceTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes';
+export type SourceTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes' | 'pi';
 
 export interface SessionSource {
   /** Stable id derived from the path — what the dashboard toggles and the
@@ -107,6 +107,9 @@ function isTranscript(tool: SourceTool, name: string): boolean {
     case 'codex':
     case 'agy':
       return name.endsWith('.jsonl');
+    case 'pi':
+      // Pi's own naming; a stray .jsonl in the sessions tree is not a session.
+      return /^\d{4}-\d{2}-\d{2}T[\d-]+Z_.+\.jsonl$/.test(name);
     case 'cursor':
       // One store.db per chat directory, so counting them counts sessions.
       return name === 'store.db';
@@ -163,6 +166,7 @@ export function discoverSessionSources(): SessionSource[] {
     ['codex',   codexSessionDirs({ includeExcluded: true })],
     ['agy',     agyBrainDirs({ includeExcluded: true })],
     ['cursor',  cursorChatDirs({ includeExcluded: true })],
+    ['pi',      piSessionDirs({ includeExcluded: true })],
   ];
   for (const [tool, dirs] of dirTools) {
     for (const [i, path] of dirs.entries()) {

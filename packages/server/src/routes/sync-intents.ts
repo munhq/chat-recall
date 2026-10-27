@@ -25,7 +25,7 @@ const router = express.Router();
 // `instructions` (Rules/MD) copy intent after that type was added to the client
 // + engine but not here. Single source of truth = no drift.
 const VALID_TYPES = new Set<string>(ALL_SYNC_TYPES);
-const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor', 'hermes']);
+const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor', 'hermes', 'pi']);
 /** Types a remove intent can name. Instruction files need a project, so they are not listed. */
 const REMOVABLE_TYPES: string[] = ['skill', 'mcp', 'command', 'agent'];
 

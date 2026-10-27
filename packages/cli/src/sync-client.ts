@@ -50,6 +50,7 @@ import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/sess
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
+import { canonicalEventsToMessages } from '@chat-recall/engine/transcript/index.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 import { fileURLToPath } from 'node:url';
@@ -2505,7 +2506,7 @@ export async function buildConversationSync(
         head = await backend.readFromOffset(ref.prefixedId, head.newOffset, SYNC_CHUNK_BYTES);
       }
       headOffsetEnd = head.newOffset;
-      const messages = parseTailMessages(ref.toolId, head.text);
+      const messages = parseTailMessages(ref.toolId, head.text, backend);
       if (messages.length > 0) transcript = { messages, subagents: [] };
     } catch { /* unreadable head */ }
     includeRaw = false;   // exportRawSession would read the whole file
@@ -2882,10 +2883,19 @@ function diskArchiveSource(ref: SessionRef): ArchiveSource | null {
  * backend's readFromOffset snaps to the last newline). Returns [] when the
  * tail has no usable messages (blank, all-summary, internal-tool prompt).
  */
-function parseTailMessages(tool: string, text: string): any[] {
+function parseTailMessages(
+  tool: string,
+  text: string,
+  backend: ReturnType<typeof getBackendForId> = null,
+): any[] {
   if (!text || !text.trim()) return [];
   if (tool === 'claude') return parseClaudeTranscriptText(text);
   if (tool === 'codex') return parseCodexTranscriptText(text);
+  // Pi and Antigravity reuse their canonical-event parser here, so an append
+  // ships the same messages as a full build.
+  if (backend?.readEventsFromText) {
+    return canonicalEventsToMessages(backend.readEventsFromText(text, 0));
+  }
   return [];
 }
 
@@ -2925,7 +2935,7 @@ export async function buildConversationTail(
   // than a chunk) still has to move the server's synced-through offset, or the
   // cursor reads the same window on every tick and the rest of a chunked
   // session never ships. The server merges an empty tail and advances `o`.
-  const messages = skippedBytes ? [] : parseTailMessages(ref.toolId, tailText);
+  const messages = skippedBytes ? [] : parseTailMessages(ref.toolId, tailText, backend);
   const textMessages = messages.filter((m) => m.role !== 'summary' && m.content?.trim());
   const hasContent = textMessages.length > 0 || messages.some((m) => m.toolCalls?.length);
   if (!hasContent) {

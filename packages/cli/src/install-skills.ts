@@ -22,6 +22,7 @@ import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
 import { codexBackend } from '@chat-recall/engine/core/backends/codex.js';
 import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
 import { cursorBackend } from '@chat-recall/engine/core/backends/cursor.js';
+import { piBackend } from '@chat-recall/engine/core/backends/pi.js';
 import { cursorHomeDir } from '@chat-recall/engine/core/tool-paths.js';
 // NOTE: Antigravity installs into its OWN dir, ~/.gemini/antigravity-cli/skills.
 // This file used to install to the shared ~/.gemini/skills instead, disagreeing
@@ -164,6 +165,7 @@ export function skillTargets(): SkillTarget[] {
     // Cursor DOES have its own dir (~/.cursor/skills). `skills-cursor` next to
     // it is Cursor's bundled set — read-only, never an install target.
     { id: 'cursor',   label: 'Cursor',       dir: join(cursorHomeDir(), 'skills'), available: cursorBackend.isAvailable() },
+    { id: 'pi',       label: 'Pi',           dir: piBackend.skillsDir(),       available: piBackend.isAvailable() },
   ];
 }
 

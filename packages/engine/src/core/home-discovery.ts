@@ -16,6 +16,7 @@
  *   agy       <home>/brain/<id>/.system_generated/logs/*.jsonl
  *   opencode  <dir>/opencode.db
  *   hermes    <home>/state.db beside SOUL.md, and <home>/profiles/<name>/
+ *   pi        <home>/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl
  *
  * ── Three signals, cheapest and most reliable first ──────────────────────
  *  1. DECLARED — where the user actually configured a profile: our own env,
@@ -34,9 +35,11 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { homedir, platform as osPlatform } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
+import { assignPiSessionKeys, readPiHeader, type PiSessionFile } from './backends/pi.js';
+import { piSessionDirForHome } from './tool-paths.js';
 
-export type HomeTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes';
+export type HomeTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor' | 'hermes' | 'pi';
 
 export interface DiscoveredHome {
   tool: HomeTool;
@@ -82,6 +85,20 @@ export function candidateRoots(plat: NodeJS.Platform = osPlatform(), env = proce
   return roots.filter((r) => existsSync(r));
 }
 
+/** Is `name` a Pi session file? `<ISO timestamp with : and . as ->_<session id>.jsonl`. */
+function isPiTranscriptName(name: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T[\d-]+Z_.+\.jsonl$/.test(name);
+}
+
+/**
+ * The folder holding a Pi home's sessions. A custom `sessionDir` points at one
+ * flat folder; the home itself can be that folder.
+ */
+function piRootOf(home: string): string {
+  if (dirHasTranscript(home, isPiTranscriptName, 1)) return home;
+  return piSessionDirForHome(home);
+}
+
 /** Does `dir` look like a home for `tool`? Structural test, no name matching. */
 export function identifyHome(dir: string): HomeTool | null {
   const has = (...parts: string[]) => existsSync(join(dir, ...parts));
@@ -105,6 +122,10 @@ export function identifyHome(dir: string): HomeTool | null {
   // Hermes: its database beside the SOUL.md every Hermes home and profile has.
   // `state.db` alone is a name other apps use too.
   if (has('state.db') && has('SOUL.md')) return 'hermes';
+  // Pi: sessions/<encoded-cwd>/<ISO-with-dashes>_<id>.jsonl. A custom
+  // sessionDir can be the home itself, or a folder settings.json names.
+  const piRoot = piRootOf(dir);
+  if (dirHasTranscript(piRoot, isPiTranscriptName, piRoot === dir ? 1 : 2)) return 'pi';
   return null;
 }
 
@@ -124,6 +145,23 @@ function dirHasTranscript(root: string, match: (f: string) => boolean, depth: nu
 
 /** Count transcripts under a home, bounded so a 10k-session home stays cheap. */
 function countSessions(dir: string, tool: HomeTool): number {
+  // Pi may keep its sessions in a folder named by settings.json.
+  if (tool === 'pi') {
+    let n = 0;
+    const walk = (d: string, depth: number) => {
+      if (depth < 0 || n > 100_000) return;
+      let entries;
+      try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (SKIP.has(e.name)) continue;
+        if (e.isDirectory()) { walk(join(d, e.name), depth - 1); continue; }
+        if (isPiTranscriptName(e.name)) n++;
+      }
+    };
+    const root = piRootOf(dir);
+    walk(root, root === dir ? 1 : 2);
+    return n;
+  }
   const spec: Record<HomeTool, { sub: string; depth: number; match: (f: string) => boolean }> = {
     claude:   { sub: 'projects', depth: 2, match: (f) => f.endsWith('.jsonl') && f !== 'sessions-index.json' },
     codex:    { sub: 'sessions', depth: 4, match: (f) => f.startsWith('rollout-') && f.endsWith('.jsonl') },
@@ -131,6 +169,7 @@ function countSessions(dir: string, tool: HomeTool): number {
     cursor:   { sub: 'chats',    depth: 3, match: (f) => f === 'store.db' },
     opencode: { sub: '',         depth: 0, match: () => false },
     hermes:   { sub: '',         depth: 0, match: () => false },
+    pi:       { sub: 'sessions', depth: 2, match: isPiTranscriptName },
   };
   const s = spec[tool];
   if (!s.sub) return 0;                      // opencode, hermes: rows, not files
@@ -178,6 +217,7 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
     cursor: { sub: 'chats', depth: 2, idOf: () => null },// id is the DIRECTORY name
     opencode: { sub: '', depth: 0, idOf: () => null },   // rows, not files
     hermes: { sub: '', depth: 0, idOf: () => null },     // rows, not files
+    pi: { sub: 'sessions', depth: 2, idOf: () => null },  // keys come from the backend
   };
   const s = spec[tool];
   if (!s.sub) return [];
@@ -204,6 +244,39 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
         } catch { /* unreadable */ }
       }
     } catch { /* unreadable */ }
+    return [...out];
+  }
+
+  // Pi keys need the backend's assignment, so a session that shares its id
+  // with another project keeps the suffixed key the server stored.
+  if (tool === 'pi') {
+    const files: PiSessionFile[] = [];
+    const walkPi = (d: string, depth: number) => {
+      if (depth < 0) return;
+      let entries;
+      try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = join(d, e.name);
+        if (e.isDirectory()) { walkPi(full, depth - 1); continue; }
+        if (!e.name.endsWith('.jsonl')) continue;
+        let mtime = 0;
+        try { mtime = statSync(full).mtimeMs; } catch { continue; }
+        const header = readPiHeader(full);
+        if (!header) continue;                        // no readable header yet
+        const id = header.id || e.name.slice(e.name.indexOf('_') + 1, -'.jsonl'.length);
+        if (!id) continue;
+        files.push({
+          id,
+          projectPath: header.cwd || '',
+          projectDir: basename(d),
+          mtime,
+          path: full,
+        });
+      }
+    };
+    const root = piRootOf(dir);
+    walkPi(root, root === dir ? 1 : 2);
+    for (const key of assignPiSessionKeys(files).keys()) out.add(`pi_${key}`);
     return [...out];
   }
 
@@ -239,6 +312,8 @@ export function declaredHomes(env = process.env, plat: NodeJS.Platform = osPlatf
   add(env.CHAT_RECALL_AGY_HOME);
   add(env.CHAT_RECALL_CURSOR_HOME);
   add(env.CHAT_RECALL_CURSOR_IDE_HOME);
+  add(env.CHAT_RECALL_PI_HOME);
+  add(env.PI_CODING_AGENT_DIR);
   add(env.CHAT_RECALL_HERMES_HOME);
   add(env.HERMES_HOME);
   for (const d of (env.CLAUDE_DIRS || '').split(',')) add(d);

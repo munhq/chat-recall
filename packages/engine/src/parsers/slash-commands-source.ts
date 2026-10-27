@@ -28,6 +28,7 @@ import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { agyBackend as AGY } from '../core/backends/agy.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { piBackend as PI } from '../core/backends/pi.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
@@ -63,7 +64,7 @@ function rebuildBody(content: string): Record<string, unknown> {
   return out;
 }
 
-type CmdTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
+type CmdTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'pi';
 
 interface CmdRoot {
   path: string;
@@ -125,6 +126,10 @@ export class SlashCommandsSource implements MemorySource {
     }
     if (isSourceEnabled('cursor', 'commands')) {
       roots.push({ path: join(cursorHomeDir(), 'commands'), tool: 'cursor', scope: 'user', projectPath: '', format: 'md' });
+    }
+    if (isSourceEnabled('pi', 'commands')) {
+      // Pi's prompt templates: flat *.md children of <agent dir>/prompts.
+      roots.push({ path: PI.promptsDir(), tool: 'pi', scope: 'user', projectPath: '', format: 'md' });
     }
     return roots;
   }

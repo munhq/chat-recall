@@ -108,6 +108,12 @@ export function grandfatherLegacyHomes(): { seeded: string[] } {
 
 const dirOf = (filePath: string): string => dirname(filePath);
 
+/** Pi Agent's own default config root: `<home>/.pi/agent` on every platform
+ *  (Pi reads `PI_CODING_AGENT_DIR`, which is not a per-platform default). */
+export function defaultPiHome(): string {
+  return join(homedir(), '.pi', 'agent');
+}
+
 /** Hermes Agent's own default root: `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows. */
 export function defaultHermesHome(): string {
   if (process.platform === 'win32') {
@@ -137,6 +143,7 @@ function primaryHomes(): string[] {
     env.CHAT_RECALL_CURSOR_HOME || s?.cursorHome || join(home, '.cursor'),
     dirOf(opencodeDb),
     env.CHAT_RECALL_HERMES_HOME || s?.hermesHome || env.HERMES_HOME?.trim() || defaultHermesHome(),
+    env.CHAT_RECALL_PI_HOME || s?.piHome || env.PI_CODING_AGENT_DIR?.trim() || defaultPiHome(),
   ];
   return candidates.map(normalizeHomePath);
 }

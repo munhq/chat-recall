@@ -44,6 +44,8 @@ Point the collector at non-standard tool locations (useful for fixtures/tests):
 | `CHAT_RECALL_CURSOR_HOME` | `~/.cursor` (the `cursor-agent` CLI store) |
 | `CHAT_RECALL_CURSOR_IDE_HOME` | `~/.config/Cursor` (the DESKTOP app — note the capital C; `~/.config/cursor` is the CLI's auth dir) |
 | `CHAT_RECALL_HERMES_HOME` | `~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows; `HERMES_HOME` when it is set. Named profiles in its `profiles/` folder are read too. |
+| `CHAT_RECALL_PI_HOME` | `~/.pi/agent` (Pi's agent dir); `PI_CODING_AGENT_DIR` when it is set. |
+| `CHAT_RECALL_PI_SESSION_DIR` | `<agent dir>/sessions`, unless `PI_CODING_AGENT_SESSION_DIR` or an absolute `sessionDir` in `<agent dir>/settings.json` names another folder. |
 | `CHAT_RECALL_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` (full file path) |
 | `CHAT_RECALL_DATA_DIR` | `~/.chat-recall` (ledger, shadow archive, credentials) |
 

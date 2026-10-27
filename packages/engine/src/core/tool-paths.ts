@@ -13,12 +13,12 @@
  * `discover()` and path resolution see consistent values.
  */
 
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync, realpathSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, isAbsolute } from 'path';
 // Local approval decisions + the one-shot upgrade migration. Imported directly
 // (no cycle: home-approval reads settings, which knows nothing about paths).
-import { isHomeSynced, grandfatherLegacyHomes, defaultHermesHome } from './home-approval.js';
+import { isHomeSynced, grandfatherLegacyHomes, defaultHermesHome, homeDecision } from './home-approval.js';
 import { loadSourceSettings, _resetSourceSettingsCache } from './settings.js';
 
 // Re-export so existing test imports from this module keep working.
@@ -145,6 +145,116 @@ export function cursorIdeHomeDir(): string {
       ? join(homedir(), 'Library', 'Application Support', 'Cursor')
       : join(homedir(), '.config', 'Cursor'));
 }
+
+/**
+ * Pi coding agent config root (`~/.pi/agent` by default).
+ *
+ * Pi keeps one "agent dir" holding everything: sessions/, skills/, prompts/
+ * and mcp.json. It reads `PI_CODING_AGENT_DIR` itself, so a machine that
+ * relocates its config is read where it actually writes.
+ */
+export function piHomeDir(): string {
+  const raw = process.env.CHAT_RECALL_PI_HOME
+    || sources().piHome
+    || process.env.PI_CODING_AGENT_DIR?.trim();
+  return raw ? expandTildePath(raw) : join(homedir(), '.pi', 'agent');
+}
+
+/** Expand a leading `~`, which Pi accepts in its own path settings. */
+export function expandTildePath(value: string): string {
+  const t = value.trim();
+  if (t === '~') return homedir();
+  if (t.startsWith('~/') || t.startsWith('~\\')) return join(homedir(), t.slice(2));
+  return t;
+}
+
+/**
+ * Pi's session root — `<agent dir>/sessions` unless Pi was told otherwise.
+ * `PI_CODING_AGENT_SESSION_DIR` is Pi's own override (and `--session-dir` beats
+ * it at the CLI, where the value is not visible to us).
+ */
+export function piSessionDir(): string {
+  const override = piSessionDirEnv();
+  if (override) return override;
+  return piSessionDirForHome(piHomeDir());
+}
+
+/** The session root from our env or Pi's own, with `~` expanded. */
+function piSessionDirEnv(): string | null {
+  const raw = process.env.CHAT_RECALL_PI_SESSION_DIR
+    || process.env.PI_CODING_AGENT_SESSION_DIR?.trim();
+  return raw && raw.trim() ? expandTildePath(raw) : null;
+}
+
+/** The session root of one Pi agent dir: an absolute `sessionDir`, else sessions/. */
+export function piSessionDirForHome(home: string): string {
+  // The resolved Pi home also answers to the env override, so discovery and the
+  // decline path see the folder the backend syncs.
+  const env = piSessionDirEnv();
+  if (env && sameDir(home, piHomeDir())) return env;
+  return piSessionDirFromSettings(join(home, 'settings.json')) || join(home, 'sessions');
+}
+
+/** Compare two folders, tolerating a symlink on either side. */
+function sameDir(a: string, b: string): boolean {
+  if (a === b) return true;
+  try { return realpathSync(a) === realpathSync(b); } catch { return false; }
+}
+
+/**
+ * Pi's own `sessionDir` setting, when it is absolute. A relative one resolves
+ * from a per-session working directory, so it names no single folder.
+ * Cached on the file's mtime: the sync walk resolves the session root often.
+ */
+let piSettingsCache: { path: string; sig: number; dir: string | null } | null = null;
+
+function piSessionDirFromSettings(file: string): string | null {
+  let sig: number;
+  try { sig = statSync(file).mtimeMs; } catch { return null; }
+  if (piSettingsCache && piSettingsCache.path === file && piSettingsCache.sig === sig) {
+    return piSettingsCache.dir;
+  }
+  let dir: string | null = null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as { sessionDir?: unknown };
+    const value = typeof parsed.sessionDir === 'string' ? parsed.sessionDir.trim() : '';
+    // Pi expands `~` in this setting, and a relative path names no fixed folder.
+    const expanded = value ? expandTildePath(value) : '';
+    dir = expanded && isAbsolute(expanded) ? expanded : null;
+  } catch { /* unreadable or malformed: the default stands */ }
+  piSettingsCache = { path: file, sig, dir };
+  return dir;
+}
+
+/**
+ * Every Pi session root.
+ *
+ * The agent dir is the home the operator approves. A custom `sessionDir` is a
+ * second folder, so an explicit DECLINE on it stops the sync too. The per-source
+ * switch in the dashboard applies as well.
+ */
+export function piSessionDirs(opts: RootsOpts = {}): string[] {
+  const home = piHomeDir();
+  const dir = piSessionDir();
+  // Only a root that EXISTS counts: an install that never ran Pi reports none.
+  if (!existsSync(dir)) return [];
+  if (opts.includeExcluded) return [dir];
+
+  try { grandfatherLegacyHomes(); } catch { /* settings unreadable */ }
+  try { if (!isHomeSynced(home)) return []; } catch { /* gate unreadable */ }
+  try { if (homeDecision(dir) === 'declined') return []; } catch { /* gate unreadable */ }
+  if (_sourceExclusionFilter && _sourceExclusionFilter(dir)) return [];
+  return [dir];
+}
+
+/** Pi user skills root — `<agent dir>/skills`, one folder per skill. */
+export function piSkillsDir(): string { return join(piHomeDir(), 'skills'); }
+
+/** Pi prompt templates (slash commands) — `<agent dir>/prompts/*.md`. */
+export function piPromptsDir(): string { return join(piHomeDir(), 'prompts'); }
+
+/** Pi's user-level MCP server config — `<agent dir>/mcp.json`. */
+export function piMcpConfigPath(): string { return join(piHomeDir(), 'mcp.json'); }
 
 /**
  * Sibling homes for a tool: `<base>` plus every `<base>-*` next to it.

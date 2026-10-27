@@ -1613,6 +1613,8 @@ router.get('/:id', async (req, res) => {
         tool = 'cursor';
       } else if (id.startsWith('hermes_')) {
         tool = 'hermes';
+      } else if (id.startsWith('pi_')) {
+        tool = 'pi';
       }
 
       if (tool === 'claude' && !filePath) {
@@ -1724,8 +1726,8 @@ router.get('/:id', async (req, res) => {
       // 3. Parse and cache
       let messages;
       let subagents: Subagent[] = [];
-      if (tool === 'agy' || tool === 'cursor' || tool === 'hermes') {
-        // Antigravity, Cursor and Hermes — parse through the generic event bridge (no
+      if (tool === 'agy' || tool === 'cursor' || tool === 'hermes' || tool === 'pi') {
+        // Antigravity, Cursor, Hermes and Pi — parse through the generic event bridge (no
         // hand-written parser; the ToolBackend's readEvents() feeds
         // canonicalEventsToMessages). Same path parseTranscript uses.
         const backend = getBackendForId(id);
@@ -1832,7 +1834,7 @@ router.get('/:id/raw', async (req, res) => {
     // Cursor and Hermes are SQLite-backed with no per-session file, so the raw
     // view is the decoded event stream. The Cursor backend already picks
     // store.db vs the JSONL fallback.
-    if (id.startsWith('cursor_') || id.startsWith('hermes_')) {
+    if (id.startsWith('cursor_') || id.startsWith('hermes_') || id.startsWith('pi_')) {
       const backend = getBackendForId(id);
       if (!backend) return res.status(404).json({ error: 'Session not found' });
       const lines = backend.readEvents(backend.toRawId(id));

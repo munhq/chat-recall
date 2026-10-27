@@ -443,6 +443,8 @@ describe('cross-backend listing', () => {
   let cursorIdeHome: string;
   let opencodeDb: string;
   let opencodeDir: string;
+  let piHome: string;
+  let savedPiAgentSessionDir: string | undefined;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -454,6 +456,7 @@ describe('cross-backend listing', () => {
     cursorIdeHome = tmp('cross-cursor-ide');
     opencodeDir  = tmp('cross-opencode');
     opencodeDb   = join(opencodeDir, 'opencode.db');
+    piHome       = tmp('cross-pi');
 
     saved.CLAUDE_HOME    = process.env.CHAT_RECALL_CLAUDE_HOME;
     saved.GEMINI_HOME    = process.env.CHAT_RECALL_GEMINI_HOME;
@@ -465,6 +468,9 @@ describe('cross-backend listing', () => {
     saved.CURSOR_IDE_HOME = process.env.CHAT_RECALL_CURSOR_IDE_HOME;
     saved.HERMES_HOME    = process.env.CHAT_RECALL_HERMES_HOME;
     saved.OPENCODE_DB    = process.env.CHAT_RECALL_OPENCODE_DB;
+    saved.PI_HOME        = process.env.CHAT_RECALL_PI_HOME;
+    saved.PI_SESSION_DIR = process.env.CHAT_RECALL_PI_SESSION_DIR;
+    savedPiAgentSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
     process.env.CHAT_RECALL_CLAUDE_HOME = claudeHome;
     process.env.CHAT_RECALL_CODEX_HOME  = codexHome;
     process.env.CHAT_RECALL_AGY_HOME    = agyHome;
@@ -472,6 +478,9 @@ describe('cross-backend listing', () => {
     process.env.CHAT_RECALL_CURSOR_IDE_HOME = cursorIdeHome;
     process.env.CHAT_RECALL_HERMES_HOME = join(cursorHome, 'no-hermes');
     process.env.CHAT_RECALL_OPENCODE_DB = opencodeDb;
+    process.env.CHAT_RECALL_PI_HOME = piHome;
+    delete process.env.CHAT_RECALL_PI_SESSION_DIR;
+    delete process.env.PI_CODING_AGENT_SESSION_DIR;
 
     bootstrapBackends();
   });
@@ -482,7 +491,9 @@ describe('cross-backend listing', () => {
       if (v === undefined) delete process.env[envKey];
       else process.env[envKey] = v;
     }
-    [claudeHome, codexHome, agyHome, cursorHome, cursorIdeHome, opencodeDir].forEach(d => {
+    if (savedPiAgentSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    else process.env.PI_CODING_AGENT_SESSION_DIR = savedPiAgentSessionDir;
+    [claudeHome, codexHome, agyHome, cursorHome, cursorIdeHome, opencodeDir, piHome].forEach(d => {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     });
   });
@@ -519,6 +530,14 @@ describe('cross-backend listing', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
     ]);
 
+    // Pi session
+    const piSessions = join(piHome, 'sessions', '--x--');
+    mkdirSync(piSessions, { recursive: true });
+    writeFileSync(join(piSessions, '2026-05-06T10-00-00-000Z_pi1111-1111-4111-8111-111111111111.jsonl'),
+      JSON.stringify({ type: 'session', version: 3, id: 'pi1111-1111-4111-8111-111111111111', timestamp: '2026-05-06T10:00:00.000Z', cwd: '/x/pi' }) + '\n' +
+      JSON.stringify({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-05-06T10:00:01.000Z',
+        message: { role: 'user', content: 'pi prompt', timestamp: 1778061601000 } }) + '\n');
+
     const recent = getRecentSessions(undefined, 100);
     const tools = new Set(recent.map(s => s.tool));
     // Every backend's home is populated, so every tool should show up.
@@ -527,5 +546,6 @@ describe('cross-backend listing', () => {
     expect(tools.has('opencode')).toBe(true);
     expect(tools.has('agy')).toBe(true);
     expect(tools.has('cursor')).toBe(true);
+    expect(tools.has('pi')).toBe(true);
   });
 });

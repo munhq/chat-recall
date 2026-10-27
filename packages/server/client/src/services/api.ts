@@ -1119,7 +1119,7 @@ export interface AnalyticsData {
   };
 }
 
-export async function getAnalytics(tool?: 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes'): Promise<AnalyticsData> {
+export async function getAnalytics(tool?: 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes' | 'pi'): Promise<AnalyticsData> {
   const url = tool && tool !== 'all'
     ? `${API_BASE}/analytics?tool=${encodeURIComponent(tool)}`
     : `${API_BASE}/analytics`;
@@ -1484,6 +1484,7 @@ export interface SourcesEnabled {
   agy:      { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
   cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
   hermes:   { sessions: boolean };
+  pi:       { sessions: boolean; skills: boolean; commands: boolean };
   common:   { mcps: boolean; agentMd: boolean };
 }
 
@@ -1497,6 +1498,8 @@ export interface SourceSettings {
   cursorIdeHome?: string;
   /** Hermes Agent root (~/.hermes). */
   hermesHome?: string;
+  /** Pi coding agent config root (~/.pi/agent). */
+  piHome?: string;
   opencodeDbPath?: string;
   extraClaudeHomes?: string[];
   enabled: SourcesEnabled;
@@ -1528,7 +1531,7 @@ export interface SyncSettings {
     dismissals: boolean;
     customRules: boolean;
   };
-  excludeTools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes'>;
+  excludeTools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes' | 'pi'>;
   excludeProjects: string[];
   excludePreviewPatterns?: string[];
 }
@@ -1647,7 +1650,7 @@ export async function getPatterns(): Promise<PatternsResponse> {
 export type ToolkitType = 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
 
 export interface ToolkitStatus {
-  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes', number>>;
+  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes' | 'pi', number>>;
 }
 
 export async function getToolkitStatus(): Promise<ToolkitStatus> {
@@ -1693,7 +1696,7 @@ export async function promoteToolkitItem(
 
 // --- Sync-all (bulk promote across tools) ---
 
-export type SyncTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
+export type SyncTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes' | 'pi';
 /** Toolkit primitives with a clean cross-tool sync matrix. */
 export type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 
@@ -1976,7 +1979,7 @@ export async function removeToolkitItem(
 // --- Edits timeline / live session files ---
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
-export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes' | 'pi';
 
 export interface EditRow {
   ts: number;
