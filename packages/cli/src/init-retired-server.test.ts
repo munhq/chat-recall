@@ -86,6 +86,7 @@ function runInit(extra: string[] = []): Promise<Run> {
     CHAT_RECALL_CURSOR_HOME: join(home, 'cursor'),
     CHAT_RECALL_CURSOR_IDE_HOME: join(home, 'cursor-ide'),
     CHAT_RECALL_HERMES_HOME: join(home, 'hermes'),
+    CHAT_RECALL_PI_HOME: join(home, 'pi'),
     CHAT_RECALL_OPENCODE_DB: join(home, 'none.db'),
     CHAT_RECALL_TELEMETRY: '0',
     // NEVER the real service: the switch path starts a login, and against

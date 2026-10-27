@@ -22,6 +22,13 @@ describe('resumeCommandFor', () => {
     expect(resumeCommandFor('opencode_abc123')).toBe('opencode -s abc123');
     expect(resumeCommandFor('agy_abc123')).toBe('agy --conversation abc123');
     expect(resumeCommandFor('cursor_abc123')).toBe('cursor-agent --resume abc123');
+    expect(resumeCommandFor('pi_abc123')).toBe('pi --session abc123');
+  });
+
+  test('a pi id that two projects reused resumes with the bare id', () => {
+    // chat-recall adds `~<project hash>` to keep both conversations; Pi itself
+    // knows only the id it wrote.
+    expect(resumeCommandFor('pi_abc123~1a2b3c4d')).toBe('pi --session abc123');
   });
 
   test('gemini has no resume-by-id, so it returns null rather than a wrong command', () => {
@@ -40,7 +47,7 @@ describe('resumeCommandFor', () => {
   });
 
   test('no command ever leaks a chat-recall prefix', () => {
-    for (const id of ['codex_x', 'opencode_x', 'agy_x', 'cursor_x']) {
+    for (const id of ['codex_x', 'opencode_x', 'agy_x', 'cursor_x', 'pi_x']) {
       const cmd = resumeCommandFor(id);
       expect(cmd).not.toBeNull();
       expect(cmd).not.toContain('_x');

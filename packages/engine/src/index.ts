@@ -101,6 +101,7 @@ export {
   claudeBackend,
   opencodeBackend,
   codexBackend,
+  piBackend,
 } from './core/backends/index.js';
 export {
   getBackendForId,

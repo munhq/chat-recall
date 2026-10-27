@@ -178,7 +178,7 @@ export interface ToolBackend {
   /**
    * String prefix the system uses on raw ids to make them globally unique
    * across tools. Claude has '' (raw uuid is already unique). Other tools
-   * use 'gemini_', 'opencode_', 'codex_', 'agy_', 'cursor_', 'hermes_'.
+   * use 'gemini_', 'opencode_', 'codex_', 'agy_', 'cursor_', 'hermes_', 'pi_'.
    */
   readonly idPrefix: string;
 

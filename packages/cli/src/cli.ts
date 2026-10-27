@@ -406,6 +406,7 @@ program
         { name: 'Codex', cmd: 'codex', available: false },
         { name: 'Antigravity CLI', cmd: 'agy', available: false },
         { name: 'Cursor', cmd: 'cursor-agent', available: false },
+        { name: 'Pi', cmd: 'pi', available: false },
       ];
 
       for (const cli of clis) {
@@ -585,7 +586,7 @@ program
         // there — silently, because the filter just returned a shorter list.
         const MCP_CLIENT_FOR_BIN: Record<string, McpClientId> = {
           opencode: 'opencode', codex: 'codex',
-          agy: 'agy', 'cursor-agent': 'cursor',
+          agy: 'agy', 'cursor-agent': 'cursor', pi: 'pi',
         };
         const detectedClients = clis
           .filter((c) => c.available)
@@ -879,7 +880,7 @@ program
 
 program
   .command('install-skills')
-  .description('Install the chat-recall skills into every local AI tool (Claude/Codex/Cursor/OpenCode/Antigravity) so agents know how to use the recall_* tools')
+  .description('Install the chat-recall skills into every local AI tool (Claude/Codex/Cursor/OpenCode/Antigravity/Pi) so agents know how to use the recall_* tools')
   .option('--uninstall', 'Remove the chat-recall-managed skills from every tool')
   .option('--all-tools', 'Install to every supported tool, even ones not detected on this machine')
   .action(async (opts: { uninstall?: boolean; allTools?: boolean }) => {
@@ -4357,9 +4358,9 @@ exclude
 
 exclude
   .command('tool <tool>')
-  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy | cursor | hermes)')
+  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy | cursor | hermes | pi)')
   .action(async (tool: string) => {
-    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor', 'hermes'];
+    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor', 'hermes', 'pi'];
     if (!valid.includes(tool)) {
       console.error(chalk.red(`Unknown tool '${tool}'.`) + chalk.dim(` Use one of: ${valid.join(' | ')}`));
       process.exit(1);

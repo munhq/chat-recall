@@ -30,6 +30,7 @@ import { codexBackend } from '@chat-recall/engine/core/backends/codex.js';
 import { cursorBackend } from '@chat-recall/engine/core/backends/cursor.js';
 import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
 import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
+import { piBackend } from '@chat-recall/engine/core/backends/pi.js';
 import { pushProjectTaskStatuses } from './project-tasks.js';
 
 /** Artifact types a remove intent can name. Matches the server's list in sync-intents.ts. */
@@ -54,6 +55,7 @@ const INSTRUCTION_TOOLS: { id: ToolId; isAvailable: () => boolean }[] = [
   { id: 'cursor', isAvailable: () => cursorBackend.isAvailable() },
   { id: 'opencode', isAvailable: () => opencodeBackend.isAvailable() },
   { id: 'agy', isAvailable: () => agyBackend.isAvailable() },
+  { id: 'pi', isAvailable: () => piBackend.isAvailable() },
 ];
 
 /**

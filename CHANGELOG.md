@@ -4,6 +4,17 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Added
+- **Pi sessions.** chat-recall reads the JSONL transcripts Pi writes under
+  `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<id>.jsonl` and syncs them with
+  the other tools. Ids are `pi_<id>~<project hash>`, and `pi --session <id>`
+  resumes one. Messages keep their tool calls and results, `!` shell commands,
+  and the compaction and branch summaries a compacted session folded away. Pi's
+  prompt templates (`<agent dir>/prompts`) and skills (`<agent dir>/skills`)
+  sync too, and the chat-recall MCP server is registered in `mcp.json`.
+  `CHAT_RECALL_PI_HOME` overrides the agent dir; Pi's own
+  `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are honoured.
+
 ## [0.7.19] — 2026-10-06
 
 ### Added

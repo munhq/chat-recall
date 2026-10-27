@@ -40,6 +40,7 @@ import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
 import { hermesBackend as HERMES } from '../core/backends/hermes.js';
+import { piBackend as PI } from '../core/backends/pi.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 import { redactInlineSecrets } from '../core/redact-inline.js';
@@ -76,7 +77,7 @@ function rebuildBody(content: string): Record<string, unknown> {
 // own, and where every install writes. ~/.gemini/skills is the shared root
 // Gemini CLI created and Antigravity still reads; it is attributed to
 // Antigravity because no other tool is left there.
-export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
+export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes' | 'pi';
 
 interface SkillRoot {
   path: string;
@@ -103,6 +104,9 @@ function resolveRoots(): SkillRoot[] {
   }
   if (isSourceEnabled('hermes', 'skills')) {
     all.push({ path: join(HERMES.homeDir(), 'skills'), tool: 'hermes', nested: true });
+  }
+  if (isSourceEnabled('pi', 'skills')) {
+    all.push({ path: PI.skillsDir(), tool: 'pi' });
   }
   if (isSourceEnabled('agy', 'skills')) {
     all.push({ path: join(AGY.homeDir(), 'skills'), tool: 'agy' });

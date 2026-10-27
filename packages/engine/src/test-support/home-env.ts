@@ -27,6 +27,7 @@ export interface HomeEnvSnapshot {
   HOME?: string;
   USERPROFILE?: string;
   CHAT_RECALL_HERMES_HOME?: string;
+  CHAT_RECALL_PI_HOME?: string;
 }
 
 /**
@@ -38,6 +39,7 @@ export function useHomeDir(dir: string): void {
   process.env.HOME = dir;        // POSIX: what uv_os_homedir reads
   process.env.USERPROFILE = dir; // Windows: what uv_os_homedir reads
   process.env.CHAT_RECALL_HERMES_HOME = join(dir, '.hermes');
+  process.env.CHAT_RECALL_PI_HOME = join(dir, '.pi', 'agent');
 }
 
 /** Capture the home variables so a test can restore exactly what it found. */
@@ -46,6 +48,7 @@ export function homeEnvSnapshot(): HomeEnvSnapshot {
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
     CHAT_RECALL_HERMES_HOME: process.env.CHAT_RECALL_HERMES_HOME,
+    CHAT_RECALL_PI_HOME: process.env.CHAT_RECALL_PI_HOME,
   };
 }
 
@@ -63,4 +66,6 @@ export function restoreHomeEnv(snapshot: HomeEnvSnapshot): void {
   else process.env.USERPROFILE = snapshot.USERPROFILE;
   if (snapshot.CHAT_RECALL_HERMES_HOME === undefined) delete process.env.CHAT_RECALL_HERMES_HOME;
   else process.env.CHAT_RECALL_HERMES_HOME = snapshot.CHAT_RECALL_HERMES_HOME;
+  if (snapshot.CHAT_RECALL_PI_HOME === undefined) delete process.env.CHAT_RECALL_PI_HOME;
+  else process.env.CHAT_RECALL_PI_HOME = snapshot.CHAT_RECALL_PI_HOME;
 }

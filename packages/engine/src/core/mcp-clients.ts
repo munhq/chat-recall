@@ -25,10 +25,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 
+import { expandTildePath } from './tool-paths.js';
+import { loadSourceSettings } from './settings.js';
+
 /** The MCP server name we register under, in every client. */
 export const MCP_SERVER_NAME = 'chat-recall';
 
-export type McpClientId = 'claude' | 'codex' | 'opencode' | 'cursor' | 'agy';
+export type McpClientId = 'claude' | 'codex' | 'opencode' | 'cursor' | 'agy' | 'pi';
+
+/** Pi's agent dir: an explicit override (env or settings), else `<home>/.pi/agent`. */
+function piAgentDir(home: string): string {
+  const override = process.env.CHAT_RECALL_PI_HOME?.trim()
+    || loadSourceSettings().piHome
+    || process.env.PI_CODING_AGENT_DIR?.trim();
+  return override ? expandTildePath(override) : join(home, '.pi', 'agent');
+}
 
 /** What to launch. `args` is omitted for a bin on PATH. */
 export interface McpLaunchSpec {
@@ -341,6 +352,21 @@ export const MCP_CLIENTS: readonly McpClientTarget[] = [
     isPresent(home) {
       const p = this.configPath(home);
       return existsSync(p) || existsSync(dirname(p));
+    },
+    register(spec, home) {
+      return registerMcpServersJson(this, this.configPath(home), spec);
+    },
+  },
+  {
+    // Pi keeps user-level servers in `<agent dir>/mcp.json`, the same
+    // mcpServers shape as Claude and Cursor.
+    id: 'pi',
+    label: 'Pi',
+    bin: 'pi',
+    configPath: (home) => join(piAgentDir(home), 'mcp.json'),
+    isPresent(home) {
+      const p = this.configPath(home);
+      return existsSync(p) || existsSync(piAgentDir(home));
     },
     register(spec, home) {
       return registerMcpServersJson(this, this.configPath(home), spec);

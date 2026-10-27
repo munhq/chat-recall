@@ -20,7 +20,8 @@ const savedEnv: Record<string, string | undefined> = {};
 
 /** The path helpers honour these; a value inherited from the developer's own
  *  shell would point the test at the developer's real config. */
-const ENV_KEYS = ['XDG_CONFIG_HOME', 'CHAT_RECALL_CODEX_HOME', 'CHAT_RECALL_GEMINI_HOME'];
+const ENV_KEYS = ['XDG_CONFIG_HOME', 'CHAT_RECALL_CODEX_HOME', 'CHAT_RECALL_GEMINI_HOME',
+  'CHAT_RECALL_PI_HOME', 'PI_CODING_AGENT_DIR'];
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'cr-mcp-clients-'));
@@ -36,8 +37,7 @@ afterEach(() => {
 });
 
 /** Make the machine look like every tool is installed. */
-function makeAllPresent() {
-  for (const d of ['.codex', '.gemini', join('.gemini', 'antigravity-cli'), '.cursor', join('.config', 'opencode')]) {
+function makeAllPresent() {  for (const d of ['.codex', '.gemini', join('.gemini', 'antigravity-cli'), '.cursor', join('.config', 'opencode'), join('.pi', 'agent')]) {
     mkdirSync(join(home, d), { recursive: true });
   }
 }
@@ -48,7 +48,7 @@ describe('registerMcpEverywhere', () => {
   test('writes every present client, each in its own format', () => {
     makeAllPresent();
     const results = registerMcpEverywhere(SPEC, { home });
-    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode']);
+    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi']);
     expect(results.every((r) => r.state === 'created')).toBe(true);
 
     // Claude Code and Cursor: plain mcpServers
@@ -298,5 +298,27 @@ describe('a disabled entry is not a configured one', () => {
       },
     }, null, 2));
     expect(registerMcpEverywhere(SPEC, { home }).find((x) => x.id === 'claude')!.state).toBe('current');
+  });
+});
+
+describe('the Pi client path', () => {
+  test('follows sources.piHome, the same field every other Pi path reads', async () => {
+    const { getMcpClient } = await import('./mcp-clients.js');
+    const { _resetSourceSettingsCache } = await import('./tool-paths.js');
+    const dataDir = join(home, 'data');
+    mkdirSync(join(dataDir, 'settings'), { recursive: true });
+    const savedDataDir = process.env.CHAT_RECALL_DATA_DIR;
+    process.env.CHAT_RECALL_DATA_DIR = dataDir;
+    writeFileSync(join(dataDir, 'settings', 'settings.json'),
+      JSON.stringify({ sources: { piHome: join(home, 'custom-pi') } }));
+    _resetSourceSettingsCache();
+    try {
+      expect(getMcpClient('pi').configPath(home))
+        .toBe(join(home, 'custom-pi', 'mcp.json'));
+    } finally {
+      if (savedDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
+      else process.env.CHAT_RECALL_DATA_DIR = savedDataDir;
+      _resetSourceSettingsCache();
+    }
   });
 });

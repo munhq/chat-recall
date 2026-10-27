@@ -38,6 +38,7 @@ export const SESSION_ID_PREFIXES = {
   agy: 'agy_',
   cursor: 'cursor_',
   hermes: 'hermes_',
+  pi: 'pi_',
   gemini: 'gemini_',
 } as const;
 
@@ -69,6 +70,10 @@ export function resumeCommandFor(sessionId: string, tool?: string): string | nul
     // available answer for either.
     case 'cursor':   return `cursor-agent --resume ${raw('cursor_')}`;
     case 'hermes':   return `hermes --resume ${raw('hermes_')}`;
+    // Pi resumes by session id or path; `--resume` is the interactive picker.
+    // A cross-project id collision carries a `~<hash>` suffix our id space
+    // added; Pi itself knows the bare id.
+    case 'pi':       return `pi --session ${raw('pi_').replace(/~[0-9a-f]{8}$/, '')}`;
     // Gemini's `--resume` takes an index or "latest", never a session id.
     default:         return null;
   }

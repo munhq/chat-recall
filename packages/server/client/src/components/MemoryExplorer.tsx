@@ -144,7 +144,7 @@ interface MemoryExplorerProps {
   projectPathFilter?: string | null;
 }
 
-type SessionToolFilter = 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes';
+type SessionToolFilter = 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'hermes' | 'pi';
 
 /** A list row: a browsed metadata row, or a search hit carrying its chunkType. */
 type DisplayRow = MemoryMetadataRow & { chunkType?: string; snippet?: string };

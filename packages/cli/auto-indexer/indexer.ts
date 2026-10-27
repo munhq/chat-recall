@@ -36,7 +36,7 @@ import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
 import {
-  claudeBackend, codexBackend, opencodeBackend, hermesBackend, listAvailableBackends,
+  claudeBackend, codexBackend, opencodeBackend, hermesBackend, piBackend, listAvailableBackends,
 } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { claudeProjectDirs } from '@chat-recall/engine/core/tool-paths.js';
@@ -84,6 +84,7 @@ const DIARY_DIR = getDiaryDir();
 
 // Per-tool session sources.
 const CODEX_SESSIONS_DIR = codexBackend.sessionsDir();
+const PI_SESSION_DIRS = piBackend.sessionDirs();
 const OPENCODE_DB_PATH = opencodeBackend.dbPath();
 // OpenCode SQLite uses WAL mode — incremental row writes hit the .db-wal
 // file, not the main db. Watching all three (db, db-wal, db-shm) catches
@@ -436,6 +437,18 @@ const hermesWatcher = chokidar.watch(
   },
 );
 
+// 8c. Pi sessions — one JSONL per session under <agent dir>/sessions/<enc-cwd>/.
+// Same quiescence rule as Codex: Pi appends a line per entry.
+const piWatcher = chokidar.watch(
+  PI_SESSION_DIRS.map((dir) => `${dir}/**/*.jsonl`),
+  {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 200 },
+    ...POLL(5000),
+  },
+);
+
 // 9. Per-project agent memory files (Claude Code ~/.claude/projects/<hash>/memory/*.md).
 // Agents write reference/feedback/project-state notes here between sessions —
 // the richest cross-session knowledge surface, now indexed + synced.
@@ -467,6 +480,7 @@ const watchers: Record<string, chokidar.FSWatcher> = {
   codex: codexWatcher,
   opencode: opencodeWatcher,
   hermes: hermesWatcher,
+  pi: piWatcher,
   agentMemory: agentMemoryWatcher,
   cleanup: cleanupWatcher,
 };
@@ -512,6 +526,7 @@ daemonLog.info(`  Watching diary:    ${DIARY_DIR}`);
 daemonLog.info(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
 daemonLog.info(`  Watching opencode: ${OPENCODE_DB_DIR}`);
 daemonLog.info(`  Watching hermes:   ${HERMES_DB_PATHS.join(', ')}`);
+daemonLog.info(`  Watching pi:       ${PI_SESSION_DIRS.join(', ')}`);
 daemonLog.info(`  Watching agent memory: ${CLAUDE_SESSION_ROOTS.map((root) => `${root}/*/memory/`).join(', ')}`);
 daemonLog.info(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
 daemonLog.info(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);

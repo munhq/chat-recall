@@ -2,7 +2,7 @@
  * Session listing service.
  */
 
-import { getAllSessions, parseSessionFile, createMetadataCache, createStore, createOutcomeCache, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, getBackendForId } from '../imports.js';
+import { getAllSessions, parseSessionFile, createMetadataCache, createStore, createOutcomeCache, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, piBackend, getBackendForId } from '../imports.js';
 import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType, CachedOutcome } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { join } from 'path';
@@ -278,7 +278,7 @@ export interface SessionIndexEntry {
   /** Logical cleartext project id, passed through to the hydrated SessionInfo. */
   projectId?: string;
   mtime: number;
-  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor' | 'hermes';
+  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor' | 'hermes' | 'pi';
   filePath?: string;
   /** Pre-computed when available (Claude sessions-index.json). Used to
    *  short-circuit hydration when the index already has it. */
@@ -375,6 +375,22 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
       }
     }
   } catch { /* codex dir missing */ }
+
+  // 2b. Pi sessions — the backend walks its own tree. Previews stay off: this
+  // index needs the project path and mtime, not the first prompt.
+  if (!isServerMode()) {
+    try {
+      for (const ref of piBackend.listSessions({ previews: false })) {
+        out.push({
+          sessionId: ref.prefixedId,
+          projectPath: ref.projectPath,
+          mtime: ref.mtime,
+          tool: 'pi',
+          filePath: ref.fullPath,
+        });
+      }
+    } catch { /* pi dir missing */ }
+  }
 
   // 3. Gemini + OpenCode — already in MemoryStore.
   try {
@@ -582,6 +598,17 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
       }
     }
   } catch { /* codex dir missing or unreadable */ }
+
+  // 2b. Pi sessions — same rule as the index: disk, local mode, no previews.
+  if (!isServerMode()) {
+    try {
+      for (const ref of piBackend.listSessions({ previews: false })) {
+        const p = ref.projectPath || '';
+        if (p) projects[p] = (projects[p] || 0) + 1;
+        total++;
+      }
+    } catch { /* pi dir missing */ }
+  }
 
   // 3. Store rows. In LOCAL mode only gemini/opencode/agy live here (claude +
   //    codex were counted from disk above — counting their rows again would

@@ -12,7 +12,7 @@
  * CLI is kept for legacy sessions but demoted.
  */
 
-export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes' | 'pi';
 
 export interface ToolDef {
   id: ToolId;
@@ -33,6 +33,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'codex',    label: 'Codex',        color: 'var(--cr-tool-codex)',    surf: 'var(--cr-tool-codex-surf)',    icon: 'zap' },
   { id: 'cursor',   label: 'Cursor',       color: 'var(--cr-tool-cursor)',   surf: 'var(--cr-tool-cursor-surf)',   icon: 'zap' },
   { id: 'hermes',   label: 'Hermes',       color: 'var(--cr-tool-hermes)',   surf: 'var(--cr-tool-hermes-surf)',   icon: 'zap' },
+  { id: 'pi',       label: 'Pi',           color: 'var(--cr-tool-pi)',       surf: 'var(--cr-tool-pi-surf)',       icon: 'zap' },
 ];
 
 /** Tool id → definition, for O(1) lookups in row renderers. */

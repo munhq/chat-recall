@@ -25,6 +25,7 @@ import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend as CODEX } from './backends/codex.js';
+import { piBackend as PI } from './backends/pi.js';
 // agy (Antigravity) inherits Gemini CLI's on-disk layout — same commands,
 // agents, skills directories under the Gemini home.
 import { agyBackend as AGY } from './backends/agy.js';
@@ -35,7 +36,7 @@ import {
   stringifyScalarToml,
 } from './toolkit-format.js';
 
-export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor' | 'hermes' | 'pi';
 export type CodecType = 'command' | 'agent' | 'instructions';
 export type Encoding = 'md' | 'toml';
 
@@ -118,6 +119,8 @@ function commandPath(tool: ToolId, name: string): string {
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
     case 'cursor':   return join(cursorHomeDir(), 'commands', `${name}.md`);
+    // Pi's prompt templates are flat *.md files in the agent dir.
+    case 'pi':       return join(PI.promptsDir(), `${name}.md`);
     // Hermes has no command files. copyArtifactToTool refuses this target first.
     case 'hermes':   throw new Error('Hermes has no command files');
   }
@@ -130,6 +133,8 @@ function agentPath(tool: ToolId, name: string): string {
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
     case 'cursor':   return join(cursorHomeDir(), 'agents', `${name}.md`);
+    // Pi has no named agent personas. copyArtifactToTool refuses this target first.
+    case 'pi':       throw new Error('Pi has no agent files');
     // Hermes has no agent files. copyArtifactToTool refuses this target first.
     case 'hermes':   throw new Error('Hermes has no agent files');
   }
@@ -150,7 +155,10 @@ export function instructionsFilename(tool: ToolId): string {
     case 'opencode':
     case 'codex':
     // Cursor reads AGENTS.md too (alongside .cursor/rules and CLAUDE.md).
-    case 'cursor': return 'AGENTS.md';
+    // Pi reads AGENTS.md (and CLAUDE.md) from the agent dir and every project
+    // directory, so the shared filename is the one to write.
+    case 'cursor':
+    case 'pi': return 'AGENTS.md';
     // Hermes instruction files are not mapped. copyArtifactToTool refuses this target first.
     case 'hermes': throw new Error('Hermes has no instruction file mapping');
   }
@@ -173,6 +181,7 @@ export function instructionsPath(tool: ToolId, projectPath?: string): string {
     // is User Rules plus ~/.cursor/rules/*.mdc. AGENTS.md at the home root is
     // the closest equivalent and is what a mirror can actually write.
     case 'cursor':   return join(cursorHomeDir(), file);
+    case 'pi':       return join(PI.homeDir(), file);
     case 'hermes':   throw new Error('Hermes has no instruction file mapping');
   }
 }

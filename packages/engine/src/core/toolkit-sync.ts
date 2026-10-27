@@ -23,6 +23,8 @@ import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { cursorHomeDir } from './tool-paths.js';
 import { hermesBackend as HERMES } from './backends/hermes.js';
+import { piBackend as PI } from './backends/pi.js';
+import { piMcpConfigPath } from './tool-paths.js';
 import {
   addHermesMcpServer, deleteHermesMcpServer, hermesConfigPath, hermesServerEntry, readHermesMcpServers,
 } from './hermes-config.js';
@@ -79,19 +81,19 @@ export const NAME_FIELD: Record<SyncType, string> = {
  * copy of this table, and the three drifted. They now import this one.
  */
 export const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes'],
-  mcp:     ['claude', 'opencode', 'agy', 'codex', 'cursor', 'hermes'],
-  command: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
+  skill:   ['claude', 'agy', 'opencode', 'codex', 'cursor', 'hermes', 'pi'],
+  mcp:     ['claude', 'opencode', 'agy', 'codex', 'cursor', 'hermes', 'pi'],
+  command: ['claude', 'agy', 'opencode', 'codex', 'cursor', 'pi'],
   agent:   ['claude', 'agy', 'opencode', 'codex', 'cursor'],
-  instructions: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
+  instructions: ['claude', 'agy', 'opencode', 'codex', 'cursor', 'pi'],
 };
 
 export const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'agy', 'cursor', 'hermes'],
-  mcp:     ['claude', 'codex', 'agy', 'opencode', 'cursor', 'hermes'],
-  command: ['claude', 'opencode', 'codex', 'agy', 'cursor'],
+  skill:   ['claude', 'codex', 'opencode', 'agy', 'cursor', 'hermes', 'pi'],
+  mcp:     ['claude', 'codex', 'agy', 'opencode', 'cursor', 'hermes', 'pi'],
+  command: ['claude', 'opencode', 'codex', 'agy', 'cursor', 'pi'],
   agent:   ['claude', 'opencode', 'agy', 'codex', 'cursor'],
-  instructions: ['claude', 'codex', 'opencode', 'agy', 'cursor'],
+  instructions: ['claude', 'codex', 'opencode', 'agy', 'cursor', 'pi'],
 };
 
 export function supportedTargetsFor(type: SyncType): TargetTool[] { return SUPPORTED_TARGETS[type]; }
@@ -152,6 +154,7 @@ export function skillsDirFor(tool: TargetTool): string {
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system
     case 'cursor':   return join(cursorHomeDir(), 'skills');
     case 'hermes':   return join(HERMES.homeDir(), 'skills');
+    case 'pi':       return PI.skillsDir();
   }
 }
 
@@ -208,6 +211,9 @@ function mcpJsonCandidates(tool: string): { path: string; key: string }[] {
       return [{ path: join(home, '.gemini', 'config', 'mcp_config.json'), key: 'mcpServers' }];
     case 'cursor':
       return [{ path: join(cursorHomeDir(), 'mcp.json'), key: 'mcpServers' }];
+    case 'pi':
+      // `<agent dir>/mcp.json`, the same mcpServers shape as Claude.
+      return [{ path: piMcpConfigPath(), key: 'mcpServers' }];
     case 'opencode':
       return [
         { path: join(home, '.config', 'opencode', 'opencode.json'), key: 'mcp' },
@@ -296,6 +302,7 @@ export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): Cop
   if (toTool === 'claude') { path = join(home, '.mcp.json'); key = 'mcpServers'; }
   else if (toTool === 'agy') { path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers'; }
   else if (toTool === 'cursor') { path = join(cursorHomeDir(), 'mcp.json'); key = 'mcpServers'; }
+  else if (toTool === 'pi') { path = piMcpConfigPath(); key = 'mcpServers'; }
   else { path = join(home, '.config', 'opencode', 'opencode.json'); key = 'mcp'; }
 
   let cfg: any = {};
