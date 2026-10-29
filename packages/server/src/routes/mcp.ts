@@ -114,6 +114,13 @@ router.post('/', async (req: Request, res: Response) => {
 
   const session = await verifyMcpBearer(req.headers).catch(() => null);
   if (!session) {
+    // The kind of credential and the client name, never the token: a client
+    // that repeats this 401 without a refresh is otherwise anonymous in the log.
+    const auth = req.get('authorization') || '';
+    const credential = !auth ? 'none'
+      : !/^Bearer\s+\S/i.test(auth) ? 'other'
+      : auth.trim().split(/\s+/)[1]!.split('.').length === 3 ? 'jwt' : 'opaque';
+    log.warn({ credential, userAgent: (req.get('user-agent') || '').slice(0, 120) }, 'mcp bearer refused');
     unauthorized(req, res);
     return;
   }
