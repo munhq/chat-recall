@@ -43,11 +43,14 @@ ARG VITE_API_BASE
 ARG VITE_GLITCHTIP_DSN
 ENV VITE_GLITCHTIP_DSN=$VITE_GLITCHTIP_DSN
 # Builds the DASHBOARD only. The marketing site, the legal pages and the seller
-# identity are the operator's, not the product's: they live in a private repo
-# whose workflow layers them onto this image for chatrecall.dev. A self-host
+# identity are the operator's: they live in a private repo, and the target
+# `cloud` below layers them onto this image for chatrecall.dev. A self-host
 # build therefore serves the app and never the hosted service's prices,
 # "Buy a licence" button, or a sitemap advertising someone else's domain.
-RUN npm run build
+# The desk build of chatrecall.dev gives the DSN as the build secret
+# glitchtipdsn; the build argument wins when both are set.
+RUN --mount=type=secret,id=glitchtipdsn,required=false \
+    VITE_GLITCHTIP_DSN="${VITE_GLITCHTIP_DSN:-$(cat /run/secrets/glitchtipdsn 2>/dev/null || true)}" npm run build
 
 # ── Stage 2: compile the TypeScript workspaces ────────────────────────────────
 FROM node:24-bookworm-slim AS build
@@ -107,7 +110,7 @@ RUN npx tsc -b packages/engine packages/server \
     && npm prune --omit=dev
 
 # ── Stage 3: runtime ──────────────────────────────────────────────────────────
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -163,3 +166,45 @@ ENV CHAT_RECALL_DATA_DIR=/data
 ENV STATIC_DIR=/app/client
 
 CMD ["node", "packages/server/dist/server.js"]
+
+# ── chatrecall.dev: the site and the docs on top of the server ────────────────
+# Built by desk (.desk/config.json, image `cloud`, target cloud), with the
+# private site repository munhq/chat-recall-site at site-src/ and
+# munhq/web-standards at web-standards/ in the build context. The stages run the
+# gates the site workflow ran: the generator refuses a page that names a private
+# name, the SEO audit, the pricing parity, the external links, the social cards
+# against their template, and a docs build that stops on a broken link.
+FROM node:24-bookworm-slim AS site
+RUN apt-get update && apt-get install -y --no-install-recommends chromium ca-certificates && rm -rf /var/lib/apt/lists/*
+# The build runs as root, and Chromium refuses to start as root with its sandbox on.
+RUN printf '#!/bin/sh\nexec chromium --no-sandbox "$@"\n' > /usr/local/bin/chromium-nosandbox && chmod +x /usr/local/bin/chromium-nosandbox
+WORKDIR /w
+COPY site-src/ ./site-src/
+COPY web-standards/bin/ ./web-standards/bin/
+COPY README.md ./product/README.md
+COPY docs/ ./product/docs/
+COPY packages/ ./product/packages/
+RUN --mount=type=secret,id=npmtoken \
+    export NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" && \
+    (cd site-src && npm ci --no-audit --no-fund) && \
+    (cd site-src/docs-site && npm ci --no-audit --no-fund)
+ARG OPENAI_APPS_CHALLENGE=""
+RUN --mount=type=secret,id=privatenames \
+    CHAT_RECALL_PRIVATE_NAMES="$(cat /run/secrets/privatenames)" \
+    OPENAI_APPS_CHALLENGE="$OPENAI_APPS_CHALLENGE" \
+    CLIENT_DIR=/w/product/packages/server/client DIST_DIR=/w/overlay/site REQUIRE_LEGAL=1 \
+    node site-src/build-marketing.mjs && \
+    test -s overlay/site/terms/index.html && test -s overlay/site/privacy/index.html
+RUN node web-standards/bin/seo-audit.mjs --dist overlay/site --config site-src/seo.config.json
+RUN node site-src/check-parity.mjs product
+RUN node site-src/check-links.mjs --dist overlay/site
+RUN cd site-src && CHROME=chromium-nosandbox CLIENT_DIR=/w/product/packages/server/client node render-cards.mjs --check
+RUN cd site-src/docs-site && PRODUCT_DIR=/w/product npm run build && \
+    cp -r build /w/overlay/site/docs && test -s /w/overlay/site/docs/index.html
+
+FROM runtime AS cloud
+COPY --from=site /w/overlay/site/ /app/client/
+
+# The default target is the server alone: the self-host image and `docker
+# compose build` stay as they were.
+FROM runtime

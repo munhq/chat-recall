@@ -8,5 +8,39 @@
   },
   "release": {
     "versionFile": "packages/cli/package.json"
-  }
+  },
+  "checkouts": [
+    {
+      "repo": "munhq/chat-recall-site",
+      "path": "site-src"
+    },
+    {
+      "repo": "munhq/web-standards",
+      "path": "web-standards"
+    }
+  ],
+  "images": [
+    {
+      "name": "cloud",
+      "image": "ghcr.io/munhq/chat-recall-cloud",
+      "dockerfile": "docker/Dockerfile.server",
+      "context": ".",
+      "target": "cloud",
+      "args": {
+        "VITE_CLOUD": "1",
+        "MAILKIT": "1",
+        "OPENAI_APPS_CHALLENGE": "hC6GpWiSrnfYr34L0vC8otCzbMzCJXoX7ZgXHlEbbbw"
+      },
+      "changeArg": "GIT_SHA",
+      "secrets": [
+        "npmtoken",
+        "privatenames",
+        "glitchtipdsn"
+      ],
+      "tags": [
+        "main"
+      ],
+      "timeoutMinutes": 45
+    }
+  ]
 }
