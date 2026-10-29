@@ -310,6 +310,11 @@ function getAuth(): ReturnType<typeof createAuth> {
   return _auth;
 }
 
+/** The auth instance, for the MCP endpoint of `@munhq/mcp-kit` (routes/mcp.ts). */
+export function mcpAuthInstance(): ReturnType<typeof createAuth> {
+  return getAuth();
+}
+
 /** TESTS ONLY: drop the instance, so the next call builds it from the current kits and environment. */
 export async function __resetAuth(): Promise<void> {
   const pool = _auth ? (_auth.options as { database: pg.Pool }).database : null;

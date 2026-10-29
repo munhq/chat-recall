@@ -35,4 +35,35 @@ declare module '@munhq/mcp-kit' {
   }
   export function wellKnownRoutes(o: { basePath: string; resourcePath?: string }): Record<string, string>;
   export function wellKnownHandler(auth: AuthHandlerLike, o?: { basePath?: string; resourcePath?: string }): (request: Request) => Promise<Response>;
+
+  export interface McpServerLike {
+    connect(transport: unknown): Promise<void>;
+    close(): Promise<void>;
+  }
+  export interface McpCallContext {
+    userId: string;
+    clientId: string;
+    scopes: string[];
+    token: string;
+    via: 'oauth' | 'api_key' | 'login';
+    request: Request;
+  }
+  export interface McpRefusal {
+    status: 401 | 403;
+    reason: 'origin' | 'login_token' | 'api_key' | 'oauth' | 'scope';
+    credential: 'none' | 'jwt' | 'opaque' | 'other';
+    userAgent: string;
+  }
+  export interface McpHandlerOptions {
+    auth: unknown;
+    resource: string;
+    createServer: (ctx: McpCallContext) => McpServerLike | Promise<McpServerLike>;
+    trustedOrigins?: string[];
+    jwksUrl?: string;
+    issuer?: string;
+    productName?: string;
+    onError?: (error: unknown, ctx: McpCallContext) => void;
+    onRefused?: (refusal: McpRefusal, request: Request) => void;
+  }
+  export function mcpHandler(o: McpHandlerOptions): (request: Request) => Promise<Response>;
 }

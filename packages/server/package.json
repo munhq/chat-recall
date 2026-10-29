@@ -48,7 +48,7 @@
   "optionalDependencies": {
     "@munhq/auth": "^0.3.3",
     "@munhq/mailkit": "^0.2.0",
-    "@munhq/mcp-kit": "^0.15.0",
+    "@munhq/mcp-kit": "^0.16.0",
     "@munhq/product-kit": "^0.4.6"
   }
 }
