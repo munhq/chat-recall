@@ -38,7 +38,7 @@ import {
   createMcpServer, setServerVersion, setMultiTenantMode, withCredentials,
 } from '@chat-recall/engine/mcp/tools.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { mcpSessionFor } from '../auth/better-auth.js';
+import { verifyMcpBearer } from '../auth/better-auth.js';
 
 const log = createLogger('mcp-remote');
 const router = Router();
@@ -112,7 +112,7 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
-  const session = await mcpSessionFor(req.headers).catch(() => null);
+  const session = await verifyMcpBearer(req.headers).catch(() => null);
   if (!session) {
     unauthorized(req, res);
     return;
@@ -122,7 +122,7 @@ router.post('/', async (req: Request, res: Response) => {
   // scopes it to this async subtree, so two requests in flight on this process
   // cannot see each other's — the property asserted in credential-context.test.ts
   // and the reason a process-wide credential was never an option here.
-  const creds = { base: selfBase(), token: session.accessToken };
+  const creds = { base: selfBase(), token: session.token };
 
   // Everything from here is inside the try, and the cleanup is registered before
   // anything can throw. Constructing outside it left a window where a throw

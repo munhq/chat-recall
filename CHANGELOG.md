@@ -4,6 +4,23 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Changed
+- **better-auth 1.7 and the fleet auth kits.** The server runs better-auth 1.7
+  with `@better-auth/mcp`, `@better-auth/oauth-provider` and `@better-auth/cimd`.
+  MCP access tokens are JWTs for the `/mcp` resource, checked against
+  `/api/auth/jwks`. The hosted image takes its auth and MCP settings from the
+  private `@munhq/auth` and `@munhq/mcp-kit`; a self-host build uses the same
+  settings from the server itself.
+- **A consent step for MCP connectors.** After sign-in, `/consent` names the
+  assistant and asks to allow or deny it.
+- **Passwords need 12 characters** at sign-up and at a password change.
+  Existing passwords keep working.
+
+### Fixed
+- Connectors that connected before this release stay connected. At boot the
+  server copies the 1.6 OAuth clients and their live refresh tokens into the 1.7
+  tables, and `/api/auth/mcp/*` still answers on the 1.7 endpoints.
+
 ## [0.7.21] — 2026-10-29
 
 ### Added

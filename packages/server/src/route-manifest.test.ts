@@ -178,35 +178,35 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
   },
   'all /api/auth/*': {
     gates: ['authHandler()'],
-    reason: 'better-auth owns sign-in/up/out, the device flow and the MCP OAuth authorize/token/register endpoints; it IS the login, so it runs before tenantAuth and reads its own body. The auth funnel is a better-auth plugin from @munhq/product-kit inside the handler, which records every step a user fails at. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
+    reason: 'better-auth owns sign-in/up/out, the device flow, the MCP OAuth authorize/token/register/userinfo endpoints and the key set at /api/auth/jwks (a pathless rewrite in front maps the 1.6 paths /api/auth/mcp/* onto them, for connectors that cached those); it IS the login, so it runs before tenantAuth and reads its own body. The auth funnel is a better-auth plugin from @munhq/product-kit inside the handler, which records every step a user fails at. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
   },
-  'get /api/auth/mcp/authorize': {
-    gates: ['mcpCimdResolver()'],
-    reason: 'CIMD resolution, mounted in FRONT of better-auth\'s own authorize endpoint (which still runs — this calls next()). Not a gate and not an authorization path: it resolves a client_id that is an https URL into a stored client so better-auth can validate it the same way it validates a DCR one, and returns immediately for every client_id that is not a URL. Ungated because authorize is pre-credential by definition. It is the one place that fetches an attacker-supplied URL server-side, so the SSRF guards in auth/cimd.ts (https only, post-DNS address checks, no redirects, size and time caps) are the real control here.',
+  'get /.well-known/oauth-protected-resource': {
+    gates: ['wellKnown'],
+    reason: 'RFC 9728 protected-resource metadata, the first document an MCP client fetches after a 401 from /mcp, at the root and with the resource path inserted. DELIBERATELY UNGATED: a client reads it in order to find out how to authenticate, so any gate here is a deadlock. It names the resource and its authorization server, nothing else. The handler forwards to the document better-auth serves, so the paths cannot disagree.',
   },
-  'get /api/auth/mcp/jwks': {
-    gates: ['<inline>'],
-    reason: 'The JWK Set both discovery documents advertise (better-auth publishes jwks_uri and registers no endpoint for it, so the URL 404\'d). DELIBERATELY UNGATED, for the same reason as the two well-known documents: it is part of discovery, read before any credential exists. It returns an EMPTY key set and that is the true answer, not a stub — access tokens are opaque and looked up server-side, and the id_token is signed HS256, a symmetric algorithm with no public key to publish. The metadata advertises HS256 for exactly that reason, so the empty set and the document now agree. Exposes nothing: there is no public key, and one would be publishable anyway.',
+  'get /.well-known/oauth-protected-resource/mcp': {
+    gates: ['wellKnown'],
+    reason: 'RFC 9728 protected-resource metadata, the first document an MCP client fetches after a 401 from /mcp, at the root and with the resource path inserted. DELIBERATELY UNGATED: a client reads it in order to find out how to authenticate, so any gate here is a deadlock. It names the resource and its authorization server, nothing else. The handler forwards to the document better-auth serves, so the paths cannot disagree.',
   },
-  'get /api/auth/mcp/userinfo': {
-    gates: ['<inline>'],
-    reason: 'The OIDC userinfo endpoint (OIDC Core 5.3) that both discovery documents advertise and better-auth never registered, so it 404\'d — which broke enterprise domain restriction outright, since a directory reads exactly this endpoint to learn the caller\'s verified email. NOT ungated: the access token IS the gate, resolved by better-auth\'s own getMcpSession, the same call /mcp uses, so a token this accepts is exactly a token the resource accepts. It answers 401 with a WWW-Authenticate challenge otherwise. Claims are scope-gated per OIDC Core 5.4 (email/email_verified need the email scope, name needs profile), so a grant that asked for nothing gets sub alone, and email_verified is read from the user row rather than assumed.',
+  'get /.well-known/oauth-authorization-server': {
+    gates: ['wellKnown'],
+    reason: 'RFC 8414 authorization-server metadata, at the root and with the issuer path (/api/auth) inserted. DELIBERATELY UNGATED for the same reason: it is read before any credential exists, and it exposes only endpoint URLs, grant types and the key-set URL. Forwarded to the document better-auth serves.',
+  },
+  'get /.well-known/oauth-authorization-server/api/auth': {
+    gates: ['wellKnown'],
+    reason: 'RFC 8414 authorization-server metadata, at the root and with the issuer path (/api/auth) inserted. DELIBERATELY UNGATED for the same reason: it is read before any credential exists, and it exposes only endpoint URLs, grant types and the key-set URL. Forwarded to the document better-auth serves.',
   },
   'get /.well-known/openid-configuration': {
-    gates: ['oauthAuthorizationServerHandler()'],
-    reason: 'OpenID Connect Discovery 1.0, and THE SAME HANDLER as the RFC 8414 document above rather than a second document — better-auth\'s metadata already carries every field OIDC requires (issuer, userinfo_endpoint, jwks_uri, subject_types_supported, id_token_signing_alg_values_supported, and the openid/profile/email scopes), so all that was missing is that an OIDC consumer looking at the conventional path found a 404. Aliasing the handler means the OAuth and OIDC views cannot disagree. Ungated for the same reason as the other two: it is read before any credential exists. ChatGPT enterprise domain restrictions read this path.',
+    gates: ['wellKnown'],
+    reason: 'OpenID Connect Discovery 1.0, at the root and with the issuer path inserted; ChatGPT enterprise domain restrictions read it. DELIBERATELY UNGATED, as discovery. Forwarded to the OpenID configuration better-auth serves under /api/auth, so it and the RFC 8414 document come from one source.',
   },
-    'get /.well-known/oauth-authorization-server': {
-    gates: ['oauthAuthorizationServerHandler()'],
-    reason: 'RFC 8414 OAuth discovery. DELIBERATELY UNGATED and unauthenticated: a client reads this in order to find out how to authenticate, so any gate here is a deadlock. It exposes only endpoint URLs and supported grant types — no tenant data, and nothing an attacker cannot infer from the spec.',
+  'get /.well-known/openid-configuration/api/auth': {
+    gates: ['wellKnown'],
+    reason: 'OpenID Connect Discovery 1.0, at the root and with the issuer path inserted; ChatGPT enterprise domain restrictions read it. DELIBERATELY UNGATED, as discovery. Forwarded to the OpenID configuration better-auth serves under /api/auth, so it and the RFC 8414 document come from one source.',
   },
   'use /mcp': {
     gates: ['apiLimiter', "express.json({ limit: '4mb' })", 'mcpRouter'],
     reason: 'The remote MCP endpoint. DELIBERATELY OUTSIDE the /api gates: it authenticates with an OAuth access token rather than a tenant session, so tenantAuth would reject it before its own auth ran. It is not ungated — the router 401s without a valid grant, 403s a cross-origin browser request, and its tools then call back through /api over loopback, where entitlement, rate limits and RLS all apply on the way in. It carries apiLimiter explicitly because the /api mount does not cover it, and an unauthenticated endpoint that does a database lookup per request is a brute-force and DoS surface without one.',
-  },
-    'get /.well-known/oauth-protected-resource': {
-    gates: ['oauthProtectedResourceHandler()'],
-    reason: 'RFC 9728 protected-resource metadata, the first document an MCP client fetches after a 401 from /mcp. Ungated for the same reason as the authorization-server document above; it names the resource and its authorization servers, nothing tenant-scoped. Served at the ORIGIN ROOT because clients look there and never under /api/auth.',
   },
   'use /.well-known': {
     gates: ['<inline>'],

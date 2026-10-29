@@ -99,7 +99,7 @@ export default function DeviceApprovePage() {
 
 /* Tokens only — no hex. This page renders in whatever theme the visitor's system
  * asks for, like the rest of the app, instead of staying dark on a light desktop. */
-const DEVICE_CSS = `
+export const DEVICE_CSS = `
 .dv-wrap { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center;
   justify-content: center; padding: 24px 20px;
   background: var(--cr-ink-0); color: var(--cr-fg-1);

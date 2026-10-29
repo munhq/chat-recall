@@ -30,7 +30,6 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/auth.js';
 // Only the NAMES — the ids and secrets never leave the server.
-import { mcpCimdResolver } from './auth/cimd-middleware.js';
 import { enabledSocialProviders as socialProviderNames } from './auth/better-auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
@@ -78,6 +77,7 @@ import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requestContext, attachTenantToContext, logContext } from './middleware/request-context.js';
 import { httpObservability } from './middleware/http-observability.js';
 import { loadProductKit } from './util/product-kit.js';
+import { loadAuthKit } from './util/auth-kit.js';
 import {
   summarySweepsTotal, summariesGeneratedTotal, summariesFailedTotal, summariesSkippedTotal,
   summaryConcurrency, vectorSweepsTotal, vectorsEmbeddedTotal,
@@ -382,108 +382,48 @@ if (!ssoAllowed(authProviderName(), { hosted: billingEnabled(), licensed: licenc
 await loadProductKit();
 
 if (authProviderName() === 'better-auth') {
-  const {
-    authHandler, oauthAuthorizationServerHandler, oauthProtectedResourceHandler, runAuthMigrations,
-    mcpUserinfoFor,
-  } = await import('./auth/better-auth.js');
-  await runAuthMigrations();
-  // The JWKS the discovery documents ADVERTISE, which nothing served.
-  //
-  // better-auth's MCP plugin publishes `jwks_uri: <baseURL>/mcp/jwks` in both
-  // well-known documents and registers no endpoint for it, so the URL 404'd. A
-  // client that fetches the key set during discovery — a directory review is one
-  // — saw a broken authorization server.
-  //
-  // An EMPTY key set is the correct answer, not a placeholder, and it is now
-  // SELF-CONSISTENT with what the metadata claims. Access tokens are opaque (32
-  // random characters, looked up server-side), and the id_token is signed HS256
-  // — a symmetric algorithm, which by definition has no public key to publish.
-  // The metadata advertises HS256 for exactly this reason (see the `metadata`
-  // override on the mcp() plugin); it used to say RS256, which sent a client
-  // here looking for a key that could never exist. `{"keys":[]}` is a valid JWK
-  // Set (RFC 7517) and says precisely the true thing.
-  //
-  // Registered BEFORE the better-auth catch-all, which would otherwise swallow
-  // the path and 404 it again.
-  app.get('/api/auth/mcp/jwks', (_req, res) => {
-    res.type('application/jwk-set+json').json({ keys: [] });
-  });
+  // The fleet auth kits (@munhq/auth, @munhq/mcp-kit), or the server's own
+  // settings on a build without them. Loaded before the instance is built.
+  await loadAuthKit();
+  const { authHandler, runAuthMigrations, wellKnownNodeHandler, LEGACY_MCP_PATHS } = await import('./auth/better-auth.js');
+  const moved = await runAuthMigrations();
+  if (moved.clients || moved.refreshTokens) {
+    console.log(`[auth] moved the 1.6 MCP grants: ${moved.clients} clients, ${moved.refreshTokens} refresh tokens`);
+  }
 
-  // The USERINFO endpoint the discovery documents advertise, which nothing
-  // served either. Same gap as jwks above, with a consequence that is not
-  // cosmetic: ChatGPT's enterprise domain restrictions require OIDC discovery
-  // plus a userinfo response carrying a verified email, and the plugin
-  // submission form reports the feature unavailable without it. The openid and
-  // email scopes were already advertised and already granted; only this route
-  // was missing.
-  //
-  // 401 + WWW-Authenticate on a bad or expired bearer, per OIDC core 5.3.3 and
-  // RFC 6750, so a client knows to refresh rather than to stop. no-store
-  // because these are identity claims about the current holder of a token, and
-  // a cached copy outlives the grant.
-  //
-  // Registered BEFORE the better-auth catch-all, which would otherwise swallow
-  // the path and 404 it again.
-  app.get('/api/auth/mcp/userinfo', async (req, res) => {
-    const claims = await mcpUserinfoFor(req.headers).catch(() => null);
-    if (!claims) {
-      res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
-      res.status(401).json({ error: 'invalid_token' });
-      return;
-    }
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(claims);
+  // The 1.6 paths of the MCP authorization server. A connector learns the token
+  // endpoint once, at connect time, and refreshes against it while it stays
+  // connected, so `/api/auth/mcp/token` and its siblings keep answering, with
+  // the 1.7 endpoint behind each. The query string stays as it is.
+  app.use((req, _res, next) => {
+    const q = req.url.indexOf('?');
+    const path = q < 0 ? req.url : req.url.slice(0, q);
+    const to = LEGACY_MCP_PATHS[path];
+    if (to) req.url = to + (q < 0 ? '' : req.url.slice(q));
+    next();
   });
-
-  // CIMD: a client_id that IS an https URL, resolved into a stored client before
-  // better-auth's authorize endpoint validates it. better-auth implements DCR
-  // only, so a URL client_id was answered `invalid_client` — which is how
-  // Smithery connects ("Smithery handles client registration automatically via
-  // Client ID Metadata Documents"), and therefore how it could not connect here.
-  //
-  // Mounted BEFORE the catch-all, and a no-op for every DCR client: it returns
-  // immediately unless client_id starts with https://. See auth/cimd.ts for the
-  // SSRF guards, which are the load-bearing part — the client_id is
-  // attacker-controlled and we fetch it.
-  app.get('/api/auth/mcp/authorize', mcpCimdResolver());
 
   app.all('/api/auth/*', authHandler());
 
   // OAuth discovery, at the ROOT and not under /api/auth.
   //
   // An MCP client is handed one URL — https://chatrecall.dev/mcp — and finds
-  // everything else by spec-fixed well-known paths on that origin. It never
-  // guesses that our authorization server lives under /api/auth, so serving
-  // these only there makes the endpoint undiscoverable no matter how correct
-  // the rest of the flow is. Both currently answer 404 in production.
-  //
-  //   /.well-known/oauth-protected-resource  (RFC 9728) — names the resource
-  //       and points at its authorization servers. This is the first document a
-  //       client fetches after a 401 from /mcp.
-  //   /.well-known/oauth-authorization-server (RFC 8414) — the endpoints,
-  //       grant types, PKCE methods and the dynamic-registration URL.
+  // everything else by spec-fixed well-known paths on that origin: the
+  // protected-resource document (RFC 9728), the authorization-server document
+  // (RFC 8414) and the OpenID configuration, each at its root path and at the
+  // path with the issuer or the resource inserted. Each is served by
+  // better-auth under /api/auth; the handler maps the root paths to it.
   //
   // Mounted here, before every /api gate below, because discovery MUST be
   // reachable unauthenticated: a client cannot authenticate until it has read
-  // these, so putting them behind tenantAuth would be a deadlock.
-  app.get('/.well-known/oauth-authorization-server', oauthAuthorizationServerHandler());
-  app.get('/.well-known/oauth-protected-resource', oauthProtectedResourceHandler());
-
-  //   /.well-known/openid-configuration (OpenID Connect Discovery 1.0) — the
-  //       SAME document, at the path an OIDC client looks for. Not a second
-  //       document and deliberately not a second handler: better-auth's
-  //       metadata already carries every field OIDC requires — issuer,
-  //       userinfo_endpoint, jwks_uri, subject_types_supported,
-  //       id_token_signing_alg_values_supported (HS256, corrected from the
-  //       RS256 better-auth advertises but never signs with — see the metadata
-  //       override on the mcp() plugin), and the openid and email scopes — so
-  //       the only thing that was ever missing is that a
-  //       consumer looking at the OIDC path found nothing. Aliasing the handler
-  //       rather than writing a document means the two can never disagree.
-  //
-  //       ChatGPT's enterprise domain restrictions read this path; so does any
-  //       IdP-shaped consumer that has never heard of RFC 8414.
-  app.get('/.well-known/openid-configuration', oauthAuthorizationServerHandler());
+  // these.
+  const wellKnown = wellKnownNodeHandler();
+  app.get('/.well-known/oauth-protected-resource', wellKnown);
+  app.get('/.well-known/oauth-protected-resource/mcp', wellKnown);
+  app.get('/.well-known/oauth-authorization-server', wellKnown);
+  app.get('/.well-known/oauth-authorization-server/api/auth', wellKnown);
+  app.get('/.well-known/openid-configuration', wellKnown);
+  app.get('/.well-known/openid-configuration/api/auth', wellKnown);
 
   // The remote MCP endpoint. Mounted HERE, inside the better-auth branch and
   // above every /api gate, for three reasons:

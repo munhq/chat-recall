@@ -15,7 +15,7 @@ import { describe, test, expect } from 'vitest';
 import { classifyStaticPath, cacheControlFor, robotsTagFor } from './static-routing.js';
 
 describe('the app owns three paths and no others', () => {
-  test.each(['/app', '/app/', '/device', '/device/'])('%s gets the app shell', (p) => {
+  test.each(['/app', '/app/', '/device', '/device/', '/consent', '/consent/'])('%s gets the app shell', (p) => {
     expect(classifyStaticPath(p)).toBe('app-shell');
   });
 });

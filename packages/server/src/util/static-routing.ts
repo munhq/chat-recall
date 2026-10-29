@@ -24,7 +24,7 @@
  * `/app/install/*` belongs to its own router and is matched long before the
  * catch-all.
  */
-const APP_PATHS = new Set(['/app', '/app/', '/device', '/device/']);
+const APP_PATHS = new Set(['/app', '/app/', '/device', '/device/', '/consent', '/consent/']);
 
 export type StaticVerdict = 'app-shell' | 'not-found';
 

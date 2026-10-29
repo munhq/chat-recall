@@ -217,7 +217,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
     : verifying ? `We sent a 6-digit code to ${email}. It starts your free 7-day trial.`
     : resetting ? 'Pick something you have not used elsewhere.'
       : forgot ? 'We will email you a link. It works once and expires in an hour.'
-        : signup ? 'One memory across Claude Code, Codex, Cursor, OpenCode and Antigravity.'
+        : signup ? 'One memory across Claude Code, Codex, Cursor and four other AI coding tools.'
           : 'Sign in to your chat-recall account.';
   const cta = twofactor ? 'Verify'
     : verifying ? 'Confirm and start my trial'
@@ -283,8 +283,8 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
             <label>
               {resetting ? 'New password' : 'Password'}
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-                autoComplete={signup || resetting ? 'new-password' : 'current-password'} required minLength={8}
-                placeholder={signup || resetting ? 'At least 8 characters' : ''} />
+                autoComplete={signup || resetting ? 'new-password' : 'current-password'} required minLength={12}
+                placeholder={signup || resetting ? 'At least 12 characters' : ''} />
             </label>
           )}
           {error && <div className="au-error">{error}</div>}

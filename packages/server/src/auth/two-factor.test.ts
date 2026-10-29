@@ -38,7 +38,7 @@ const cardSrc = readFileSync(
 describe('the plugin is registered, on the server', () => {
   test('twoFactor is imported and used — not merely a dependency', () => {
     expect(authSrc).toMatch(/\btwoFactor\b[\s\S]*from 'better-auth\/plugins'/);
-    expect(authSrc).toMatch(/twoFactor\(\{/);
+    expect(authSrc).toMatch(/twoFactor\(/);
   });
 
   test('the issuer is set, so the authenticator app names the account', () => {

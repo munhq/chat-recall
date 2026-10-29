@@ -481,6 +481,35 @@ export async function deviceDecision(userCode: string, approve: boolean): Promis
   return { ok: false, error: await authError(res, approve ? 'approval failed' : 'deny failed') };
 }
 
+/**
+ * The answer to an MCP connector's request for access (the /consent page).
+ *
+ * `oauthQuery` is the signed query better-auth put on the consent URL, sent
+ * back as it came: the server checks its signature, so a page cannot widen
+ * the request. On success the server names the client's callback, and the
+ * browser goes there with the code or with the refusal.
+ */
+export async function consentDecision(oauthQuery: string, accept: boolean): Promise<{ ok: true; redirect: string } | { ok: false; error: string }> {
+  const res = await fetch(authUrl('/oauth2/consent'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ accept, oauth_query: oauthQuery }),
+  });
+  if (!res.ok) return { ok: false, error: await authError(res, 'the answer was not saved') };
+  const data = await res.json().catch(() => null) as { redirect_uri?: string; url?: string } | null;
+  const redirect = data?.redirect_uri ?? data?.url;
+  return redirect ? { ok: true, redirect } : { ok: false, error: 'The server did not say where to go next. Start the connection again from the assistant.' };
+}
+
+/** The public name of an OAuth client, for the consent page. Null when the server does not know it. */
+export async function oauthClientName(clientId: string): Promise<string | null> {
+  const res = await fetch(authUrl(`/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`), { credentials: 'include' }).catch(() => null);
+  if (!res?.ok) return null;
+  const data = await res.json().catch(() => null) as { client_name?: string; name?: string } | null;
+  return data?.client_name ?? data?.name ?? null;
+}
+
 /** Called by api.ts when a cloud API call comes back 401: the session is gone
  *  server-side. Return to the front door rather than leaving a half-dead app.
  *
