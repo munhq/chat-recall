@@ -126,6 +126,43 @@ describe.skipIf(!url)('the 1.6 MCP grants move to the 1.7 tables', () => {
     expect(await copy16Grants(pool, mcpResourceUrl())).toEqual({ clients: 0, refreshTokens: 0 });
   });
 
+  test('registration refuses a callback outside the MCP clients and loopback, and stores nothing', async () => {
+    const register = (redirectUri: string) => __auth().handler(new Request(`${BASE}/api/auth/oauth2/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'probe', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code'], response_types: ['code'],
+      }),
+    }));
+    const count = async () => Number((await pool.query('SELECT count(*) FROM "oauthClient"')).rows[0].count);
+    const before = await count();
+    const refused = await register('https://attacker-alpha.example.com/cb');
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: 'invalid_redirect_uri' });
+    expect(await count()).toBe(before);
+    expect((await register('https://claude.ai/api/mcp/auth_callback')).status).toBe(201);
+  });
+
+  test('authorize refuses a stored client with a callback outside the list', async () => {
+    await pool.query(
+      `INSERT INTO "oauthClient" (id, "clientId", disabled, "createdAt", "updatedAt", name,
+          "redirectUris", "tokenEndpointAuthMethod", "grantTypes", "responseTypes", "requirePKCE", scopes)
+       VALUES ('rogue-1', 'rogue-client', false, now(), now(), 'Rogue', $1, 'none', $2, $3, true, $4)`,
+      [
+        JSON.stringify(['https://attacker-alpha.example.com/cb']), JSON.stringify(['authorization_code']),
+        JSON.stringify(['code']), JSON.stringify(['openid']),
+      ],
+    );
+    const q = new URLSearchParams({
+      response_type: 'code', client_id: 'rogue-client', redirect_uri: 'https://attacker-alpha.example.com/cb',
+      scope: 'openid', state: 's', code_challenge: 'x'.repeat(43), code_challenge_method: 'S256',
+    });
+    const res = await __auth().handler(new Request(`${BASE}/api/auth/oauth2/authorize?${q}`, { redirect: 'manual' }));
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location') ?? '').not.toContain('attacker-alpha.example.com');
+  });
+
   test('a 1.6 refresh token gets a 1.7 access token, which verifies as the user', async () => {
     const res = await __auth().handler(new Request(`${BASE}/api/auth/oauth2/token`, {
       method: 'POST',

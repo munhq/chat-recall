@@ -15,8 +15,9 @@
  *
  * The fleet settings come from `@munhq/auth` and `@munhq/mcp-kit` when the
  * build carries them (util/auth-kit.ts). A self-host build carries neither,
- * and `localCore`, `localDevice`, `localMcp` and `localCimd` below give it the
- * same settings. The kits were written from this file, so the two agree.
+ * and `localCore`, `localDevice`, `localMcp`, `localCimd` and the guard of
+ * auth/mcp-redirects.ts give it the same settings. The kits were written from
+ * this file, so the two agree.
  *
  * Remote MCP: better-auth 1.7 is the OAuth 2.1 authorization server
  * (`@better-auth/mcp` on `@better-auth/oauth-provider`). Access tokens are JWTs
@@ -36,6 +37,7 @@ import { verifyJwsAccessToken } from 'better-auth/oauth2';
 import { mcp, type McpOptions } from '@better-auth/mcp';
 import { cimd, type CimdOptions } from '@better-auth/cimd';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
+import { mcpRedirectGuard as localRedirectGuard } from './mcp-redirects.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
@@ -281,6 +283,8 @@ export function authOptions(database: pg.Pool) {
       jwt(),
       mcp(mcpOptions),
       cimd(m ? m.fleetCimd() : localCimd()),
+      // Registration is open, so only the callbacks of the known MCP clients and loopback are accepted.
+      m ? m.mcpRedirectGuard() : localRedirectGuard(),
     ],
   } satisfies BetterAuthOptions;
 }
