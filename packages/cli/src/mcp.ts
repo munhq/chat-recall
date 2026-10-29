@@ -504,6 +504,20 @@ async function main() {
     } catch { /* best-effort — never break the tool server over skills */ }
   })();
 
+  // The hooks, the same way: an MCP server added from a marketplace button or
+  // a hand-written config is the only thing such a user ever installed, and
+  // the hooks are what deliver messages and save context. ensureHooks() does
+  // nothing when this version already installed them in every profile, or
+  // when the user ran `install-hooks --uninstall`.
+  void (async () => {
+    try {
+      const { ensureHooks } = await import('./install-hooks.js');
+      const { fileURLToPath } = await import('node:url');
+      const r = await ensureHooks(fileURLToPath(new URL('.', import.meta.url)));
+      if (r?.written.length) console.error(`[mcp] chat-recall hooks installed in ${r.written.length} Claude profile(s)`);
+    } catch { /* best-effort — never break the tool server over hooks */ }
+  })();
+
   // A machine with NO credentials at all is a fresh install, and its first tool
   // call is going to need a sign-in link. Fetching the device code takes a few
   // hundred ms against the server, and requireRemote() is synchronous (51 call

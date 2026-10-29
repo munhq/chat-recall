@@ -35,12 +35,8 @@ import { createLogger } from './logger.js';
 
 const log = createLogger('paths');
 
-/** Root data directory. Respects $CHAT_RECALL_DATA_DIR; defaults to ~/.chat-recall. */
-export function getDataDir(): string {
-  const override = process.env.CHAT_RECALL_DATA_DIR;
-  if (override && override.trim()) return override.trim();
-  return join(homedir(), '.chat-recall');
-}
+import { getDataDir } from './data-dir.js';
+export { getDataDir };
 
 /** Combined metadata + outcome cache db. */
 export function getCacheDbPath(): string {

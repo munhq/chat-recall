@@ -112,4 +112,8 @@ describe('unit sections', () => {
     expect(inService).toContain('MemoryHigh=1G');
     expect(inUnit).not.toContain('Memory');
   });
+
+  test('oomd is told to pick another cgroup first', () => {
+    expect(inService).toContain('ManagedOOMPreference=avoid');
+  });
 });

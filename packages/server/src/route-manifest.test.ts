@@ -332,6 +332,10 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['paid', "rl('write-light')", 'diaryRouter'],
     reason: 'Agent-diary recall surface: memory value (paid).',
   },
+  'use /api/live-sessions': {
+    gates: ['paid', "rl('write-light')", 'liveSessionsRouter'],
+    reason: 'Session state and messages between sessions, read and written by the message hook and the MCP tools. Same paid memory surface as /api/kv; write-light because the hook posts on every prompt and turn end.',
+  },
   'use /api/sync-intents': {
     gates: ['paid', "rl('write-light')", 'syncIntentsRouter'],
     reason: 'Cross-tool intent queue. ENQUEUE self-gates on toolkit inside the router; drain/ack stay open so a lapsed tenant’s CLI can finish intents enqueued while entitled.',

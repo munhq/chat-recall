@@ -93,6 +93,58 @@ export interface TeamTask {
   updatedAt: number;
 }
 export interface TeamTaskComment { id: string; taskId: string; authorSub: string; body: string; createdAt: number; }
+
+/**
+ * Where a running AI session is, as far as the message hook last reported it.
+ * 'working' is set by a prompt or a tool call, 'idle' by the end of a turn or
+ * the start of a session, 'ended' by SessionEnd.
+ */
+export type LiveSessionState = 'working' | 'idle' | 'ended';
+export interface LiveSession {
+  sessionId: string;
+  ownerSub: string;
+  /** A name other sessions can send to in place of the id. */
+  label: string | null;
+  parentSession: string | null;
+  cwd: string | null;
+  /** What the session says it works on, in one line. */
+  doing: string | null;
+  state: LiveSessionState;
+  lastEvent: string | null;
+  startedAt: number;
+  updatedAt: number;
+  /** The last poll of the session's waiter hook, or null when it never polled. */
+  lastSeen: number | null;
+  /** Messages sent to this session that it has not received yet. */
+  unread: number;
+}
+/** A write named a session id that another user's session already holds. */
+export class SessionOwnedElsewhereError extends Error {
+  constructor(readonly sessionId: string) { super(`session ${sessionId} belongs to another user`); }
+}
+export interface LiveSessionUpdate {
+  sessionId: string;
+  ownerSub: string;
+  state?: LiveSessionState;
+  lastEvent?: string;
+  cwd?: string;
+  /** Empty string clears the label. */
+  label?: string;
+  /** Empty string clears the parent. */
+  parentSession?: string;
+  /** Empty string clears it. */
+  doing?: string;
+}
+export interface SessionMessage {
+  id: string;
+  fromSession: string | null;
+  toSession: string;
+  body: string;
+  replyTo: string | null;
+  createdAt: number;
+  /** When the recipient received it; null while it waits. */
+  deliveredAt: number | null;
+}
 export interface CreateTeamTaskInput {
   title: string;
   createdBy: string;
@@ -168,6 +220,29 @@ export interface StorageDriver {
   /** Cards materialized from findings — the auto-task dedup + auto-close set.
    *  Empty `ids` returns every finding-linked card (for the close sweep). */
   teamTasksByFindingIds(ids?: string[]): Promise<TeamTask[]>;
+
+  // ── Messages between running sessions. Every call is scoped to one owner
+  //    (the user sub behind the token), so a session only reaches the
+  //    sessions of the same person. Cloud/Postgres only, like the board. ──
+  upsertLiveSession(update: LiveSessionUpdate): Promise<LiveSession>;
+  getLiveSession(ownerSub: string, sessionId: string): Promise<LiveSession | null>;
+  /** Newest first. `parentSession` limits the list to that session's children. */
+  listLiveSessions(ownerSub: string, opts?: { parentSession?: string; includeEnded?: boolean; limit?: number }): Promise<LiveSession[]>;
+  /** The sessions an address names: an exact session id, else every non-ended session with that label. */
+  resolveLiveSessions(ownerSub: string, address: string): Promise<LiveSession[]>;
+  sendSessionMessages(ownerSub: string, input: { fromSession: string | null; toSessions: string[]; body: string; replyTo?: string | null }): Promise<SessionMessage[]>;
+  /**
+   * Lease the waiting messages for a session and return them oldest first.
+   * A leased message is offered to nobody else until the lease ends. If it is
+   * not acknowledged by then, it is offered again.
+   */
+  takeSessionMessages(ownerSub: string, sessionId: string, limit?: number, leaseMs?: number): Promise<SessionMessage[]>;
+  /** Record a waiter poll. Returns the session's state, or null when it is not this owner's. */
+  touchLiveSession(ownerSub: string, sessionId: string): Promise<LiveSession['state'] | null>;
+  /** Mark leased messages received. Returns how many it marked. */
+  ackSessionMessages(ownerSub: string, sessionId: string, ids: string[]): Promise<number>;
+  /** Messages sent to or from a session, newest first. */
+  listSessionMessages(ownerSub: string, sessionId: string, limit?: number): Promise<SessionMessage[]>;
 
   // ── links ──
   addLink: AsyncMethod<MemoryStore['addLink']>;
