@@ -204,6 +204,14 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['wellKnown'],
     reason: 'OpenID Connect Discovery 1.0, at the root and with the issuer path inserted; ChatGPT enterprise domain restrictions read it. DELIBERATELY UNGATED, as discovery. Forwarded to the OpenID configuration better-auth serves under /api/auth, so it and the RFC 8414 document come from one source.',
   },
+  'use /docs': {
+    gates: ['docsStatic'],
+    reason: 'The documentation site: static files that the site repository builds with @munhq/docs-kit into dist/docs. DELIBERATELY UNGATED, like every marketing page: documentation is public and is read before an account exists. It serves files only, from dist/docs, with the .html extension added so /docs/<page> finds <page>.html.',
+  },
+  'get /docs': {
+    gates: ['docsHome'],
+    reason: 'The home page of the documentation, docs/index.html, at /docs with no slash: the address the docs name as canonical. DELIBERATELY UNGATED, as public documentation. It sends one file and hands the request on when the build has no docs.',
+  },
   'use /mcp': {
     gates: ['apiLimiter', "express.json({ limit: '4mb' })", 'mcpRouter'],
     reason: 'The remote MCP endpoint. DELIBERATELY OUTSIDE the /api gates: it authenticates with an OAuth access token rather than a tenant session, so tenantAuth would reject it before its own auth ran. It is not ungated — the router 401s without a valid grant, 403s a cross-origin browser request, and its tools then call back through /api over loopback, where entitlement, rate limits and RLS all apply on the way in. It carries apiLimiter explicitly because the /api mount does not cover it, and an unauthenticated endpoint that does a database lookup per request is a brute-force and DoS surface without one.',

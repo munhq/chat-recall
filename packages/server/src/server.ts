@@ -796,6 +796,30 @@ if (existsSync(STATIC_DIR)) {
     res.type('html').send(NOT_FOUND_FALLBACK);
   });
 
+  /**
+   * The documentation site, which the site repository builds with
+   * @munhq/docs-kit into dist/docs. Docusaurus links a page as /docs/<page> and
+   * writes <page>.html, so this mount adds the extension. The root mount below
+   * adds none: there it would give every file of dist/ a second address.
+   * redirect is off, so /docs serves docs/index.html with no slash appended.
+   */
+  const docsStatic = express.static(resolve(STATIC_DIR, 'docs'), {
+    extensions: ['html'],
+    redirect: false,
+    setHeaders: (res, filePath) => {
+      const value = cacheControlFor(relative(STATIC_DIR, filePath));
+      if (value) res.setHeader('Cache-Control', value);
+    },
+  });
+  app.use('/docs', docsStatic);
+  // serve-static hands a bare mount path to the next handler, and the root
+  // mount then appended a slash (301 to /docs/), while the docs name /docs as
+  // their canonical address. The home of the docs answers at /docs itself.
+  const docsHome = (_req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    res.sendFile(resolve(STATIC_DIR, 'docs', 'index.html'), (err) => { if (err) next(); });
+  };
+  app.get('/docs', docsHome);
+
   app.use(express.static(STATIC_DIR, {
     setHeaders: (res, filePath) => {
       const rel = relative(STATIC_DIR, filePath);

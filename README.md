@@ -342,7 +342,7 @@ codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.co
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (62, including 4 code-intelligence tools that register when the companion binary is installed)
+## MCP tools (68, including 4 code-intelligence tools that register when the companion binary is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
