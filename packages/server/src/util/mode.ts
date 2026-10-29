@@ -42,8 +42,9 @@ export const API_VERSION = 2;
  * on, so an MCP hitting an older server can say "update your server (needs
  * recall API ≥ N)" instead of surfacing a raw 404.
  *   1 — /api/kg/*, /api/kv/*, /api/diary/*, /api/memory/wake-up
+ *   2 — /api/live-sessions/* (session state and messages between sessions)
  */
-export const RECALL_API_VERSION = 1;
+export const RECALL_API_VERSION = 2;
 
 export interface Capabilities {
   mode: 'local' | 'server';

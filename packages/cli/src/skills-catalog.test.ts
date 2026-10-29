@@ -100,6 +100,7 @@ describe('write tools are flagged as writes', () => {
     'recall_kg_add', 'recall_kg_invalidate', 'recall_decision_record',
     'recall_diary_write', 'recall_set', 'recall_task_create', 'recall_task_update',
     'recall_security_dismiss', 'recall_rename_session', 'recall_index',
+    'recall_message_send', 'recall_inbox', 'recall_session_register',
     // Conditional: a read until `create_tasks: true`, which opens cards on the
     // shared board. Listed here because the hub must still warn about it — an
     // agent reading only the catalog would otherwise fire it unprompted.

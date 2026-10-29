@@ -47,6 +47,7 @@ import contactRouter from './routes/contact.js';
 import kgRouter from './routes/kg.js';
 import decisionsRouter from './routes/decisions.js';
 import kvRouter from './routes/kv.js';
+import liveSessionsRouter from './routes/live-sessions.js';
 import diaryRouter from './routes/diary.js';
 import syncIntentsRouter from './routes/sync-intents.js';
 import filesRouter from './routes/files.js';
@@ -655,6 +656,9 @@ app.use('/api/kg', paid, rl('write-light'), kgRouter);
 app.use('/api/decisions', paid, rl('write-light'), decisionsRouter);
 app.use('/api/kv', paid, rl('write-light'), kvRouter);
 app.use('/api/diary', paid, rl('write-light'), diaryRouter);
+// Running sessions and the messages between them. The message hook posts here
+// on every prompt, throttled tool call and turn end of a session.
+app.use('/api/live-sessions', paid, rl('write-light'), liveSessionsRouter);
 // Cross-tool sync intent queue (Model B). MUST be available in BOTH local and
 // server mode: the SaaS UI enqueues intents here and the user's local CLI agent
 // (which has the actual filesystem) drains + executes them. Unlike /api/toolkit

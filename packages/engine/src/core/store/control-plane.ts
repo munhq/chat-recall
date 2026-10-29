@@ -1345,6 +1345,7 @@ class PgControlPlane implements ControlPlane {
       'secret_findings', 'secret_rules', 'secret_dismissals', 'session_metadata',
       'summary_errors', 'compute_cache', 'session_outcome_cache', 'kg_entities',
       'kg_triples', 'wal_log', 'diary_entries', 'team_tasks', 'team_task_comments',
+      'live_sessions', 'session_messages',
     ]) {
       // FORCE RLS applies to the owner too — scope the GUC to this tenant so
       // the policy permits the delete.

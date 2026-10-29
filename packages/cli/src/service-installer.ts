@@ -187,6 +187,13 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // peak was 2.1 GB RSS against a 1536 MB heap cap, so only a cgroup limit
     // bounds the external half.
     'MemoryAccounting=yes', 'MemoryHigh=1G', 'MemoryMax=2G',
+    // systemd-oomd kills the cgroup with the most reclaim activity once the
+    // user slice passes its memory-pressure limit. A daemon that peaks at its
+    // own MemoryHigh reclaims constantly, so it was the first cgroup chosen:
+    // 13 kills in six hours on a 60 GB machine, and each restart began the
+    // startup walk again, so the walk never finished. `avoid` ranks the unit
+    // last for oomd; MemoryMax above still bounds the daemon itself.
+    'ManagedOOMPreference=avoid',
     // JOURNAL, not append:. The file version had no rotation and nothing to
     // give it any: systemd holds the fd open, so the daemon cannot rename or
     // truncate its own log without leaving systemd writing into a hole. It

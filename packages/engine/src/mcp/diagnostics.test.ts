@@ -186,5 +186,10 @@ describe('buildHttpError', () => {
     // A server sentence beats a generic one when there is one.
     expect((await buildHttpError('/x', res(400, { error: 'device id is required' }))).message)
       .toContain('device id is required');
+    // A 404 the route itself answered names what is missing; a bare one, as an
+    // older server without the route returns, keeps the generic hint.
+    expect((await buildHttpError('/x', res(404, { error: 'No session matches "worker-a".' }))).message)
+      .toContain('No session matches "worker-a".');
+    expect((await buildHttpError('/x', res(404))).message).toMatch(/server is older than this CLI/);
   });
 });

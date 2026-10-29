@@ -4,6 +4,29 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.7.21] — 2026-10-29
+
+### Added
+- **Messages between sessions.** Four MCP tools: `recall_message_send`,
+  `recall_inbox`, `recall_session_status` and `recall_session_register`. A
+  message body is redacted before it leaves the machine. A waiter hook
+  (`message-hook.js --wait`, `asyncRewake`) long-polls the server and wakes an
+  idle session when a message arrives.
+- **Child sessions.** `recall_session_spawn` starts a child as `claude --bg` in
+  the folder and profile of the parent, and registers its parent, name and task.
+- The `chat-recall-sessions` skill: start children, send and answer messages,
+  and check on the session states.
+
+### Fixed
+- **Hooks never ran.** Claude Code reads hooks from `settings.json`, and earlier
+  versions wrote them to `<profile>/hooks.json`. `init` now writes every hook to
+  the `settings.json` of each profile, and the MCP server repairs a profile that
+  misses them at start. `install-hooks --uninstall` keeps them out.
+- **The indexer service was the first cgroup that systemd-oomd killed:** 13
+  kills in six hours on one machine. The unit sets
+  `ManagedOOMPreference=avoid`. Run `chat-recall service install` again to
+  write the new unit.
+
 ## [0.7.20] — 2026-10-27
 
 ### Added

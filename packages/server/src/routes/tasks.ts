@@ -23,6 +23,7 @@ import { tenantFeatures } from '../util/billing.js';
 import { featureRequired } from '../util/entitlements.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { createControlPlane } from '../imports.js';
+import { actor } from '../util/actor.js';
 import { parsePolicy, autoTasksStatus, runAutoTasks, AUTO_TASKS_KEY } from '../services/auto-tasks.js';
 
 const log = createLogger('tasks');
@@ -53,8 +54,6 @@ async function refuseForeignAssignee(
   res.status(402).json(featureRequired('team'));
   return true;
 }
-/** The actor for created_by / comment author: the real user sub, else the userId. */
-function actor(req: express.Request): string { return (req.authorSub || req.userId || 'unknown') as string; }
 
 /**
  * The auto-tasks policy: whether urgent code findings file their own cards.
