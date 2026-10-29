@@ -35,7 +35,9 @@ and apply the test in `chat-recall-memory` before calling one:
 `recall_task_comment`,
 `recall_task_policy`,
 `recall_security_dismiss`, `recall_rename_session`, `recall_regenerate_summary`,
-`recall_reclassify`, `recall_index`, `recall_code_index`.
+`recall_reclassify`, `recall_index`, `recall_code_index`,
+`recall_message_send`, `recall_inbox` (marks the messages it returns as received),
+`recall_session_register`, `recall_session_spawn` (starts a Claude session on this machine).
 
 Two of those are in a class of their own — they REMOVE what the user has stored,
 and the host will ask before each call because they are deliberately not on the
@@ -65,6 +67,7 @@ Match the intent, then read that skill and follow its workflow:
 | What changed — edits, diffs, commits; "what was I doing 2h ago" | `chat-recall-changes` |
 | Leaked secrets — "did I paste an API key", "what should I rotate" | `chat-recall-security` |
 | The shared task board — open tasks, claiming, closing, what auto-files | `chat-recall-tasks` |
+| Messages between running sessions; a parent session that directs child sessions | `chat-recall-sessions` |
 
 Team activity and index health have no focused skill — use the catalog below
 directly.
@@ -92,6 +95,8 @@ CLAUDE.md rule is additive and reversible, so take it; ask first before setting
 **Decisions** — `recall_decisions` (what is already settled per area, cascade resolved; call it before choosing a library or a datastore) and `recall_decision_scan` (what THIS repository's manifests say it uses, beside what the register answers — the register never reads a repo, so a project that never had the conversation inherits someone else's stack; `record: true` writes the areas the manifests answer, at project scope, citing the file and line).
 **Team** — `recall_tasks` (the shared task board), `recall_task_create`, `recall_task_update` (status, assignee, linked session; task ids look like `t_…`; when you start work on a task, set it `in_progress` and pass your session id as `linked_session_id` so the board can verify the work shipped), `recall_task_comment` (leave a progress note on a card), `recall_task_policy` (read or change WHAT the board files — severity floor, open-card ceiling, cards per run, categories, and the projects that never file at all via `exclude_project` — reach for that one when the user says "do not put work on my board for this repo", e.g. a client's codebase they keep separate; call it with no arguments to read, and reach for it when the user says "only security", "high and critical for now", or asks why a full board has stopped filing), `recall_team_activity` (per-teammate × per-project rollup), `recall_shares` (which projects are shared — private by default, nothing is visible to teammates until shared).
 **Toolkit sync across tools and devices** — `recall_toolkit_status` (which MCP servers, skills, commands and agents exist, on which tool, on which device — and which of them can be installed elsewhere at all), `recall_toolkit_sync` (queue an install: everything or one type, every device or one machine, or fan a machine's own artifacts across its own tools). Reach for these on "set up my other laptop", "get my MCPs everywhere", "why does this tool not have my skill".
+
+**Sessions talking to each other** — `recall_message_send` (send to a session id, a name, `parent`, `children` or `group`), `recall_inbox` (receive; `wait_secs` waits for an answer), `recall_session_status` (which sessions run, what each works on, its board cards and its state; `parent` lists one session's children), `recall_session_register` (name a session, link it to its parent, set the `doing` line), `recall_session_spawn` (start a child session in the background that works on a task and reports back).
 
 **Security** — `recall_security_summary` (leaked secrets that still need action — start here for "did I paste a key somewhere"), `recall_security_session` (findings for one session), `recall_security_dismiss` (mark rotated / false positive — do this only when the user confirms which), `recall_security_rules` (tenant detection rules; also tests a regex).
 **Health / maintenance** — `recall_status` (is the index alive, what is synced), `recall_index` (sync now), `recall_help` (names the tools the lean profile leaves unlisted — they all still work by name), `recall_heal_audit` (sessions whose rendered text is thinner than the raw archive, i.e. truncated upstream), `recall_regenerate_summary` (stored summary is stale or wrong), `recall_reclassify` (re-run the classifier over old chunks), `recall_rename_session`.

@@ -43,6 +43,9 @@ await build({
     // together would load the whole engine in every session again, which is
     // the entire cost the split removes.
     { in: 'src/mcp-relay.ts', out: 'mcp-relay' },
+    // The message hook is its own entry for the same reason: Claude Code runs
+    // it on every tool call, so it must not load the CLI.
+    { in: 'src/message-hook.ts', out: 'message-hook' },
     // The auto-indexer daemon ships as its own bin (`chat-recall-watch`) so
     // installed users get live indexing + continuous sync without a repo
     // checkout and tsx.
@@ -66,7 +69,7 @@ await build({
   logLevel: 'info',
 });
 
-console.log(`bundled cli.js + mcp.js + mcp-relay.js + watch.js + scan-worker.js (externals: ${external.length})`);
+console.log(`bundled cli.js + mcp.js + mcp-relay.js + message-hook.js + watch.js + scan-worker.js (externals: ${external.length})`);
 
 // ── Native-free guard ────────────────────────────────────────────────────
 // The collector must install with zero compilation: a user running
@@ -105,7 +108,7 @@ const lazyRe = /\bimport\(\s*['"]([^'"\s.][^'"\s]*)['"]\s*\)/g;
 const lazyAllowed = new Set([...allowed, ...NATIVE_ENGINE_DEPS]);
 const toPkg = (spec) => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
 const offenders = new Set();
-for (const out of ['cli.js', 'mcp.js', 'mcp-relay.js', 'watch.js', 'scan-worker.js']) {
+for (const out of ['cli.js', 'mcp.js', 'mcp-relay.js', 'message-hook.js', 'watch.js', 'scan-worker.js']) {
   const code = readFileSync(new URL(`../dist/${out}`, here), 'utf-8');
   for (const re of bootRes) {
     for (const m of code.matchAll(re)) {
