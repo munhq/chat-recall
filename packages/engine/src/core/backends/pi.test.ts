@@ -194,8 +194,11 @@ describe('PiBackend', () => {
   });
 
   it('expands a leading ~ in Pi path settings', () => {
+    // os.homedir() reads HOME on Unix and USERPROFILE on Windows.
     const savedHome = process.env.HOME;
+    const savedProfile = process.env.USERPROFILE;
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       mkdirSync(join(home, 'tilde-sessions'), { recursive: true });
       writeFileSync(join(home, 'settings.json'), JSON.stringify({ sessionDir: '~/tilde-sessions' }));
@@ -203,6 +206,8 @@ describe('PiBackend', () => {
     } finally {
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;
+      if (savedProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedProfile;
     }
   });
 

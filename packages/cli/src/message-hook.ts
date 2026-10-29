@@ -164,8 +164,10 @@ function ancestors(): number[] {
     const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
     if (ppid > 1) out.push(ppid);
   } catch {
+    // Windows has no ps that takes -o: the ps of Git Bash printed its usage to the hook's stderr.
+    if (process.platform === 'win32') return out;
     try {
-      const ppid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 2000 }).trim());
+      const ppid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim());
       if (ppid > 1) out.push(ppid);
     } catch { /* the parent alone */ }
   }

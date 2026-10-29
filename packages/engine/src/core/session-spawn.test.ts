@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { childContract, extraArgs, localAgents, spawnChild, PERMISSION_MODES } from './session-spawn.js';
@@ -44,7 +44,8 @@ function parentState(state: Record<string, unknown>): void {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'cr-spawn-'));
+  // The real path: on macOS the temp folder is a symlink, and a child's process.cwd() gives its target.
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'cr-spawn-')));
   process.env.CHAT_RECALL_DATA_DIR = join(root, 'data');
   fakeClaude();
 });
