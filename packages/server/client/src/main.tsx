@@ -36,6 +36,7 @@ if (glitchtipDsn) {
 const App = React.lazy(() => import('./App'));
 const AuthPage = React.lazy(() => import('./components/AuthPage'));
 const DeviceApprovePage = React.lazy(() => import('./components/DeviceApprovePage'));
+const ConsentPage = React.lazy(() => import('./components/ConsentPage'));
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 
@@ -86,6 +87,17 @@ function render(node: React.ReactNode) {
 // of marketing copy for their own product.
 const isDeviceVisit = window.location.pathname === '/device';
 
+/** The consent step of an MCP connector. Its URL carries client_id and
+ *  response_type too, so the authorize replay below must never run here: it
+ *  would send the browser back to authorize, which sends it back here. */
+const isConsentVisit = window.location.pathname.replace(/\/+$/, '') === '/consent';
+
+/** The page a signed-in visitor of this path sees. */
+function signedInPage() {
+  if (isConsentVisit) return <ConsentPage />;
+  return isDeviceVisit ? <DeviceApprovePage /> : <App />;
+}
+
 /**
  * Step 4 of the connector flow: replay the authorize request now that a session
  * exists. Returns true when the browser is leaving, so the caller renders
@@ -97,6 +109,7 @@ const isDeviceVisit = window.location.pathname === '/device';
  * dropped in silence. See utils/oauth-resume.ts.
  */
 function resumeAuthorizeIfPending(): boolean {
+  if (isConsentVisit) return false;
   const url = authorizeResumeUrl();
   if (!url) return false;
   window.location.replace(url);
@@ -120,7 +133,7 @@ if (isCloud()) {
   void isSignedIn().then((signedIn) => {
     if (signedIn) {
       if (resumeAuthorizeIfPending()) return;
-      render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+      render(signedInPage());
     } else {
       // Both sign-in paths land here: the embedded email form keeps the URL, and
       // a social round trip comes back to '/app' carrying the same query
@@ -128,7 +141,7 @@ if (isCloud()) {
       // the URL at this point, so one check covers both.
       const after = () => {
         if (resumeAuthorizeIfPending()) return;
-        render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+        render(signedInPage());
       };
       render(<AuthPage onSuccess={after} />);
     }

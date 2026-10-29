@@ -61,7 +61,7 @@ export default function ProfileCard({ onError }: { onError: (s: string) => void 
 
   async function submitPassword() {
     setMsg(''); onError('');
-    if (next.length < 8) return onError('Choose a password of at least 8 characters.');
+    if (next.length < 12) return onError('Choose a password of at least 12 characters.');
     if (next !== confirm) return onError('The two new passwords do not match.');
     setPwBusy(true);
     const r = await changePassword(current, next);

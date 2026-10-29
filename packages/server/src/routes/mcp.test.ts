@@ -35,12 +35,12 @@ import express from 'express';
 import request from 'supertest';
 
 const authState = vi.hoisted(() => ({
-  session: null as { userId: string; accessToken: string } | null,
+  session: null as { userId: string; token: string } | null,
 }));
 
 // The auth resolution needs Postgres; the route's decisions do not.
 vi.mock('../auth/better-auth.js', () => ({
-  mcpSessionFor: async () => authState.session,
+  verifyMcpBearer: async () => authState.session,
 }));
 
 // The engine's tool surface spins up an MCP server; none of these tests get far
@@ -92,7 +92,7 @@ describe('POST /mcp — the origin guard', () => {
   test('an unrecognised Origin is refused before auth is even attempted', async () => {
     // Set a valid session: proving the 403 wins shows the check runs first, and
     // that a browser cannot drive someone's tools from another page.
-    authState.session = { userId: 'u1', accessToken: 'tok' };
+    authState.session = { userId: 'u1', token: 'tok' };
     const res = await request(await app())
       .post('/mcp').set('origin', 'https://evil.example').send(rpc);
     expect(res.status).toBe(403);

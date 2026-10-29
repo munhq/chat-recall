@@ -5,7 +5,7 @@
  * what lets claude.ai, ChatGPT or a browser IDE connect with one click instead
  * of a device code. The flow is:
  *
- *   1. the client GETs /api/auth/mcp/authorize?response_type=code&client_id=…
+ *   1. the client GETs /api/auth/oauth2/authorize?response_type=code&client_id=…
  *   2. no session cookie yet, so better-auth 302s to the login page
  *   3. the visitor signs in or signs up
  *   4. >>> the authorize request must now be REPLAYED, with the cookie <<<
@@ -49,8 +49,8 @@ const AUTHORIZE_PARAMS = [
   'login_hint',
 ] as const;
 
-/** Where better-auth's MCP plugin mounts its authorization endpoint. */
-export const AUTHORIZE_ENDPOINT = '/api/auth/mcp/authorize';
+/** Where better-auth's OAuth provider mounts its authorization endpoint. */
+export const AUTHORIZE_ENDPOINT = '/api/auth/oauth2/authorize';
 
 /**
  * The canonical query string of a pending authorize request, or null.
