@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "github": "munhq/chat-recall",
+  "store": "server",
+  "server": {
+    "url": "https://desk.munhq.com",
+    "tokenEnv": "DESK_TOKEN"
+  }
+}
