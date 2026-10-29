@@ -25,6 +25,10 @@ declare module '@munhq/mcp-kit' {
   export function fleetMcp(o: FleetMcpOptions): McpOptions;
   export function fleetCimd(o?: { extend?: Partial<CimdOptions> }): CimdOptions;
 
+  export const MCP_REDIRECT_URIS: readonly string[];
+  export function redirectAllowed(uri: string, allowed?: readonly string[]): boolean;
+  export function mcpRedirectGuard(o?: { allow?: readonly string[] }): import('better-auth').BetterAuthPlugin;
+
   export interface AuthHandlerLike {
     handler: (request: Request) => Promise<Response>;
     options: { basePath?: string };
