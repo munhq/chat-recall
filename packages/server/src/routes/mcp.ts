@@ -37,8 +37,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   createMcpServer, setServerVersion, setMultiTenantMode, withCredentials,
 } from '@chat-recall/engine/mcp/tools.js';
+import { currentCredentials } from '@chat-recall/engine/mcp/credential-context.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { verifyMcpBearer } from '../auth/better-auth.js';
+import { verifyMcpBearer, mcpAuthInstance, mcpResourceUrl, authIssuer } from '../auth/better-auth.js';
+import { mcpKit } from '../util/auth-kit.js';
 
 const log = createLogger('mcp-remote');
 const router = Router();
@@ -106,7 +108,78 @@ function unauthorized(req: Request, res: Response): void {
   });
 }
 
+type FetchHandler = (request: globalThis.Request) => Promise<globalThis.Response>;
+let kitServe: FetchHandler | null = null;
+
+/**
+ * `mcpHandler` of `@munhq/mcp-kit`, when the hosted image carries the kit.
+ * It checks the origin and the access token, and writes the 401 with
+ * `resource_metadata` and the 405s. The self-host image has no kit and uses
+ * the route below it.
+ */
+function kitHandler(): FetchHandler | null {
+  if (kitServe) return kitServe;
+  const kit = mcpKit();
+  if (!kit) return null;
+  kitServe = kit.mcpHandler({
+    auth: mcpAuthInstance(),
+    resource: mcpResourceUrl(),
+    issuer: authIssuer(),
+    jwksUrl: `${selfBase()}/api/auth/jwks`,
+    trustedOrigins: (process.env.TRUSTED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    productName: 'chat-recall',
+    // The tools call the REST API over loopback with the caller's own token.
+    // serveWithKit put a credentials object for this request in the store;
+    // the token is known only here, after the check.
+    createServer: (ctx) => {
+      const creds = currentCredentials();
+      if (creds) creds.token = ctx.token;
+      return createMcpServer();
+    },
+    onError: (err, ctx) => log.error({ err, userId: ctx.userId }, 'mcp request failed'),
+    onRefused: (refusal) => log.warn(refusal, 'mcp bearer refused'),
+  });
+  return kitServe;
+}
+
+/** The Express request as a Fetch request. express.json() has read the body already. */
+function toFetchRequest(req: Request): globalThis.Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+  }
+  headers.delete('content-length');
+  return new globalThis.Request(`${req.protocol}://${req.get('host') ?? 'localhost'}${req.originalUrl}`, {
+    method: req.method,
+    headers,
+    body: JSON.stringify(req.body ?? null),
+  });
+}
+
+async function serveWithKit(handler: FetchHandler, req: Request, res: Response): Promise<void> {
+  const creds = { base: selfBase(), token: '' };
+  try {
+    const response = await withCredentials(creds, () => handler(toFetchRequest(req)));
+    res.status(response.status);
+    response.headers.forEach((value, name) => {
+      if (name !== 'content-length' && name !== 'transfer-encoding') res.setHeader(name, value);
+    });
+    res.end(Buffer.from(await response.arrayBuffer()));
+  } catch (err) {
+    log.error({ err }, 'mcp request failed');
+    if (!res.headersSent) {
+      res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+    }
+  }
+}
+
 router.post('/', async (req: Request, res: Response) => {
+  const kit = kitHandler();
+  if (kit) {
+    await serveWithKit(kit, req, res);
+    return;
+  }
+
   if (!originAllowed(req)) {
     res.status(403).json({ error: 'origin not allowed' });
     return;
