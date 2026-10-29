@@ -118,7 +118,8 @@ describe('installHooks', () => {
   test('a selection leaves the hooks that were turned off out', async () => {
     await installHooks(here, { ...ALL_HOOKS, messages: false, taskBoard: false });
     const cfg = read(settingsFile);
-    const all = Object.values(cfg.hooks).flat();
+    // Windows skips the shell hooks, so with these two off it writes no hook at all.
+    const all = Object.values(cfg.hooks ?? {}).flat();
     expect(all.some(isMessageHookEntry)).toBe(false);
     expect(all.some(isBoardHookEntry)).toBe(false);
   });
