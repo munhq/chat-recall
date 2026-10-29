@@ -5,5 +5,8 @@
   "server": {
     "url": "https://desk.munhq.com",
     "tokenEnv": "DESK_TOKEN"
+  },
+  "release": {
+    "versionFile": "packages/cli/package.json"
   }
 }
