@@ -246,6 +246,40 @@ function runHook(sessionId, event, cwd) {
     child.stdin.end(JSON.stringify({ session_id: sessionId, hook_event_name: event, cwd }));
   });
 }
+
+/**
+ * Wait for a message to an idle session. The hook long-polls the server and
+ * prints the messages when one arrives; onText gets them. One waiter per
+ * session; stopWaiter ends it when the session gets a prompt.
+ */
+const waiters = new Map();
+
+function startWaiter(sessionId, cwd, onText) {
+  if (waiters.has(sessionId)) return;
+  let out = "";
+  let child;
+  try {
+    child = spawn(HOOK, ["--wait"], { stdio: ["pipe", "pipe", "ignore"] });
+  } catch {
+    return;
+  }
+  waiters.set(sessionId, child);
+  child.stdout.on("data", (c) => { out += c; });
+  child.on("error", () => { waiters.delete(sessionId); });
+  child.on("close", () => {
+    if (waiters.get(sessionId) === child) waiters.delete(sessionId);
+    const text = out.trim();
+    if (text) Promise.resolve().then(() => onText(text)).catch(() => {});
+  });
+  child.stdin.end(JSON.stringify({ session_id: sessionId, hook_event_name: "Stop", cwd }));
+}
+
+function stopWaiter(sessionId) {
+  const child = waiters.get(sessionId);
+  if (!child) return;
+  waiters.delete(sessionId);
+  try { child.kill(); } catch { /* gone */ }
+}
 `;
 }
 
@@ -259,7 +293,8 @@ function runHook(sessionId, event, cwd) {
  *
  * 2.x: the `prompt` hook reports the session at its first prompt and adds what
  * the hook prints to the prompt text; the end of a run reports the session
- * idle. 1.x: a session is reported when it is created, and the text goes into
+ * idle and starts a waiter, whose message becomes the next prompt through
+ * `ctx.session.prompt`, so an idle session acts on it without its user. 1.x: a session is reported when it is created, and the text goes into
  * the next prompt as a synthetic part. A child session (a subagent) is left
  * out in both: its context is not the one the message was sent to.
  */
@@ -286,6 +321,7 @@ async function setup(ctx) {
   await ctx.session.hook("prompt", async (event) => {
     const id = event?.sessionID;
     if (!id || !event.prompt || (await isChild(id))) return;
+    stopWaiter("opencode_" + id);
     const parts = [];
     if (!started.has(id)) {
       started.add(id);
@@ -301,15 +337,23 @@ async function setup(ctx) {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
         const id = ev?.data?.sessionID ?? ev?.properties?.sessionID;
         if (!id || !started.has(id)) continue;
-        if (RUN_END.has(ev.type)) await runHook("opencode_" + id, "Stop", dir);
-        else if (ev.type === "session.deleted") {
+        if (RUN_END.has(ev.type)) {
+          await runHook("opencode_" + id, "Stop", dir);
+          // An idle session acts on a message from another session by itself:
+          // the text becomes its next prompt.
+          startWaiter("opencode_" + id, dir, (text) => ctx.session.prompt({ sessionID: id, text }));
+        } else if (ev.type === "session.deleted") {
           started.delete(id);
+          stopWaiter("opencode_" + id);
           await runHook("opencode_" + id, "SessionEnd", dir);
         }
       }
     } catch { /* the subscription ends with the plugin */ }
   })();
-  return () => controller.abort();
+  return () => {
+    controller.abort();
+    for (const id of [...waiters.keys()]) stopWaiter(id);
+  };
 }
 
 const pending = new Map();
@@ -356,7 +400,8 @@ export default { id: "${MESSAGES_ID}", server, setup };
 
 /**
  * The pi extension. What the hook prints at session_start waits for the first
- * prompt, because pi adds a message to a run only from before_agent_start.
+ * prompt, because pi adds a message to a run only from before_agent_start. At
+ * agent_end a waiter starts; its message starts a turn through sendUserMessage.
  */
 export function piMessagesSource(wrapperPath: string): string {
   return `// ${MESSAGES_ID}: written by \`chat-recall install-hooks\`. Re-running replaces it.
@@ -373,6 +418,7 @@ export default function (pi) {
     pending = await runHook(idOf(ctx), "SessionStart", cwdOf(ctx));
   });
   pi.on("before_agent_start", async (event, ctx) => {
+    stopWaiter(idOf(ctx));
     if (event.messageType !== "user") return;
     const now = await runHook(idOf(ctx), "UserPromptSubmit", cwdOf(ctx));
     const text = [pending, now].filter(Boolean).join("\\n\\n");
@@ -382,8 +428,11 @@ export default function (pi) {
   });
   pi.on("agent_end", async (_event, ctx) => {
     await runHook(idOf(ctx), "Stop", cwdOf(ctx));
+    // An idle session acts on a message from another session by itself.
+    startWaiter(idOf(ctx), cwdOf(ctx), (text) => pi.sendUserMessage(text));
   });
   pi.on("session_shutdown", async (_event, ctx) => {
+    stopWaiter(idOf(ctx));
     await runHook(idOf(ctx), "SessionEnd", cwdOf(ctx));
   });
 }

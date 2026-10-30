@@ -248,11 +248,11 @@ receive messages. The installer writes it only for a tool that is installed:
 | Codex | `~/.codex/hooks.json` | At the next prompt. Approve the hook once with `/hooks` in Codex. |
 | Antigravity | `~/.gemini/config/hooks.json` | At the next prompt |
 | Cursor | `~/.cursor/hooks.json` | When the agent stops, as a follow-up prompt |
-| opencode | `~/.config/opencode/plugins/chat-recall-messages.js` | At the next prompt |
-| pi | `~/.pi/agent/extensions/chat-recall-messages.js` | At the next prompt |
+| opencode | `~/.config/opencode/plugins/chat-recall-messages.js` | Within a few seconds, also when the session is idle |
+| pi | `~/.pi/agent/extensions/chat-recall-messages.js` | Within a few seconds, also when the session is idle |
 
-Only Claude Code wakes an idle session. In the other tools, an idle session
-reads its messages when its user types next. `chat-recall doctor` shows the
+Claude Code, opencode and pi wake an idle session. In Codex, Antigravity and Cursor, an
+idle session reads its messages when its user types next. `chat-recall doctor` shows the
 hook of each tool.
 
 ## Sessions that work together

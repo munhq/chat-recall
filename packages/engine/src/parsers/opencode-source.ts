@@ -12,7 +12,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
+import { openOpencodeDbOrThrow } from '../core/backends/opencode-v2.js';
 import { existsSync } from 'fs';
 
 import type {
@@ -46,7 +46,7 @@ export class OpenCodeSource implements MemorySource {
     if (!existsSync(this.dbPath)) return;
     let db: DatabaseSync;
     try {
-      db = openSqliteReadonlyOrThrow(this.dbPath);
+      db = openOpencodeDbOrThrow(this.dbPath);
     } catch {
       return;
     }
@@ -175,7 +175,7 @@ export class OpenCodeSource implements MemorySource {
     if (!existsSync(this.dbPath)) return [];
 
     const sessionId = item.id.replace('opencode_', '');
-    const db = openSqliteReadonlyOrThrow(this.dbPath);
+    const db = openOpencodeDbOrThrow(this.dbPath);
     const chunks: MemoryChunk[] = [];
 
     try {
@@ -183,11 +183,11 @@ export class OpenCodeSource implements MemorySource {
       const parts = db.prepare(`
         SELECT p.data, m.data as msg_data
         FROM part p
-        JOIN message m ON p.message_id = m.id
+        JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
         WHERE p.session_id = ?
         AND (p.data LIKE '%"type":"text"%' OR p.data LIKE '%"type":"reasoning"%')
         ORDER BY p.time_created ASC
-      `).all(sessionId) as Array<{ data: string; msg_data: string }>;
+      `).all(sessionId, sessionId) as Array<{ data: string; msg_data: string }>;
 
       const userTexts: string[] = [];
       const assistantTexts: string[] = [];

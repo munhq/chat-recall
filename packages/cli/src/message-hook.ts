@@ -5,8 +5,10 @@
  *   message-hook.js --wait    with asyncRewake, on SessionStart, UserPromptSubmit, Stop
  *
  * The other AI tools run it as `message-hook.js --tool <id>` (Antigravity adds
- * `--event <name>`, because its payload names no event). The waiter is
- * Claude Code's alone: no other tool wakes an idle session from a hook.
+ * `--event <name>`, because its payload names no event). The opencode plugin
+ * and the pi extension also run the waiter: it prints the messages on stdout
+ * and exits 0, and the plugin starts a turn with them. The other tools have no
+ * way to wake an idle session.
  *
  * message-hook-core.ts says what each run does. It is its own bundle and
  * imports only what one run needs, because it starts on every turn.
@@ -203,7 +205,10 @@ function releaseWaiter(sessionId: string): void {
   } catch { /* gone */ }
 }
 
-async function wait(payload: HookPayload, target: Target): Promise<number> {
+/** Tools whose plugin runs the waiter and starts a turn with what it prints. */
+const PLUGIN_WAITERS: ReadonlySet<HookTool> = new Set(['opencode', 'pi']);
+
+async function wait(payload: HookPayload, target: Target, tool: HookTool = 'claude'): Promise<number> {
   const sessionId = sessionIdOf(payload);
   if (!sessionId) { debug('waiter: no session id'); return 0; }
   if (typeof payload.agent_id === 'string' && payload.agent_id) { debug('waiter: not inside a subagent'); return 0; }
@@ -238,10 +243,16 @@ async function wait(payload: HookPayload, target: Target): Promise<number> {
       if (r.body.ended) { debug('waiter: the session ended'); return 0; }
       const messages = r.body.messages ?? [];
       if (!messages.length) continue;
-      await writeOut(process.stderr, renderWake(sessionId, messages, Date.now(), new Map(Object.entries(r.body.labels ?? {}))) + '\n');
+      const text = renderWake(sessionId, messages, Date.now(), new Map(Object.entries(r.body.labels ?? {}))) + '\n';
+      if (tool === 'claude') {
+        await writeOut(process.stderr, text);
+        await ack(target, sessionId, messages);
+        // Exit code 2 is what makes Claude Code wake the session with stderr.
+        return 2;
+      }
+      await writeOut(process.stdout, text);
       await ack(target, sessionId, messages);
-      // Exit code 2 is what makes Claude Code wake the session with stderr.
-      return 2;
+      return 0;
     }
   } finally {
     releaseWaiter(sessionId);
@@ -264,7 +275,9 @@ async function main(): Promise<number> {
   if (!payload) { debug(`${toolArg}: an event this hook does not handle`); return 0; }
   const target = recallTarget();
   if (!target) { debug('no login: run `chat-recall login`'); return 0; }
-  if (process.argv.includes('--wait')) return toolArg === 'claude' ? wait(payload, target) : 0;
+  if (process.argv.includes('--wait')) {
+    return toolArg === 'claude' || PLUGIN_WAITERS.has(toolArg) ? wait(payload, target, toolArg) : 0;
+  }
   await turn(payload, target, toolArg);
   return 0;
 }

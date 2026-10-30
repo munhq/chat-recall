@@ -11,7 +11,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import { openSqliteReadonly, openSqliteReadonlyOrThrow } from '../sqlite-reader.js';
+import { openOpencodeDb, openOpencodeDbOrThrow } from './opencode-v2.js';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -336,9 +336,9 @@ export class OpencodeBackend implements ToolBackend {
 
       const parts = db.prepare(`
         SELECT p.id, p.message_id, p.time_created, p.data, m.data AS msg_data
-        FROM part p JOIN message m ON m.id = p.message_id
+        FROM part p JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON m.id = p.message_id
         WHERE p.session_id = ? ORDER BY p.time_created ASC
-      `).all(ocId) as Array<{
+      `).all(ocId, ocId) as Array<{
         id: string; message_id: string; time_created: number; data: string; msg_data: string;
       }>;
 
@@ -543,16 +543,16 @@ export class OpencodeBackend implements ToolBackend {
     const dbPath = this.dbPath();
     if (!existsSync(dbPath)) return null;
     const realId = this.toRawId(id);
-    const db = openSqliteReadonlyOrThrow(dbPath);
+    const db = openOpencodeDbOrThrow(dbPath);
     try {
       const session = db.prepare(`SELECT * FROM session WHERE id = ?`).get(realId);
       if (!session) return null;
       const rows = db.prepare(`
         SELECT m.id AS message_id, m.data AS message_data, p.id AS part_id, p.data AS part_data, p.time_created
-        FROM part p JOIN message m ON p.message_id = m.id
+        FROM part p JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
         WHERE p.session_id = ?
         ORDER BY p.time_created ASC, p.id ASC
-      `).all(realId);
+      `).all(realId, realId);
       const lines: string[] = [JSON.stringify({ kind: 'session', row: session })];
       for (const r of rows) lines.push(JSON.stringify({ kind: 'part', row: r }));
       const mtime = (session as any).time_updated || (session as any).time_created || Date.now();
@@ -570,5 +570,5 @@ export const opencodeBackend = new OpencodeBackend();
 // ── Local helpers ────────────────────────────────────────────────────
 
 function openReadonly(path: string): DatabaseSync | null {
-  return openSqliteReadonly(path);
+  return openOpencodeDb(path);
 }

@@ -21,9 +21,13 @@ user.
 
 Codex, Antigravity, Cursor, opencode and pi sessions get the same hook. They
 report at start and at each prompt, and the hook adds waiting messages to the
-next prompt. Cursor adds them when the agent stops, as a follow-up prompt. These
-tools have no waiter: an idle session reads its messages when its user types
-next. Their ids carry the tool's prefix, for example `agy_…` or `opencode_ses_…`.
+next prompt. Cursor adds them when the agent stops, as a follow-up prompt.
+OpenCode and pi also wake an idle session: their plugin starts a turn with the
+message. In Codex and Antigravity, an idle session reads its messages when its
+user types next. Their ids carry the tool's prefix, for example `agy_…` or `opencode_ses_…`.
+
+To find a running session, call `recall_session_status`. It lists the live sessions of
+every AI tool. `recall_recent` lists synced transcripts, which can lag behind a live session.
 
 A session reaches only the sessions of the same person. A teammate's sessions
 are not addressable.

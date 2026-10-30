@@ -2,6 +2,21 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.24] — 2026-10-30
+
+### Fixed
+- **OpenCode 2.x sessions sync again.** OpenCode 2.x writes sessions to
+  `session_v2` and their turns to `session_message`, and chat-recall read only the
+  1.x tables, so no session after the upgrade reached the server: on one machine
+  127 of 411 sessions. Every reader now sees the 2.x store through views with the
+  1.x names; a session in both stores is read once.
+- **An idle OpenCode or pi session acts on a message.** Before, a message waited
+  until the user typed. The plugin and the extension now wait for messages when
+  a run ends, and start a turn with them.
+- `recall_recent` and the sessions skill point to `recall_session_status` for a
+  running session: an agent looked for a live OpenCode session in the synced
+  list, where it was missing.
+
 ## [0.7.23] — 2026-10-30
 
 ### Fixed

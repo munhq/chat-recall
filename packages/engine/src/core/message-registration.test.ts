@@ -68,3 +68,39 @@ describe('the wrapper and the plugin files', () => {
     }
   });
 });
+
+describe('the opencode 2.x plugin wakes an idle session', () => {
+  test('a message that arrives after a run ends becomes the next prompt', async () => {
+    const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'cr-oc-waiter-'));
+    const hook = join(dir, 'hook.sh');
+    // The turn hook prints nothing; the waiter prints the message and exits.
+    writeFileSync(hook, '#!/bin/sh\ncat >/dev/null\nif [ "$1" = "--wait" ]; then echo "message from the manager"; fi\n');
+    chmodSync(hook, 0o755);
+    const mod = await import(`data:text/javascript,${encodeURIComponent(opencodeMessagesSource(hook))}`);
+
+    let promptHook: ((e: any) => Promise<void>) | undefined;
+    const prompts: Array<{ sessionID: string; text: string }> = [];
+    let push: ((v: any) => void) | undefined;
+    const events = (async function* () {
+      yield await new Promise((r) => { push = r; });
+    })();
+    await mod.default.setup({
+      location: { directory: '/home/user/code/example' },
+      session: {
+        hook: async (name: string, fn: (e: any) => Promise<void>) => { if (name === 'prompt') promptHook = fn; },
+        get: async () => ({ id: 'ses_1' }),
+        prompt: async (p: { sessionID: string; text: string }) => { prompts.push(p); },
+      },
+      event: { subscribe: () => events },
+    });
+
+    await promptHook!({ sessionID: 'ses_1', prompt: { text: 'start' } });
+    await new Promise((r) => setTimeout(r, 50));
+    push!({ type: 'session.execution.succeeded', data: { sessionID: 'ses_1' } });
+    for (let i = 0; i < 50 && prompts.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(prompts).toEqual([{ sessionID: 'ses_1', text: 'message from the manager' }]);
+  });
+});

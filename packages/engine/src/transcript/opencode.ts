@@ -2,7 +2,7 @@
  * OpenCode transcript parser — SQLite-backed sessions + child sessions.
  * Ported verbatim from services/parser.ts.
  */
-import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
+import { openOpencodeDbOrThrow } from '../core/backends/opencode-v2.js';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
 
@@ -25,7 +25,7 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
   if (!existsSync(dbPath)) return [];
 
   const realParent = parentSessionId.replace('opencode_', '');
-  const db = openSqliteReadonlyOrThrow(dbPath);
+  const db = openOpencodeDbOrThrow(dbPath);
   try {
     const children = db.prepare(`
       SELECT id, title, time_created
@@ -79,17 +79,17 @@ export async function parseOpenCodeTranscript(sessionId: string): Promise<Messag
   if (!existsSync(dbPath)) return [];
 
   const realId = sessionId.replace('opencode_', '');
-  const db = openSqliteReadonlyOrThrow(dbPath);
+  const db = openOpencodeDbOrThrow(dbPath);
   const messages: Message[] = [];
 
   try {
     const parts = db.prepare(`
       SELECT p.data, p.time_created, m.data as msg_data
       FROM part p
-      JOIN message m ON p.message_id = m.id
+      JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
       WHERE p.session_id = ?
       ORDER BY p.time_created ASC
-    `).all(realId) as Array<{ data: string; time_created: number; msg_data: string }>;
+    `).all(realId, realId) as Array<{ data: string; time_created: number; msg_data: string }>;
 
     let lineNum = 0;
     for (const part of parts) {

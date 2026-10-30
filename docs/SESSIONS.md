@@ -54,12 +54,12 @@ Secrets in the body are redacted before the message is sent.
 | Claude Code | Within about a second, also when the session is idle. A background hook waits for messages and wakes the session. |
 | Codex | At the next prompt. Approve the hook once with `/hooks` in Codex. |
 | Antigravity | At the next prompt. |
-| OpenCode | At the next prompt. |
-| pi | At the next prompt. |
+| OpenCode | Within a few seconds, also when the session is idle. The plugin starts a turn with the message. |
+| pi | Within a few seconds, also when the session is idle. The extension starts a turn with the message. |
 | Cursor | When the agent stops, as a follow-up prompt. |
 
-Only Claude Code wakes an idle session. In the other tools, an idle session
-reads its messages when its user types next. A session can also wait for a
+Claude Code, OpenCode and pi wake an idle session. In Codex, Antigravity and Cursor, an
+idle session reads its messages when its user types next. A session can also wait for a
 message with `recall_inbox` and `wait_secs`, up to 600 seconds.
 
 ## See what each session does

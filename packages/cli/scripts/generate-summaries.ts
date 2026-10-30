@@ -7,6 +7,7 @@
 import { config } from 'dotenv';
 import { existsSync, readFileSync } from 'fs';
 import Database from 'better-sqlite3';
+import { openOpencodeDbOrThrow } from '@chat-recall/engine/core/backends/opencode-v2.js';
 import { opencodeBackend } from '@chat-recall/engine/core/backends/index.js';
 import { getAllSessions, parseSessionFile } from '@chat-recall/engine/parsers/session.js';
 import type { SessionContent } from '@chat-recall/engine/parsers/session.js';
@@ -273,17 +274,17 @@ function buildNonClaudeSessionContent(
     const sessionDbId = opencodeBackend.toRawId(itemId);
     const dbPath = filePath && existsSync(filePath) ? filePath : opencodeBackend.dbPath();
     if (!existsSync(dbPath)) return null;
-    const db = new Database(dbPath, { readonly: true });
+    const db = openOpencodeDbOrThrow(dbPath);
     try {
       const parts = db
         .prepare(
           `SELECT p.data, m.data AS msg_data FROM part p
-             JOIN message m ON p.message_id = m.id
+             JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
             WHERE p.session_id = ?
               AND (p.data LIKE '%"type":"text"%' OR p.data LIKE '%"type":"tool"%')
             ORDER BY p.time_created ASC`
         )
-        .all(sessionDbId) as Array<{ data: string; msg_data: string }>;
+        .all(sessionDbId, sessionDbId) as Array<{ data: string; msg_data: string }>;
       const c = empty();
       for (const row of parts) {
         let pd: any, md: any;
