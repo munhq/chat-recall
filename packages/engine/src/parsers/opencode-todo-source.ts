@@ -7,7 +7,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
+import { openOpencodeDbOrThrow } from '../core/backends/opencode-v2.js';
 import { existsSync } from 'fs';
 
 import type {
@@ -39,7 +39,7 @@ export class OpenCodeTodoSource implements MemorySource {
     if (!existsSync(this.dbPath)) return;
     let db: DatabaseSync;
     try {
-      db = openSqliteReadonlyOrThrow(this.dbPath);
+      db = openOpencodeDbOrThrow(this.dbPath);
     } catch {
       return;
     }
@@ -106,7 +106,7 @@ export class OpenCodeTodoSource implements MemorySource {
     if (!existsSync(this.dbPath)) return [];
 
     const sessionId = (item.extra?.sessionId as string) || item.id.replace(`${OPENCODE.idPrefix}todo_`, '');
-    const db = openSqliteReadonlyOrThrow(this.dbPath);
+    const db = openOpencodeDbOrThrow(this.dbPath);
     const chunks: MemoryChunk[] = [];
 
     try {

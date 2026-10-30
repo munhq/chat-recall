@@ -1434,7 +1434,11 @@ line to pass as \`expand_line\` to get it whole.`,
 Shows your most recent conversations across all projects or filtered by project.
 Use this when the user says "continue our last conversation" or wants to see recent work.
 
-Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.`,
+Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.
+
+It lists synced transcripts, which reach the server some time after they change. To find a
+session that runs NOW, or to send one a message, use recall_session_status: it lists the live
+sessions of every AI tool, with their ids and names.`,
         inputSchema: {
           type: 'object',
           properties: {
