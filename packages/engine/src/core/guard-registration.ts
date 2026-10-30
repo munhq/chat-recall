@@ -255,8 +255,14 @@ export function unregisterGuard(tool: Exclude<GuardTool, 'opencode'>, config: un
  *
  * OpenCode loads a plugin as a module and calls its hooks in-process, so this
  * one shells out to the same script the other four run and reads its verdict
- * off stdout. `tool.execute.before` returns void, and a throw is what blocks —
- * so a warning is printed and the call proceeds.
+ * off stdout. A throw from the hook is what blocks the tool call, so a finding
+ * that does not block is printed and the call proceeds.
+ *
+ * opencode 2.x loads only a default export with an `id` and `setup(ctx)`, and
+ * refused this plugin's named export with "Plugin must export a default
+ * definition with an id and an effect or setup function" (opencode 2.2.0).
+ * 2.x runs `ctx.tool.hook("execute.before")` with `{ tool, input }`; 1.x calls
+ * `server` and its `tool.execute.before`.
  */
 export function opencodePluginSource(hookPath: string): string {
   return `// Written by \`chat-recall install-hooks\`. Re-running replaces it.
@@ -286,13 +292,23 @@ function ask(payload) {
   });
 }
 
-export const ChatRecallGuard = async () => ({
-  "tool.execute.before": async (input, output) => {
-    const verdict = await ask({ tool: input?.tool, args: output?.args });
-    if (!verdict || !verdict.message) return;
-    if (verdict.block) throw new Error(verdict.message);
-    console.error(verdict.message);
-  },
-});
+async function check(tool, args) {
+  const verdict = await ask({ tool, args });
+  if (!verdict || !verdict.message) return;
+  if (verdict.block) throw new Error(verdict.message);
+  console.error(verdict.message);
+}
+
+async function setup(ctx) {
+  await ctx.tool.hook("execute.before", (event) => check(event?.tool, event?.input));
+}
+
+async function server() {
+  return {
+    "tool.execute.before": (input, output) => check(input?.tool, output?.args),
+  };
+}
+
+export default { id: "${GUARD_ID}", server, setup };
 `;
 }

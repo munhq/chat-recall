@@ -8,7 +8,7 @@ import { agyBackend } from './backends/index.js';
 import { describe, test, expect } from 'vitest';
 import {
   registerGuard, unregisterGuard, guardCommand, guardTargets, GUARD_ID,
-  guardWrapperName, guardWrapperSource,
+  guardWrapperName, guardWrapperSource, opencodePluginSource,
 } from './guard-registration.js';
 
 const HOOK = '/home/user/.chat-recall/hooks/chat_recall_guard_codex.sh';
@@ -112,5 +112,32 @@ describe('the targets', () => {
       expect(t.configPath.startsWith(t.homeDir) || t.tool === 'opencode' || t.configPath === agyBackend.sharedHooksFile()).toBe(true);
       expect(t.label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('the OpenCode guard plugin', () => {
+  const load = async (hookPath: string) =>
+    (await import(`data:text/javascript,${encodeURIComponent(opencodePluginSource(hookPath))}`)).default;
+
+  test('is a default export with an id, setup for opencode 2.x and server for 1.x', async () => {
+    const def = await load('/w.sh');
+    expect(def.id).toBe(GUARD_ID);
+    expect(typeof def.setup).toBe('function');
+    expect(typeof def.server).toBe('function');
+  });
+
+  test('on opencode 2.x a blocking verdict throws from execute.before, which blocks the tool call', async () => {
+    const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'cr-guard-plugin-'));
+    const hook = join(dir, 'guard.sh');
+    writeFileSync(hook, '#!/bin/sh\ncat >/dev/null\necho \'{"block":true,"message":"the decision says no"}\'\n');
+    chmodSync(hook, 0o755);
+    const def = await load(hook);
+    let registered: ((e: unknown) => Promise<void>) | undefined;
+    await def.setup({ tool: { hook: async (name: string, fn: (e: unknown) => Promise<void>) => { if (name === 'execute.before') registered = fn; } } });
+    expect(registered).toBeDefined();
+    await expect(registered!({ tool: 'bash', input: { command: 'npm install left-pad' } })).rejects.toThrow('the decision says no');
   });
 });

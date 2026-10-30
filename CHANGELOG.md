@@ -2,6 +2,18 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.23] — 2026-10-30
+
+### Fixed
+- **The decision guard runs in opencode 2.x.** opencode 2.x refused the guard
+  plugin with "Plugin must export a default definition with an id and an effect
+  or setup function", so no tool call was checked. The plugin is a default
+  export with `setup` (2.x) and `server` (1.x).
+- 0.7.22 did not reach npm: its release run stopped at a test that imported the
+  private `@munhq/mcp-kit`, which the public CI cannot install. That test now
+  runs its kit checks only where the kit is installed. 0.7.23 carries every
+  change of 0.7.22.
+
 ## [0.7.22] — 2026-10-30
 
 ### Added
