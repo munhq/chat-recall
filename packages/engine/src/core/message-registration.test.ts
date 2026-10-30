@@ -104,3 +104,52 @@ describe('the opencode 2.x plugin wakes an idle session', () => {
     expect(prompts).toEqual([{ sessionID: 'ses_1', text: 'message from the manager' }]);
   });
 });
+
+describe('the opencode 2.x plugin after a reload', () => {
+  test('a session that was open before the plugin loaded gets a waiter when its run ends', async () => {
+    const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'cr-oc-reload-'));
+    const hook = join(dir, 'hook.sh');
+    writeFileSync(hook, '#!/bin/sh\ncat >/dev/null\nif [ "$1" = "--wait" ]; then echo "message after the reload"; fi\n');
+    chmodSync(hook, 0o755);
+    const mod = await import(`data:text/javascript,${encodeURIComponent(opencodeMessagesSource(hook))}#reload`);
+    const prompts: Array<{ sessionID: string; text: string }> = [];
+    let push: ((v: any) => void) | undefined;
+    const events = (async function* () { yield await new Promise((r) => { push = r; }); })();
+    await mod.default.setup({
+      location: { directory: '/home/user/code/example' },
+      session: { hook: async () => {}, get: async () => ({ id: 'ses_open' }), prompt: async (p: any) => { prompts.push(p); } },
+      event: { subscribe: () => events },
+    });
+    // No prompt reaches this plugin instance: the session started before it loaded.
+    push!({ type: 'session.execution.succeeded', data: { sessionID: 'ses_open' } });
+    for (let i = 0; i < 50 && prompts.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(prompts).toEqual([{ sessionID: 'ses_open', text: 'message after the reload' }]);
+  });
+});
+
+describe('the opencode plugin keeps the session id out of the prompt', () => {
+  test('the context hook adds the intro to the system context, not for a subagent', async () => {
+    const mod = await import(`data:text/javascript,${encodeURIComponent(opencodeMessagesSource('/w.sh'))}#intro`);
+    let contextHook: ((e: any) => Promise<void>) | undefined;
+    const events = (async function* () { /* none */ })();
+    await mod.default.setup({
+      location: { directory: '/home/user/code/example' },
+      session: {
+        hook: async (name: string, fn: (e: any) => Promise<void>) => { if (name === 'context') contextHook = fn; },
+        get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, parentID: sessionID === 'ses_child' ? 'ses_main' : undefined }),
+        prompt: async () => {},
+      },
+      event: { subscribe: () => events },
+    });
+    const main = { sessionID: 'ses_main', system: [] as Array<{ type: string; text: string }> };
+    await contextHook!(main);
+    expect(main.system).toHaveLength(1);
+    expect(main.system[0].text).toContain('chat-recall session id: opencode_ses_main');
+    const child = { sessionID: 'ses_child', system: [] as unknown[] };
+    await contextHook!(child);
+    expect(child.system).toEqual([]);
+  });
+});
