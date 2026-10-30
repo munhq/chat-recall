@@ -19,6 +19,12 @@ hook holds a connection to the server. When a message arrives, it wakes the
 session within about a second, also a session that is idle and waits for its
 user.
 
+Codex, Antigravity, Cursor, opencode and pi sessions get the same hook. They
+report at start and at each prompt, and the hook adds waiting messages to the
+next prompt. Cursor adds them when the agent stops, as a follow-up prompt. These
+tools have no waiter: an idle session reads its messages when its user types
+next. Their ids carry the tool's prefix, for example `agy_…` or `opencode_ses_…`.
+
 A session reaches only the sessions of the same person. A teammate's sessions
 are not addressable.
 

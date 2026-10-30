@@ -240,6 +240,21 @@ After `--uninstall` the MCP server does not put them back.
 | `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | Each turn | Messages between sessions: tells the session its id, delivers what waits for it, reports its state |
 | `SessionStart`, `UserPromptSubmit`, `Stop` (background) | Until a message arrives | Waits for a message from another session and wakes this one, also when it is idle |
 
+The other AI tools get the message hook too, so their sessions can send and
+receive messages. The installer writes it only for a tool that is installed:
+
+| Tool | Where | When a message arrives in the session |
+|---|---|---|
+| Codex | `~/.codex/hooks.json` | At the next prompt. Approve the hook once with `/hooks` in Codex. |
+| Antigravity | `~/.gemini/config/hooks.json` | At the next prompt |
+| Cursor | `~/.cursor/hooks.json` | When the agent stops, as a follow-up prompt |
+| opencode | `~/.config/opencode/plugins/chat-recall-messages.js` | At the next prompt |
+| pi | `~/.pi/agent/extensions/chat-recall-messages.js` | At the next prompt |
+
+Only Claude Code wakes an idle session. In the other tools, an idle session
+reads its messages when its user types next. `chat-recall doctor` shows the
+hook of each tool.
+
 ## Sessions that work together
 
 One session can start others and direct them. In Claude Code, ask for it in

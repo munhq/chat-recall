@@ -11,7 +11,7 @@
  * owns the reading and writing and these stay testable without a filesystem.
  *
  *   codex     ~/.codex/hooks.json                   PreToolUse, Claude's shape
- *   agy       ~/.gemini/antigravity-cli/hooks.json  PreToolUse, keyed by a name
+ *   agy       ~/.gemini/config/hooks.json           PreToolUse, keyed by a name
  *   cursor    ~/.cursor/hooks.json                  beforeShellExecution + afterFileEdit
  *   opencode  ~/.config/opencode/plugins/*.js       a plugin module, loaded on startup
  *
@@ -54,6 +54,16 @@ export interface GuardTarget {
 }
 
 /** OpenCode's config directory, XDG-aware. */
+/**
+ * Where earlier versions registered the Antigravity guard. Antigravity CLI
+ * never read it: a probe hook there did not run, and the same probe in
+ * `~/.gemini/config/hooks.json` ran at SessionStart, PreInvocation and Stop
+ * (agy 1.4.11, 2026-10-30). The installer removes our entry from it.
+ */
+export function legacyAgyHooksFile(): string {
+  return join(agyBackend.homeDir(), 'hooks.json');
+}
+
 export function opencodeConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
   const base = xdg && xdg.trim() ? xdg : join(homedir(), '.config');
@@ -83,7 +93,7 @@ export function guardTargets(): GuardTarget[] {
     {
       tool: 'agy',
       label: 'Antigravity',
-      configPath: join(agyBackend.homeDir(), 'hooks.json'),
+      configPath: agyBackend.sharedHooksFile(),
       homeDir: agyBackend.homeDir(),
     },
     {

@@ -10,6 +10,18 @@ import { isMessageHookEntry, isMessageWaiterEntry, isBoardHookEntry } from './bo
 
 const here = dirname(fileURLToPath(import.meta.url));
 const saved = { home: process.env.CHAT_RECALL_CLAUDE_HOME, data: process.env.CHAT_RECALL_DATA_DIR };
+// The installer also writes into the folders of the other AI tools. With the
+// real ones, a run of this file wrote hook entries that pointed at a deleted
+// temp folder into ~/.codex, ~/.gemini/config and ~/.cursor.
+const TOOL_HOMES: Record<string, string> = {
+  CHAT_RECALL_CODEX_HOME: 'codex',
+  CHAT_RECALL_AGY_HOME: 'gemini/antigravity-cli',
+  CHAT_RECALL_GEMINI_HOME: 'gemini',
+  CHAT_RECALL_CURSOR_HOME: 'cursor',
+  XDG_CONFIG_HOME: 'config',
+  PI_CODING_AGENT_DIR: 'pi/agent',
+};
+const savedTools = Object.fromEntries(Object.keys(TOOL_HOMES).map((k) => [k, process.env[k]]));
 let root: string;
 let profile: string;
 let settingsFile: string;
@@ -26,12 +38,17 @@ beforeEach(() => {
   settingsFile = join(profile, 'settings.json');
   process.env.CHAT_RECALL_CLAUDE_HOME = profile;
   process.env.CHAT_RECALL_DATA_DIR = join(root, 'data');
+  for (const [name, dir] of Object.entries(TOOL_HOMES)) process.env[name] = join(root, 'tools', dir);
 });
 afterEach(() => {
   process.env.CHAT_RECALL_CLAUDE_HOME = saved.home;
   process.env.CHAT_RECALL_DATA_DIR = saved.data;
   if (saved.home === undefined) delete process.env.CHAT_RECALL_CLAUDE_HOME;
   if (saved.data === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
+  for (const [name, value] of Object.entries(savedTools)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -193,5 +210,41 @@ describe('ensureHooks — the repair the MCP server runs at start', () => {
     writeFileSync(settingsFile, '{}');
     await ensureHooks(here);
     expect(commands(read(settingsFile), 'PreToolUse').some((c) => c.includes('chat_recall_guard_hook.sh'))).toBe(false);
+  });
+});
+
+describe('the message hook in the other AI tools', () => {
+  const tools = () => join(root, 'tools');
+
+  test('a tool whose folder is absent gets nothing', async () => {
+    const r = await installHooks(here);
+    expect(r.messageTargets).toEqual([]);
+    expect(existsSync(join(tools(), 'codex', 'hooks.json'))).toBe(false);
+  });
+
+  test('each installed tool gets the hook, and uninstall removes only ours', async () => {
+    for (const d of ['codex', 'gemini/antigravity-cli', 'cursor', 'config/opencode', 'pi/agent']) mkdirSync(join(tools(), d), { recursive: true });
+    const agyFile = join(tools(), 'gemini', 'config', 'hooks.json');
+    mkdirSync(dirname(agyFile), { recursive: true });
+    writeFileSync(agyFile, JSON.stringify({ other: { PreInvocation: [{ command: '/opt/other/state.sh' }] } }));
+
+    const r = await installHooks(here);
+    if (process.platform === 'win32') { expect(r.messageTargets).toEqual([]); return; }
+    expect(r.messageTargets.map((t) => t.label).sort()).toEqual(['Antigravity', 'Codex', 'Cursor', 'OpenCode', 'pi']);
+
+    const agy = read(agyFile);
+    expect(agy.other).toEqual({ PreInvocation: [{ command: '/opt/other/state.sh' }] });
+    expect(agy['chat-recall-messages'].PreInvocation[0].command).toMatch(/chat_recall_messages_agy\.sh --event PreInvocation$/);
+    expect(read(join(tools(), 'codex', 'hooks.json')).hooks.UserPromptSubmit[0].hooks[0].command).toMatch(/chat_recall_messages_codex\.sh$/);
+    expect(read(join(tools(), 'cursor', 'hooks.json')).hooks.stop[0].command).toMatch(/chat_recall_messages_cursor\.sh$/);
+    expect(existsSync(join(tools(), 'config', 'opencode', 'plugins', 'chat-recall-messages.js'))).toBe(true);
+    expect(existsSync(join(tools(), 'pi', 'agent', 'extensions', 'chat-recall-messages.js'))).toBe(true);
+    const wrapper = readFileSync(join(root, 'data', 'hooks', 'chat_recall_messages_cursor.sh'), 'utf-8');
+    expect(wrapper).toContain('--tool cursor');
+
+    const u = await uninstallHooks();
+    expect(u.messagesRemoved.map((t) => t.label).sort()).toEqual(['Antigravity', 'Codex', 'Cursor', 'OpenCode', 'pi']);
+    expect(read(agyFile)).toEqual({ other: { PreInvocation: [{ command: '/opt/other/state.sh' }] } });
+    expect(existsSync(join(tools(), 'pi', 'agent', 'extensions', 'chat-recall-messages.js'))).toBe(false);
   });
 });
