@@ -306,7 +306,7 @@ skips any tool that is not on the machine (`--no-guard` to skip all of them):
 |---|---|---|
 | Claude Code | `~/.claude/settings.json`, every profile | `PreToolUse` |
 | Codex | `~/.codex/hooks.json` | `PreToolUse` |
-| Antigravity | `~/.gemini/antigravity-cli/hooks.json` | `PreToolUse` — the one tool with a real `ask` verdict, so it can prompt |
+| Antigravity | `~/.gemini/config/hooks.json` | `PreToolUse` — the one tool with a real `ask` verdict, so it can prompt |
 | Cursor | `~/.cursor/hooks.json` | `beforeShellExecution` + `afterFileEdit` |
 | OpenCode | `~/.config/opencode/plugins/chat-recall-guard.js` | `tool.execute.before` |
 
