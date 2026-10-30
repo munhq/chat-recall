@@ -118,3 +118,14 @@ describe('emptyOutput', () => {
     expect(emptyOutput('agy', 'UserPromptSubmit')).toBe('');
   });
 });
+
+describe('opencode prompts carry only messages', () => {
+  test('the first prompt of an opencode session gets the messages and no intro', () => {
+    const payload = normalizePayload('opencode', { session_id: 'ses_abc', hook_event_name: 'UserPromptSubmit' })!;
+    const plan = planRun(payload, EMPTY_STATE, 'opencode')!;
+    const out = renderRun(plan, [msg], EMPTY_STATE, NOW, new Map(), 'opencode').stdout;
+    expect(out).toContain('Run the tests.');
+    expect(out).not.toContain('chat-recall session id');
+    expect(renderRun(plan, [], EMPTY_STATE, NOW, new Map(), 'opencode').stdout).toBe('');
+  });
+});

@@ -22,6 +22,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { codexBackend, agyBackend, cursorBackend } from './backends/index.js';
 import { opencodeConfigDir, opencodePluginDir } from './guard-registration.js';
+import { selfIntroduction } from './session-messages.js';
 
 export type MessageTool = 'codex' | 'agy' | 'cursor' | 'opencode' | 'pi';
 
@@ -291,8 +292,12 @@ function stopWaiter(sessionId) {
  * with an id and an effect or setup function" (opencode 2.2.0, 2026-10-30).
  * 1.x calls `server` of the same object.
  *
- * 2.x: the `prompt` hook reports the session at its first prompt and adds what
- * the hook prints to the prompt text; the end of a run reports the session
+ * The session id goes into the system context of each model call, so the
+ * agent knows it and the user's prompts stay as typed: appended to the
+ * prompt, it showed in the user's own message, and again after each reload.
+ *
+ * 2.x: the `prompt` hook reports the session at its first prompt and adds the
+ * waiting messages to the prompt text; the end of a run reports the session
  * idle and starts a waiter, whose message becomes the next prompt through
  * `ctx.session.prompt`, so an idle session acts on it without its user. 1.x: a session is reported when it is created, and the text goes into
  * the next prompt as a synthetic part. A child session (a subagent) is left
@@ -305,10 +310,11 @@ export function opencodeMessagesSource(wrapperPath: string): string {
 // other sessions sent it to the next prompt.
 ${runnerSource(wrapperPath)}
 const RUN_END = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.idle"]);
+const INTRO = ${JSON.stringify(selfIntroduction('\u0000SESSION\u0000'))};
+const intro = (id) => INTRO.replace("\u0000SESSION\u0000", "opencode_" + id);
 
 async function setup(ctx) {
   const dir = ctx?.location?.directory;
-  const started = new Set();
   const children = new Set();
   const isChild = async (id) => {
     if (children.has(id)) return true;
@@ -322,28 +328,31 @@ async function setup(ctx) {
     const id = event?.sessionID;
     if (!id || !event.prompt || (await isChild(id))) return;
     stopWaiter("opencode_" + id);
-    const parts = [];
-    if (!started.has(id)) {
-      started.add(id);
-      parts.push(await runHook("opencode_" + id, "SessionStart", dir));
-    }
-    parts.push(await runHook("opencode_" + id, "UserPromptSubmit", dir));
-    const text = parts.filter(Boolean).join("\\n\\n");
+    // The first prompt registers the session; the hook adds only waiting messages.
+    const text = await runHook("opencode_" + id, "UserPromptSubmit", dir);
     if (text) event.prompt.text = [event.prompt.text, text].filter(Boolean).join("\\n\\n");
+  });
+  // The session id goes into the system context of each model call: the agent
+  // always knows it, the user does not see it, and no prompt repeats it.
+  await ctx.session.hook("context", async (event) => {
+    const id = event?.sessionID;
+    if (!id || !Array.isArray(event.system) || (await isChild(id))) return;
+    event.system.push({ type: "text", text: intro(id) });
   });
   const controller = new AbortController();
   (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
         const id = ev?.data?.sessionID ?? ev?.properties?.sessionID;
-        if (!id || !started.has(id)) continue;
+        // A session that was open before this plugin loaded (a reload, an
+        // update) is not in started, and still gets its waiter.
+        if (!id || (await isChild(id))) continue;
         if (RUN_END.has(ev.type)) {
           await runHook("opencode_" + id, "Stop", dir);
           // An idle session acts on a message from another session by itself:
           // the text becomes its next prompt.
           startWaiter("opencode_" + id, dir, (text) => ctx.session.prompt({ sessionID: id, text }));
         } else if (ev.type === "session.deleted") {
-          started.delete(id);
           stopWaiter("opencode_" + id);
           await runHook("opencode_" + id, "SessionEnd", dir);
         }
@@ -380,6 +389,11 @@ async function server({ directory }) {
         pending.delete(info.id);
         await runHook("opencode_" + info.id, "SessionEnd", directory);
       }
+    },
+    "experimental.chat.system.transform": async (input, output) => {
+      const id = input?.sessionID;
+      if (!id || children.has(id) || !Array.isArray(output?.system)) return;
+      output.system.push(intro(id));
     },
     "chat.message": async (input, output) => {
       const id = input?.sessionID;

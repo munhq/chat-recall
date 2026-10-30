@@ -2,6 +2,18 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.25] — 2026-10-30
+
+### Fixed
+- **An OpenCode session that was open before the plugin loaded gets messages
+  too.** The plugin started a waiter only for a session it had seen start, and
+  OpenCode reloads a plugin when its file changes, as an update does. A session
+  that was running then never woke for a message.
+- **OpenCode prompts stay as typed.** The plugin appended the session id to the
+  first prompt of a session, so it showed in the user's own message, and after a
+  plugin reload it was appended again. The id now goes into the system context of
+  each model call, where the agent reads it and the user does not see it.
+
 ## [0.7.24] — 2026-10-30
 
 ### Fixed

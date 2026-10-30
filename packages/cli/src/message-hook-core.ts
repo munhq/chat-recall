@@ -201,7 +201,10 @@ export function renderRun(
   // The id goes out at SessionStart, and at the first prompt of a session that
   // started before the hook was installed. A compacted session is told again,
   // because its context no longer holds the first introduction.
-  const introduce = plan.take && plan.event !== 'Stop' && (plan.event === 'SessionStart' || !state.introduced);
+  // The opencode plugin puts the session id into the system context of every
+  // model call, so its prompts carry only messages.
+  const introduce = tool !== 'opencode' && plan.take && plan.event !== 'Stop'
+    && (plan.event === 'SessionStart' || !state.introduced);
   if (introduce) {
     parts.push(selfIntroduction(plan.sessionId));
     next.introduced = true;

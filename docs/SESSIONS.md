@@ -17,8 +17,9 @@ To check, start a new session. Its context starts with a line like this:
 chat-recall session id: 0b6c…
 ```
 
-That is the session's id. If the line is missing, run `chat-recall doctor`. It
-shows the hooks of each tool.
+That is the session's id. In OpenCode the line is in the system context, which
+you do not see; ask the agent for its chat-recall session id. If the agent does
+not know it, run `chat-recall doctor`. It shows the hooks of each tool.
 
 ## Start workers from a Claude Code session
 
