@@ -2,7 +2,15 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
-## [Unreleased]
+## [0.7.22] — 2026-10-30
+
+### Added
+- **Messages between sessions in Codex, Antigravity, Cursor, opencode and pi.**
+  The installer registers the message hook in each installed tool, so its
+  sessions report themselves and get waiting messages at the next prompt
+  (Cursor: as a follow-up when the agent stops). Before, a message to an
+  Antigravity session answered "No session matches". `chat-recall doctor` shows
+  the hook of each tool, and `install-hooks --uninstall` removes it.
 
 ### Changed
 - **better-auth 1.7 and the fleet auth kits.** The server runs better-auth 1.7
@@ -17,6 +25,10 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
   Existing passwords keep working.
 
 ### Fixed
+- **The decision guard runs in Antigravity.** It was registered in
+  `~/.gemini/antigravity-cli/hooks.json`, which Antigravity CLI does not read: a
+  probe hook there never ran, and the same probe in `~/.gemini/config/hooks.json`
+  ran at every event. The installer writes it there now and removes the old entry.
 - Connectors that connected before this release stay connected. At boot the
   server copies the 1.6 OAuth clients and their live refresh tokens into the 1.7
   tables, and `/api/auth/mcp/*` still answers on the 1.7 endpoints.

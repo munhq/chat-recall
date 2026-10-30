@@ -1695,6 +1695,29 @@ program
       note(false, 'Decision guard', `check failed: ${err}`);
     }
 
+    // Messages between sessions, per tool. A tool without the hook never shows
+    // up as a session, so a message sent to it answers "No session matches".
+    try {
+      const reg = await import('@chat-recall/engine/core/message-registration.js');
+      for (const target of reg.messageTargets()) {
+        if (!existsSync(target.homeDir)) continue;
+        const label = `Messages — ${target.label}`;
+        let registered = existsSync(target.configPath);
+        if (registered) {
+          try {
+            const text = readFileSync(target.configPath, 'utf-8');
+            registered = text.includes('chat_recall_messages_') || reg.isOurPluginSource(text);
+          } catch { registered = false; }
+        }
+        const detail = !registered ? 'not registered — run `chat-recall install-hooks`'
+          : target.tool === 'codex' ? `${target.configPath} — approve it in Codex with /hooks`
+          : target.configPath;
+        note(registered, label, detail);
+      }
+    } catch (err) {
+      note(false, 'Messages', `check failed: ${err}`);
+    }
+
     // Skills, per target tool. An agent with no skill file has 50 recall_*
     // tools and no idea when to reach for one, which reads as "recall never
     // works here" rather than as a missing install.
@@ -3266,7 +3289,8 @@ program
       const r = await uninstallHooks();
       for (const f of r.files) console.log(chalk.green(`✓ Removed chat-recall hooks from ${f}`));
       for (const g of r.guardRemoved) console.log(chalk.green(`✓ Removed the guard from ${g.label} (${g.configPath})`));
-      if (r.removed === 0 && r.guardRemoved.length === 0) console.log(chalk.dim('No chat-recall hooks were registered.'));
+      for (const m of r.messagesRemoved) console.log(chalk.green(`✓ Removed the message hook from ${m.label} (${m.configPath})`));
+      if (r.removed === 0 && r.guardRemoved.length === 0 && r.messagesRemoved.length === 0) console.log(chalk.dim('No chat-recall hooks were registered.'));
       console.log(chalk.dim('The MCP server will not put them back. Run `chat-recall install-hooks` to install them again.'));
       return;
     }
@@ -3286,6 +3310,10 @@ program
     for (const g of r.guardTargets) {
       console.log(chalk.green(`✓ Registered the guard for ${g.label}`));
       if (g.note) console.log(chalk.yellow(`  ! ${g.note}`));
+    }
+    for (const m of r.messageTargets) {
+      console.log(chalk.green(`✓ Registered the message hook for ${m.label} (${m.configPath})`));
+      if (m.note) console.log(chalk.yellow(`  ! ${m.note}`));
     }
     if (r.shellSkipped) {
       console.log(chalk.yellow('The five shell hooks are not installed on Windows: Claude Code runs hooks through cmd.exe, which cannot run them.'));

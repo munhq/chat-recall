@@ -75,6 +75,8 @@ export class AgyBackend implements ToolBackend {
   sharedAgentsDir(): string { return join(this.sharedRootDir(), 'agents'); }
   sharedExtensionsDir(): string { return join(this.sharedRootDir(), 'extensions'); }
   sharedSettingsFile(): string { return join(this.sharedRootDir(), 'settings.json'); }
+  /** The global hooks file the CLI reads. It does not read hooks from its own home directory. */
+  sharedHooksFile(): string { return join(this.sharedRootDir(), 'config', 'hooks.json'); }
   sharedProjectsJson(): string { return join(this.sharedRootDir(), 'projects.json'); }
 
   /** The DESKTOP app's brain, `~/.gemini/antigravity/brain`. The CLI's own is

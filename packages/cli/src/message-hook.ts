@@ -4,6 +4,10 @@
  *   message-hook.js           on SessionStart, UserPromptSubmit, Stop, SessionEnd
  *   message-hook.js --wait    with asyncRewake, on SessionStart, UserPromptSubmit, Stop
  *
+ * The other AI tools run it as `message-hook.js --tool <id>` (Antigravity adds
+ * `--event <name>`, because its payload names no event). The waiter is
+ * Claude Code's alone: no other tool wakes an idle session from a hook.
+ *
  * message-hook-core.ts says what each run does. It is its own bundle and
  * imports only what one run needs, because it starts on every turn.
  *
@@ -20,7 +24,8 @@ import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 import { fetchWithTimeout } from './http.js';
 import {
-  EMPTY_STATE, planRun, renderRun, renderWake, sessionIdOf, type HookPayload, type HookState,
+  EMPTY_STATE, emptyOutput, isHookTool, normalizePayload, planRun, renderRun, renderWake, sessionIdOf,
+  type HookPayload, type HookState, type HookTool,
 } from './message-hook-core.js';
 
 /** State files of sessions that never reported their end are removed after a week. */
@@ -101,11 +106,11 @@ function writeOut(stream: NodeJS.WriteStream, text: string): Promise<void> {
 
 // ── Turn hooks ──────────────────────────────────────────────────────────────
 
-async function turn(payload: HookPayload, target: Target): Promise<void> {
+async function turn(payload: HookPayload, target: Target, tool: HookTool): Promise<void> {
   setTimeout(() => process.exit(0), 6000).unref();
   const sessionId = sessionIdOf(payload);
   const state = sessionId ? readState(sessionId) : { ...EMPTY_STATE };
-  const plan = planRun(payload, state);
+  const plan = planRun(payload, state, tool);
   if (!plan) return debug('no session id, or an event this hook does not handle');
 
   // A session that a parent started (recall_session_spawn) carries its name,
@@ -134,11 +139,15 @@ async function turn(payload: HookPayload, target: Target): Promise<void> {
   }
   if (plan.event === 'SessionStart') pruneStates(now);
 
-  const result = renderRun(plan, messages, state, now, new Map(Object.entries(labels)));
+  const result = renderRun(plan, messages, state, now, new Map(Object.entries(labels)), tool);
   // Empty is the default profile; recall_session_spawn starts a child in the same one.
-  result.state.configDir = process.env.CLAUDE_CONFIG_DIR ?? '';
+  if (tool === 'claude') result.state.configDir = process.env.CLAUDE_CONFIG_DIR ?? '';
   writeState(plan.sessionId, result.state);
-  if (!result.stdout) return;
+  if (!result.stdout) {
+    const empty = emptyOutput(tool, plan.event);
+    if (empty) await writeOut(process.stdout, empty);
+    return;
+  }
   // Acknowledge only after the messages are written out. If this process is
   // stopped before the acknowledgement, the server offers them again when the
   // lease ends: a message can arrive twice, and it is never lost.
@@ -239,15 +248,24 @@ async function wait(payload: HookPayload, target: Target): Promise<number> {
   }
 }
 
+function argValue(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
 async function main(): Promise<number> {
   if (process.env.CHAT_RECALL_MESSAGE_HOOK === '0') return 0;
+  const toolArg = argValue('--tool') ?? 'claude';
+  if (!isHookTool(toolArg)) { debug(`unknown tool ${toolArg}`); return 0; }
   const raw = await readStdin();
-  let payload: HookPayload;
-  try { payload = JSON.parse(raw) as HookPayload; } catch { debug('stdin is not JSON'); return 0; }
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { debug('stdin is not JSON'); return 0; }
+  const payload = normalizePayload(toolArg, parsed, argValue('--event'));
+  if (!payload) { debug(`${toolArg}: an event this hook does not handle`); return 0; }
   const target = recallTarget();
   if (!target) { debug('no login: run `chat-recall login`'); return 0; }
-  if (process.argv.includes('--wait')) return wait(payload, target);
-  await turn(payload, target);
+  if (process.argv.includes('--wait')) return toolArg === 'claude' ? wait(payload, target) : 0;
+  await turn(payload, target, toolArg);
   return 0;
 }
 

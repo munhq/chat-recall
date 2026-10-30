@@ -4,6 +4,7 @@
  * Each merge writes one tool's own shape, so these assert the shape each
  * harness documents — a wrong key is written silently and the hook never runs.
  */
+import { agyBackend } from './backends/index.js';
 import { describe, test, expect } from 'vitest';
 import {
   registerGuard, unregisterGuard, guardCommand, guardTargets, GUARD_ID,
@@ -107,7 +108,8 @@ describe('the targets', () => {
     const targets = guardTargets();
     expect(targets.map((t) => t.tool).sort()).toEqual(['agy', 'codex', 'cursor', 'opencode']);
     for (const t of targets) {
-      expect(t.configPath.startsWith(t.homeDir) || t.tool === 'opencode').toBe(true);
+      // Antigravity CLI reads hooks only from the shared ~/.gemini/config, outside its own home.
+      expect(t.configPath.startsWith(t.homeDir) || t.tool === 'opencode' || t.configPath === agyBackend.sharedHooksFile()).toBe(true);
       expect(t.label.length).toBeGreaterThan(0);
     }
   });

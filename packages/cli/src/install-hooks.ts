@@ -199,6 +199,8 @@ export interface InstallReport {
   scriptsDir: string;
   selection: HookSelection;
   guardTargets: Array<{ label: string; configPath: string; note?: string }>;
+  /** The other AI tools that got the message hook. */
+  messageTargets: Array<{ label: string; configPath: string; note?: string }>;
 }
 
 /**
@@ -229,7 +231,9 @@ export async function installHooks(distDir: string, sel: HookSelection = ALL_HOO
     cliEntry: resolveCliEntry(distDir), messageHookEntry: resolveMessageHookEntry(distDir),
   });
 
-  const report: InstallReport = { written: [], skipped: [], migrated: 0, shellSkipped, scriptsDir, selection: sel, guardTargets: [] };
+  const report: InstallReport = {
+    written: [], skipped: [], migrated: 0, shellSkipped, scriptsDir, selection: sel, guardTargets: [], messageTargets: [],
+  };
   for (const settingsFile of claudeSettingsFiles()) {
     const config = readJson(settingsFile);
     if (!config) { report.skipped.push(settingsFile); continue; }
@@ -240,6 +244,10 @@ export async function installHooks(distDir: string, sel: HookSelection = ALL_HOO
   }
 
   if (sel.guard && scripts.guard) report.guardTargets = await addGuardToOtherTools(scriptsDir, scripts.guard);
+  // The other tools run the hook through a shell wrapper, as the guard does.
+  if (sel.messages && !shellSkipped) {
+    report.messageTargets = await addMessagesToOtherTools(scriptsDir, process.execPath, resolveMessageHookEntry(distDir));
+  }
 
   writeJsonAtomic(statePath(), { version: cliVersion(), selection: sel } satisfies InstallState);
   return report;
@@ -258,11 +266,16 @@ function migrateHooksJson(file: string): number {
   return removed;
 }
 
-export interface UninstallReport { removed: number; files: string[]; guardRemoved: Array<{ label: string; configPath: string }> }
+export interface UninstallReport {
+  removed: number;
+  files: string[];
+  guardRemoved: Array<{ label: string; configPath: string }>;
+  messagesRemoved: Array<{ label: string; configPath: string }>;
+}
 
 /** Remove every chat-recall hook, and record the choice so the MCP server does not put them back. */
 export async function uninstallHooks(): Promise<UninstallReport> {
-  const report: UninstallReport = { removed: 0, files: [], guardRemoved: [] };
+  const report: UninstallReport = { removed: 0, files: [], guardRemoved: [], messagesRemoved: [] };
   for (const settingsFile of claudeSettingsFiles()) {
     for (const file of [settingsFile, join(dirname(settingsFile), 'hooks.json')]) {
       if (!existsSync(file)) continue;
@@ -276,6 +289,7 @@ export async function uninstallHooks(): Promise<UninstallReport> {
     }
   }
   report.guardRemoved = await removeGuardFromOtherTools();
+  report.messagesRemoved = await removeMessagesFromOtherTools();
   writeJsonAtomic(statePath(), { version: cliVersion(), selection: ALL_HOOKS, uninstalled: true } satisfies InstallState);
   return report;
 }
@@ -316,6 +330,7 @@ export async function ensureHooks(distDir: string): Promise<InstallReport | null
 async function addGuardToOtherTools(scriptsDir: string, guardScript: string): Promise<InstallReport['guardTargets']> {
   const reg = await import('@chat-recall/engine/core/guard-registration.js');
   const out: InstallReport['guardTargets'] = [];
+  removeLegacyAgyGuard(reg);
   for (const target of reg.guardTargets()) {
     if (!existsSync(target.homeDir)) continue;
     const wrapper = join(scriptsDir, reg.guardWrapperName(target.tool));
@@ -336,6 +351,7 @@ async function addGuardToOtherTools(scriptsDir: string, guardScript: string): Pr
 async function removeGuardFromOtherTools(): Promise<UninstallReport['guardRemoved']> {
   const reg = await import('@chat-recall/engine/core/guard-registration.js');
   const out: UninstallReport['guardRemoved'] = [];
+  removeLegacyAgyGuard(reg);
   for (const target of reg.guardTargets()) {
     if (!existsSync(target.configPath)) continue;
     if (target.tool === 'opencode') {
@@ -344,6 +360,64 @@ async function removeGuardFromOtherTools(): Promise<UninstallReport['guardRemove
       unlinkSync(target.configPath);
     } else {
       const r = reg.unregisterGuard(target.tool, readJson(target.configPath) ?? {});
+      if (r.removed === 0) continue;
+      writeJsonAtomic(target.configPath, r.config);
+    }
+    out.push({ label: target.label, configPath: target.configPath });
+  }
+  return out;
+}
+
+/** Remove the guard entry that earlier versions wrote where Antigravity does not read it. */
+function removeLegacyAgyGuard(reg: typeof import('@chat-recall/engine/core/guard-registration.js')): void {
+  const file = reg.legacyAgyHooksFile();
+  if (!existsSync(file)) return;
+  const r = reg.unregisterGuard('agy', readJson(file) ?? {});
+  if (r.removed) writeJsonAtomic(file, r.config);
+}
+
+// ── The message hook in the AI tools that are not Claude Code ────────────────
+//
+// The same hook as in Claude Code, run as `message-hook.js --tool <id>`. A tool
+// whose home directory is absent is skipped.
+
+async function addMessagesToOtherTools(
+  scriptsDir: string, nodePath: string, hookEntry: string,
+): Promise<InstallReport['messageTargets']> {
+  const reg = await import('@chat-recall/engine/core/message-registration.js');
+  const out: InstallReport['messageTargets'] = [];
+  for (const target of reg.messageTargets()) {
+    if (!existsSync(target.homeDir)) continue;
+    const wrapper = join(scriptsDir, reg.messageWrapperName(target.tool));
+    writeFileSync(wrapper, reg.messageWrapperSource(target.tool, nodePath, hookEntry));
+    chmodSync(wrapper, 0o755);
+    mkdirSync(dirname(target.configPath), { recursive: true });
+    if (target.tool === 'opencode') {
+      writeFileSync(target.configPath, reg.opencodeMessagesSource(wrapper));
+    } else if (target.tool === 'pi') {
+      writeFileSync(target.configPath, reg.piMessagesSource(wrapper));
+    } else {
+      const config = readJson(target.configPath);
+      if (!config) continue;   // unparseable: not ours to rewrite
+      writeJsonAtomic(target.configPath, reg.registerMessages(target.tool, config, reg.messageCommand(wrapper)));
+    }
+    out.push({ label: target.label, configPath: target.configPath, note: target.note });
+  }
+  return out;
+}
+
+async function removeMessagesFromOtherTools(): Promise<UninstallReport['messagesRemoved']> {
+  const reg = await import('@chat-recall/engine/core/message-registration.js');
+  const out: UninstallReport['messagesRemoved'] = [];
+  for (const target of reg.messageTargets()) {
+    if (!existsSync(target.configPath)) continue;
+    if (target.tool === 'opencode' || target.tool === 'pi') {
+      if (!reg.isOurPluginSource(readFileSync(target.configPath, 'utf-8'))) continue;
+      unlinkSync(target.configPath);
+    } else {
+      const config = readJson(target.configPath);
+      if (!config) continue;
+      const r = reg.unregisterMessages(target.tool, config);
       if (r.removed === 0) continue;
       writeJsonAtomic(target.configPath, r.config);
     }
