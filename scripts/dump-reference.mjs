@@ -99,12 +99,13 @@ function parseHelp(text) {
     for (const l of lines.slice(i + 1)) {
       if (!l.trim()) { if (items.length) break; continue; }
       if (/^\S/.test(l)) break;
-      const m = l.match(/^\s{2}(\S.*?)(?:\s{2,}(.*))?$/);
-      if (!m) continue;
-      if (m[1] && /^\s{3,}/.test(l) && items.length && !m[2] && l.startsWith('    ')) {
-        items[items.length - 1].description += ` ${l.trim()}`;
+      // Commander wraps a long description onto lines indented past the term column.
+      if (/^\s{4,}\S/.test(l) && items.length) {
+        items[items.length - 1].description = `${items[items.length - 1].description} ${l.trim()}`.trim();
         continue;
       }
+      const m = l.match(/^\s{2}(\S.*?)(?:\s{2,}(.*))?$/);
+      if (!m) continue;
       items.push({ term: m[1].trim(), description: (m[2] ?? '').trim() });
     }
     return items;
