@@ -199,6 +199,11 @@ RUN node web-standards/bin/seo-audit.mjs --dist overlay/site --config site-src/s
 RUN node site-src/check-parity.mjs product
 RUN node site-src/check-links.mjs --dist overlay/site
 RUN cd site-src && CHROME=chromium-nosandbox CLIENT_DIR=/w/product/packages/server/client node render-cards.mjs --check
+# The MCP tool and CLI references of the docs come from the built server and
+# CLI of the build stage, so they name what this image ships.
+COPY --from=build /app/ /w/built/
+COPY scripts/dump-reference.mjs /w/built/scripts/
+RUN cd /w/built && node scripts/dump-reference.mjs /w/product/reference.json
 RUN cd site-src/docs-site && PRODUCT_DIR=/w/product npm run build && \
     cp -r build /w/overlay/site/docs && test -s /w/overlay/site/docs/index.html
 
