@@ -60,6 +60,9 @@ describe('installHooks', () => {
     expect(commands(cfg, 'SessionStart').some((c) => c.includes('message-hook'))).toBe(true);
     expect(cfg.hooks.Stop.some(isMessageWaiterEntry)).toBe(true);
     expect(cfg.hooks.Stop.find(isMessageWaiterEntry).hooks[0].asyncRewake).toBe(true);
+    // Claude Code kills an asyncRewake hook at its timeout (600 s by default),
+    // and nothing starts another one while the session idles.
+    expect(cfg.hooks.Stop.find(isMessageWaiterEntry).hooks[0].timeout).toBe(86_400);
     expect(cfg.hooks.PostToolUse).toBeUndefined();
     expect(cfg.hooks.UserPromptSubmit.some(isBoardHookEntry)).toBe(true);
     if (process.platform !== 'win32') {
@@ -185,6 +188,22 @@ describe('ensureHooks — the repair the MCP server runs at start', () => {
     expect(r?.written).toEqual([settingsFile]);
     expect(read(settingsFile).hooks.Stop.some(isMessageWaiterEntry)).toBe(true);
     expect(read(settingsFile).model).toBe('opus');
+  });
+
+  test('replaces a waiter from before it had a timeout, without a version change', async () => {
+    // That waiter was killed after 600 s, and an idle session got no message
+    // until its user typed. The profile can still report this version, so the
+    // entry itself has to be the test.
+    await installHooks(here);
+    const cfg = read(settingsFile);
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      for (const entry of cfg.hooks[event]) {
+        for (const hook of entry.hooks) if (hook.asyncRewake) delete hook.timeout;
+      }
+    }
+    writeFileSync(settingsFile, JSON.stringify(cfg));
+    expect(await ensureHooks(here)).not.toBeNull();
+    expect(read(settingsFile).hooks.Stop.find(isMessageWaiterEntry).hooks[0].timeout).toBe(86_400);
   });
 
   test('reaches a profile added after the install', async () => {

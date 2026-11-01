@@ -2,6 +2,21 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.26] — 2026-11-01
+
+### Fixed
+- **A message reaches a session that has been idle for more than ten minutes.**
+  Claude Code ends an `asyncRewake` hook at its `timeout`, and takes 600 seconds
+  when the entry sets none. Nothing starts another waiter while the session
+  idles, so a session idle for longer than that had none: the message waited
+  until its user typed, and then arrived with the prompt. The waiter entry now
+  sets a one-day timeout. The waiter still ends with the session, because it
+  watches the session's own process, and with the first message, which is the
+  exit that wakes the session.
+- A profile that already has the waiter is repaired when the MCP server starts,
+  even when the version it recorded has not changed: the repair tests the entry
+  for the timeout, not the installed version alone.
+
 ## [0.7.25] — 2026-10-30
 
 ### Fixed
