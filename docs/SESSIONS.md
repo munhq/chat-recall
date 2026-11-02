@@ -42,11 +42,44 @@ An assistant sends with `recall_message_send`. The `to` field takes:
 |---|---|
 | a session id, or its start | that session |
 | a name | the session with that name (`recall_session_register` sets it) |
+| an absolute folder | the one session running there |
 | `parent` | the session that started this one |
 | `children` | every running session that this one started |
 | `group` | the parent and every running child |
 
+Address a folder when you mean "whoever works there" and you do not know the
+id. The send fails rather than guesses:
+
+- no session in the folder: "No running session is in the folder …";
+- two or more sessions there: the error lists them, and you send to the id you
+  mean.
+
+An OpenCode window that is open in a folder and has no session yet answers for
+that folder too. A message to it becomes the window's first session and its
+first prompt.
+
+When you know the folder, pass it in `expect_cwd` as well. A recipient that
+reports another folder is then refused and nothing is stored, so a name that
+was reused does not take the message elsewhere.
+
 Secrets in the body are redacted before the message is sent.
+
+## Which process a session runs in
+
+`recall_session_status` names the process after the folder, so you can tell
+which row has a window before you send to it:
+
+| Kind | What it is |
+|---|---|
+| `tui` | an OpenCode window on this machine |
+| `serve` | the headless OpenCode service that a window starts, or a remote one |
+| `run` | `opencode run`, which has no window |
+| `claude` | a Claude Code session in a terminal |
+| `claude-bg` | a Claude Code child that `recall_session_spawn` started; open it with `claude attach` |
+
+`serve` and `run` lines end with "— no window": nobody is looking at them, so a
+message to one waits for the next turn. A window keeps its kind when the
+service it started reports the same session.
 
 ## When a message arrives
 

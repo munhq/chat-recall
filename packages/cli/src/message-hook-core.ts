@@ -20,7 +20,9 @@
  * each payload to Claude's shape, and renderRun writes the output each tool
  * reads. A tool adds text only at the events in DELIVERS.
  */
-import { formatDelivery, selfIntroduction, type WireMessage } from '@chat-recall/engine/core/session-messages.js';
+import {
+  formatDelivery, selfIntroduction, isSessionProcessKind, type SessionProcessKind, type WireMessage,
+} from '@chat-recall/engine/core/session-messages.js';
 
 export const TURN_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
 
@@ -124,6 +126,26 @@ export interface HookPayload {
   cwd?: unknown;
   agent_id?: unknown;
   stop_hook_active?: unknown;
+  /** The process kind, when the tool's plugin can see it (the opencode plugin). */
+  kind?: unknown;
+  /** The process id of the tool, for the local view of running processes. */
+  pid?: unknown;
+  /** Message ids the TUI plugin has delivered and wants acknowledged. */
+  ids?: unknown;
+}
+
+/**
+ * The process kind of this run. The plugin of a tool that knows it (opencode:
+ * `serve`, `run`, or the TUI plugin's `tui`) sends it with the payload; a
+ * Claude Code background session carries it in its environment; anything else
+ * is reported as it runs.
+ */
+export function processKindOf(
+  tool: HookTool, payload: HookPayload, env: NodeJS.ProcessEnv = process.env,
+): SessionProcessKind | undefined {
+  if (isSessionProcessKind(payload.kind)) return payload.kind;
+  if (isSessionProcessKind(env.CHAT_RECALL_SESSION_KIND)) return env.CHAT_RECALL_SESSION_KIND;
+  return tool === 'claude' ? 'claude' : undefined;
 }
 
 /** A Claude session id, or another tool's prefixed id. Also safe as a file name. */

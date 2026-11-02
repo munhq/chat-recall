@@ -26,7 +26,7 @@ import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 import { fetchWithTimeout } from './http.js';
 import {
-  EMPTY_STATE, emptyOutput, isHookTool, normalizePayload, planRun, renderRun, renderWake, sessionIdOf,
+  EMPTY_STATE, emptyOutput, isHookTool, normalizePayload, planRun, processKindOf, renderRun, renderWake, sessionIdOf,
   type HookPayload, type HookState, type HookTool,
 } from './message-hook-core.js';
 
@@ -127,7 +127,8 @@ async function turn(payload: HookPayload, target: Target, tool: HookTool): Promi
   let labels: Record<string, string> = {};
   try {
     const r = await post<{ messages?: WireMessage[]; labels?: Record<string, string> }>(target, '/api/live-sessions/event', {
-      sessionId: plan.sessionId, event: plan.event, cwd: plan.cwd, take: plan.take, ...link,
+      sessionId: plan.sessionId, event: plan.event, cwd: plan.cwd, take: plan.take,
+      kind: processKindOf(tool, payload), pid: processPid(payload), ...link,
     }, 4000);
     if (!r.body) return debug(`server answered HTTP ${r.status}`);
     messages = r.body.messages ?? [];
@@ -183,6 +184,23 @@ function ancestors(): number[] {
     } catch { /* the parent alone */ }
   }
   return out;
+}
+
+/**
+ * The process id the session's row carries: the tool's own, from the payload
+ * of a plugin that knows it, else the nearest ancestor that is an AI tool. The
+ * hook may run under a shell, so the parent alone is not it.
+ */
+function processPid(payload: HookPayload): number | undefined {
+  const given = payload.pid;
+  if (typeof given === 'number' && Number.isInteger(given) && given > 0) return given;
+  for (const pid of ancestors()) {
+    try {
+      const comm = readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
+      if (comm === 'opencode' || comm === 'claude' || comm === 'pi') return pid;
+    } catch { /* gone, or no /proc */ }
+  }
+  return process.ppid > 1 ? process.ppid : undefined;
 }
 
 /** Take the session's waiter slot; false when a live waiter already holds it. */
@@ -259,11 +277,101 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
   }
 }
 
+// ── A TUI that has no session yet ───────────────────────────────────────────
+
+/**
+ * What the opencode TUI plugin runs for as long as its TUI is open.
+ *
+ * It registers the TUI with its folder before any session exists, so a send to
+ * the folder has an address, then long-polls for a message. A message is
+ * printed as `{text, ids}` and the run exits without acknowledging it: the
+ * plugin creates a session with the text and acknowledges only then, so a TUI
+ * that fails before its first prompt leaves the message waiting.
+ */
+async function presence(payload: HookPayload, target: Target): Promise<number> {
+  const sessionId = sessionIdOf(payload);
+  if (!sessionId) { debug('presence: no session id'); return 0; }
+  const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : undefined;
+  const pid = processPid(payload);
+  // The TUI that started this run holds the row. When it exits, the row ends
+  // now instead of waiting out the stale window.
+  const supervisor = typeof payload.pid === 'number' && Number.isInteger(payload.pid) && payload.pid > 0
+    ? payload.pid : undefined;
+  let failures = 0;
+  const end = async () => {
+    await post(target, '/api/live-sessions/event', { sessionId, event: 'SessionEnd' }, 3000).catch(() => null);
+    return 0;
+  };
+  for (;;) {
+    if (supervisor && !alive(supervisor)) return end();
+    const reg = await post(target, '/api/live-sessions/register', { sessionId, kind: 'tui', cwd, pid }, 4000).catch(() => null);
+    if (!reg || reg.status !== 200) {
+      failures += 1;
+      if (failures > 20) { debug(`presence: registration answered HTTP ${reg?.status ?? 0}`); return 0; }
+      await new Promise((res) => setTimeout(res, Math.min(30_000, 2000 * failures)));
+      continue;
+    }
+    for (;;) {
+      if (supervisor && !alive(supervisor)) return end();
+      let r: { status: number; body: { ended?: boolean; messages?: WireMessage[]; labels?: Record<string, string> } | null };
+      try {
+        r = await post(target, '/api/live-sessions/wait', { sessionId, timeoutSecs: WAIT_SECS }, (WAIT_SECS + 15) * 1000);
+      } catch (e) {
+        r = { status: 0, body: null };
+        debug(`presence: request failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (r.body && r.body.ended) { debug('presence: the row ended'); return 0; }
+      if (!r.body) {
+        failures += 1;
+        if (r.status === 404) break; // the row is gone: register it again
+        if (failures > 20) { debug(`presence: HTTP ${r.status}`); return 0; }
+        await new Promise((res) => setTimeout(res, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5))));
+        continue;
+      }
+      failures = 0;
+      const messages = r.body.messages ?? [];
+      if (!messages.length) continue;
+      const text = renderWake(sessionId, messages, Date.now(), new Map(Object.entries(r.body.labels ?? {})));
+      await writeOut(process.stdout, JSON.stringify({ text, ids: messages.map((m) => m.id) }) + '\n');
+      return 0;
+    }
+  }
+}
+
+/**
+ * Report a session's process kind once. The TUI plugin runs it when the
+ * session it shows changes, so a session that a `serve` process also reports
+ * is marked `tui` (the store never lets another kind overwrite it).
+ */
+async function report(payload: HookPayload, target: Target): Promise<number> {
+  const sessionId = sessionIdOf(payload);
+  if (!sessionId) { debug('report: no session id'); return 0; }
+  const r = await post(target, '/api/live-sessions/register', {
+    sessionId,
+    kind: processKindOf('opencode', payload),
+    cwd: typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : undefined,
+    pid: processPid(payload),
+  }, 4000).catch(() => null);
+  if (!r || r.status !== 200) debug(`report: HTTP ${r?.status ?? 0}`);
+  return 0;
+}
+
+/** Acknowledge messages the TUI plugin has delivered. */
+async function acknowledge(payload: HookPayload, target: Target): Promise<number> {
+  const sessionId = sessionIdOf(payload);
+  const ids = Array.isArray(payload.ids) ? payload.ids.filter((i): i is string => typeof i === 'string') : [];
+  if (!sessionId || !ids.length) { debug('ack: no session id or no ids'); return 0; }
+  try {
+    const r = await post(target, '/api/live-sessions/ack', { sessionId, ids }, 3000);
+    if (r.status !== 200) debug(`ack: HTTP ${r.status}`);
+  } catch (e) { debug(`ack failed: ${e instanceof Error ? e.message : String(e)}`); }
+  return 0;
+}
+
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
-
 async function main(): Promise<number> {
   if (process.env.CHAT_RECALL_MESSAGE_HOOK === '0') return 0;
   const toolArg = argValue('--tool') ?? 'claude';
@@ -271,6 +379,19 @@ async function main(): Promise<number> {
   const raw = await readStdin();
   let parsed: Record<string, unknown>;
   try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { debug('stdin is not JSON'); return 0; }
+
+  // The three modes of the opencode TUI plugin. They carry their own payload
+  // (a presence id, the session the TUI shows, the ids it delivered), so they
+  // run before the turn-hook mapping, which knows no event for them.
+  if (process.argv.includes('--presence') || process.argv.includes('--report') || process.argv.includes('--ack')) {
+    const target = recallTarget();
+    if (!target) { debug('no login: run `chat-recall login`'); return 0; }
+    const p = parsed as HookPayload;
+    if (process.argv.includes('--presence')) return presence(p, target);
+    if (process.argv.includes('--report')) return report(p, target);
+    return acknowledge(p, target);
+  }
+
   const payload = normalizePayload(toolArg, parsed, argValue('--event'));
   if (!payload) { debug(`${toolArg}: an event this hook does not handle`); return 0; }
   const target = recallTarget();

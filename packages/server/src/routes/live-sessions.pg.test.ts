@@ -155,7 +155,7 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
   test('a child replies to its parent', async () => {
     const r = await alice.post('/api/live-sessions/messages', { from: CHILD_A, to: 'parent', body: 'Tests pass.', replyTo: 'm_x' });
     expect(r.status).toBe(200);
-    expect(r.body.recipients).toEqual([{ sessionId: PARENT, label: 'lead', state: 'working' }]);
+    expect(r.body.recipients).toMatchObject([{ sessionId: PARENT, label: 'lead', state: 'working', cwd: '/home/user/code/example' }]);
     const inbox = await alice.post('/api/live-sessions/inbox', { sessionId: PARENT });
     expect(inbox.body.messages).toHaveLength(1);
     expect(inbox.body.messages[0]).toMatchObject({ fromSession: CHILD_A, body: 'Tests pass.', replyTo: 'm_x' });
@@ -278,6 +278,105 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
     const ids = all.body.sessions.map((s: { sessionId: string }) => s.sessionId);
     expect(ids).toContain(CHILD_A);
     expect(ids).toContain(CHILD_B);
+  });
+
+  describe('a folder is an address', () => {
+    const FOLDER = '/home/user/code/axon';
+    const IN_AXON = '22222222-0000-4000-8000-0000000000a1';
+    const IN_AXON_TOO = '22222222-0000-4000-8000-0000000000a2';
+    const ELSEWHERE = '22222222-0000-4000-8000-0000000000b1';
+    const PRESENCE = 'tui_0123456789abcdef';
+    const OLD_PRESENCE = 'tui_fedcba9876543210';
+
+    test('no session in the folder is a 404 that names it', async () => {
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: FOLDER, body: 'hello axon' });
+      expect(r.status).toBe(404);
+      expect(r.body.error).toContain(`No running session is in the folder "${FOLDER}"`);
+    });
+
+    test('one session in the folder is the recipient, with its folder and kind', async () => {
+      await alice.post('/api/live-sessions/event', { sessionId: IN_AXON, event: 'SessionStart', cwd: FOLDER, kind: 'tui', pid: 4242 });
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: FOLDER, body: 'hello axon' });
+      expect(r.status).toBe(200);
+      expect(r.body.recipients).toMatchObject([{ sessionId: IN_AXON, cwd: FOLDER, processKind: 'tui' }]);
+      expect((await alice.get('/api/live-sessions')).body.sessions.find((s: { sessionId: string }) => s.sessionId === IN_AXON))
+        .toMatchObject({ processKind: 'tui', pid: 4242 });
+    });
+
+    test('the kind tui sticks when the headless service reports the same session', async () => {
+      await alice.post('/api/live-sessions/event', { sessionId: IN_AXON, event: 'UserPromptSubmit', kind: 'serve' });
+      expect((await alice.get(`/api/live-sessions/${IN_AXON}`)).body.session.processKind).toBe('tui');
+    });
+
+    test('two sessions in one folder are refused with the candidates', async () => {
+      await alice.post('/api/live-sessions/event', { sessionId: IN_AXON_TOO, event: 'SessionStart', cwd: FOLDER });
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: FOLDER, body: 'hello axon' });
+      expect(r.status).toBe(409);
+      expect(r.body.error).toContain('matches 2 sessions');
+      expect(r.body.candidates.map((c: { sessionId: string }) => c.sessionId).sort()).toEqual([IN_AXON, IN_AXON_TOO].sort());
+      // No folder ambiguity once one of them ends.
+      await alice.post('/api/live-sessions/event', { sessionId: IN_AXON_TOO, event: 'SessionEnd' });
+      const again = await alice.post('/api/live-sessions/messages', { from: PARENT, to: FOLDER, body: 'hello axon' });
+      expect(again.status).toBe(200);
+      expect(again.body.recipients[0].sessionId).toBe(IN_AXON);
+    });
+
+    test('a TUI presence answers for a folder that holds no session', async () => {
+      const folder = '/home/user/code/idle-tui';
+      const reg = await alice.post('/api/live-sessions/register', { sessionId: PRESENCE, kind: 'tui', cwd: folder, pid: 5151 });
+      expect(reg.status).toBe(200);
+      expect(reg.body.session).toMatchObject({ cwd: folder, processKind: 'tui', pid: 5151 });
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: folder, body: 'start here' });
+      expect(r.status).toBe(200);
+      expect(r.body.recipients[0].sessionId).toBe(PRESENCE);
+      expect((await alice.post('/api/live-sessions/inbox', { sessionId: PRESENCE })).body.messages).toHaveLength(1);
+    });
+
+    test('a real session wins over the presence in its folder', async () => {
+      const folder = '/home/user/code/idle-tui';
+      const REAL = '22222222-0000-4000-8000-0000000000c1';
+      await alice.post('/api/live-sessions/event', { sessionId: REAL, event: 'SessionStart', cwd: folder });
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: folder, body: 'start here' });
+      expect(r.status).toBe(200);
+      expect(r.body.recipients[0].sessionId).toBe(REAL);
+      await alice.post('/api/live-sessions/event', { sessionId: REAL, event: 'SessionEnd' });
+    });
+
+    test('a presence that stopped polling no longer answers', async () => {
+      const folder = '/home/user/code/closed-tui';
+      await alice.post('/api/live-sessions/register', { sessionId: OLD_PRESENCE, kind: 'tui', cwd: folder, pid: 6161 });
+      await admin.query(`UPDATE live_sessions SET last_seen = $1 WHERE tenant = $2 AND session_id = $3`,
+        [Date.now() - 5 * 60_000, TENANT, OLD_PRESENCE]);
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: folder, body: 'anyone there?' });
+      expect(r.status).toBe(404);
+    });
+
+    test('expectCwd refuses a recipient elsewhere and stores nothing', async () => {
+      await alice.post('/api/live-sessions/event', { sessionId: ELSEWHERE, event: 'SessionStart', cwd: '/home/user/code/other' });
+      const before = (await alice.post('/api/live-sessions/inbox', { sessionId: ELSEWHERE })).body.messages.length;
+      const r = await alice.post('/api/live-sessions/messages', {
+        from: PARENT, to: ELSEWHERE, body: 'wrong folder', expectCwd: '/home/user/code/axon',
+      });
+      expect(r.status).toBe(409);
+      expect(r.body.error).toContain('Nothing was sent');
+      expect(r.body.recipient).toMatchObject({ sessionId: ELSEWHERE, cwd: '/home/user/code/other' });
+      const after = (await alice.post('/api/live-sessions/inbox', { sessionId: ELSEWHERE })).body.messages.length;
+      expect(after).toBe(before);
+      // The same send with the right folder goes through.
+      const ok = await alice.post('/api/live-sessions/messages', {
+        from: PARENT, to: ELSEWHERE, body: 'right folder', expectCwd: '/home/user/code/other/',
+      });
+      expect(ok.status).toBe(200);
+      // A session that reports no folder cannot be confirmed.
+      expect((await alice.post('/api/live-sessions/messages', {
+        from: PARENT, to: 'worker-a', body: 'x', expectCwd: '/home/user/code/example',
+      })).status).toBe(409);
+    });
+
+    test('a kind that is not one of the five is refused', async () => {
+      expect((await alice.post('/api/live-sessions/register', { sessionId: ELSEWHERE, kind: 'sideways' })).status).toBe(400);
+      expect((await alice.post('/api/live-sessions/event', { sessionId: ELSEWHERE, event: 'Stop', pid: -1 })).status).toBe(400);
+    });
   });
 
   test('another user of the same tenant cannot see or reach these sessions', async () => {

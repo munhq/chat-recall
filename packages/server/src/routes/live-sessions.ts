@@ -22,9 +22,14 @@
  * seconds. The caller acknowledges them with `/ack` once it has shown them; an
  * unacknowledged message is offered again when its lease ends.
  *
- * `to` is a session id, a unique leading part of one, a label, or one of the
- * words `parent`, `children` and `group`, which are read relative to `from`.
- * The group is the parent and all its running children.
+ * `to` is a session id, a unique leading part of one, a label, an absolute
+ * folder, or one of the words `parent`, `children` and `group`, which are read
+ * relative to `from`. The group is the parent and all its running children.
+ *
+ * A folder names the running session in it: zero is a 404, more than one is a
+ * 409 that lists them. A message to a folder must also pass `expectCwd` when
+ * the sender knows it, so a recipient that moved to another folder is refused
+ * instead of addressed by name.
  *
  * Every session row in a list or detail response carries `cards`: the board
  * cards in progress that name the session as the one doing the work.
@@ -33,8 +38,10 @@ import express from 'express';
 import { createStore } from '../imports.js';
 import { actor } from '../util/actor.js';
 import {
-  SessionOwnedElsewhereError, type LiveSession, type LiveSessionState, type LiveSessionUpdate, type SessionMessage, type StorageDriver,
+  SessionOwnedElsewhereError, isFolderAddress, normalizeFolder,
+  type LiveSession, type LiveSessionKind, type LiveSessionState, type LiveSessionUpdate, type SessionMessage, type StorageDriver,
 } from '@chat-recall/engine/core/store/driver.js';
+import { isPresenceSession, isSessionProcessKind } from '@chat-recall/engine/core/session-messages.js';
 
 const router = express.Router();
 
@@ -65,18 +72,49 @@ function sessionIdOf(v: unknown, field: string): string {
   return v;
 }
 
+/** A process kind, or undefined when the caller did not name one. */
+function kindOf(v: unknown): LiveSessionKind | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (!isSessionProcessKind(v)) {
+    throw new HttpError(400, 'kind must be one of tui, serve, run, claude-bg, claude');
+  }
+  return v;
+}
+
+/** A process id, or undefined. */
+function pidOf(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) throw new HttpError(400, 'pid must be a process id');
+  return v;
+}
+
+/** A session, as an error message names it, with what tells the reader which one it is. */
+function describeSession(s: LiveSession): string {
+  const parts = [s.sessionId];
+  if (s.label) parts.push(`"${s.label}"`);
+  if (isPresenceSession(s.sessionId)) parts.push('no session yet');
+  else if (s.processKind) parts.push(s.processKind);
+  if (s.cwd) parts.push(`in ${s.cwd}`);
+  return parts.join(' ');
+}
+
 /** One session for an address, or a 404 / 409 that says why there is none. */
 async function resolveOne(store: StorageDriver, owner: string, address: string): Promise<LiveSession> {
   const found = await store.resolveLiveSessions(owner, address);
   if (found.length === 1) return found[0];
   if (found.length === 0) {
-    throw new HttpError(404,
-      `No session matches "${address}". A session appears after its first prompt with the message hook installed, `
-      + 'or after it calls recall_session_register.');
+    throw new HttpError(404, isFolderAddress(address)
+      ? `No running session is in the folder "${normalizeFolder(address)}". A session appears there after its first `
+        + 'prompt, an opencode TUI registers itself as soon as it opens, and a session can also call recall_session_register.'
+      : `No session matches "${address}". A session appears after its first prompt with the message hook installed, `
+        + 'or after it calls recall_session_register.');
   }
-  const list = found.map((s) => s.label ? `${s.sessionId} (${s.label})` : s.sessionId).join(', ');
+  const list = found.map(describeSession).join(', ');
   throw new HttpError(409, `"${address}" matches ${found.length} sessions: ${list}. Use a session id.`, {
-    candidates: found.map((s) => ({ sessionId: s.sessionId, label: s.label, cwd: s.cwd, state: s.state })),
+    candidates: found.map((s) => ({
+      sessionId: s.sessionId, label: s.label, cwd: s.cwd, state: s.state,
+      processKind: s.processKind, lastSeen: s.lastSeen,
+    })),
   });
 }
 
@@ -140,6 +178,8 @@ router.post('/event', handle(async (req, res, store) => {
   const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
   const state = typeof event === 'string' ? EVENT_STATE[event] : undefined;
   if (!state) throw new HttpError(400, `event must be one of ${Object.keys(EVENT_STATE).join(', ')}`);
+  const processKind = kindOf(req.body?.kind);
+  const pid = pidOf(req.body?.pid);
   const owner = actor(req);
   // A session that a parent started carries its name, parent and task in its
   // environment, and the hook sends them on SessionStart.
@@ -158,6 +198,7 @@ router.post('/event', handle(async (req, res, store) => {
   const session = await store.upsertLiveSession({
     sessionId, ownerSub: owner, state, lastEvent: event,
     cwd: typeof cwd === 'string' && cwd ? cwd.slice(0, 1024) : undefined,
+    processKind, pid,
     ...reg,
   });
   const messages = take === true && state !== 'ended' ? await store.takeSessionMessages(owner, sessionId) : [];
@@ -206,7 +247,12 @@ router.post('/register', handle(async (req, res, store) => {
   const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
   const owner = actor(req);
   const reg = await registration(store, owner, sessionId, req.body ?? {});
-  res.json({ session: await store.upsertLiveSession({ sessionId, ownerSub: owner, ...reg }) });
+  const cwd = typeof req.body?.cwd === 'string' && req.body.cwd ? req.body.cwd.slice(0, 1024) : undefined;
+  res.json({
+    session: await store.upsertLiveSession({
+      sessionId, ownerSub: owner, cwd, processKind: kindOf(req.body?.kind), pid: pidOf(req.body?.pid), ...reg,
+    }),
+  });
 }));
 
 /**
@@ -252,12 +298,16 @@ router.get('/', handle(async (req, res, store) => {
 }));
 
 router.post('/messages', handle(async (req, res, store) => {
-  const { from, to, body, replyTo } = req.body ?? {};
+  const { from, to, body, replyTo, expectCwd } = req.body ?? {};
   const owner = actor(req);
   if (typeof body !== 'string' || !body.trim()) throw new HttpError(400, 'body is required');
   if (body.length > MAX_BODY) throw new HttpError(413, `body is ${body.length} characters; the limit is ${MAX_BODY}`);
   if (typeof to !== 'string' || !to) throw new HttpError(400, 'to is required');
   if (replyTo !== undefined && replyTo !== null && typeof replyTo !== 'string') throw new HttpError(400, 'replyTo must be a message id');
+  if (expectCwd !== undefined && expectCwd !== null && typeof expectCwd !== 'string') {
+    throw new HttpError(400, 'expectCwd must be a folder');
+  }
+  const expected = typeof expectCwd === 'string' && expectCwd ? normalizeFolder(expectCwd) : undefined;
 
   let fromSession: string | null = null;
   if (from !== undefined && from !== null && from !== '') {
@@ -298,13 +348,32 @@ router.post('/messages', handle(async (req, res, store) => {
   if (fromSession && recipients.some((r) => r.sessionId === fromSession)) {
     throw new HttpError(400, 'a session cannot send a message to itself');
   }
+  // The sender names the folder it believes the recipient is in. A session
+  // that moved (or that was picked by name) is refused before anything waits
+  // in the wrong inbox.
+  if (expected) {
+    for (const r of recipients) {
+      const actual = r.cwd ? normalizeFolder(r.cwd) : null;
+      if (actual !== expected) {
+        throw new HttpError(409,
+          `${describeSession(r)} is ${actual ? `in the folder "${actual}"` : 'in no reported folder'}, `
+          + `not in "${expected}". Nothing was sent. Send to the folder instead of a name, or check the recipient's folder `
+          + 'with recall_session_status.', {
+            recipient: { sessionId: r.sessionId, label: r.label, cwd: r.cwd, state: r.state, processKind: r.processKind },
+          });
+      }
+    }
+  }
 
   const messages = await store.sendSessionMessages(owner, {
     fromSession, toSessions: recipients.map((r) => r.sessionId), body, replyTo: replyTo || null,
   });
   res.json({
     messages,
-    recipients: recipients.map((r) => ({ sessionId: r.sessionId, label: r.label, state: r.state })),
+    recipients: recipients.map((r) => ({
+      sessionId: r.sessionId, label: r.label, state: r.state, cwd: r.cwd,
+      lastSeen: r.lastSeen, processKind: r.processKind,
+    })),
   });
 }));
 

@@ -123,4 +123,57 @@ describe.skipIf(!existsSync(HOOK))('message hook, a turn run', () => {
     const r = await runHook([], { session_id: SID, hook_event_name: 'UserPromptSubmit' });
     expect(r).toMatchObject({ code: 0, stdout: '', stderr: '' });
   }, 20_000);
+
+  test('the turn reports the process kind and pid the tool named', async () => {
+    handler = () => ({ status: 200, json: { session: {}, messages: [] } });
+    await runHook([], { session_id: SID, hook_event_name: 'SessionStart', kind: 'serve', pid: 4242 });
+    expect(calls[0].body).toMatchObject({ sessionId: SID, event: 'SessionStart', kind: 'serve', pid: 4242 });
+  }, 20_000);
+});
+
+describe.skipIf(!existsSync(HOOK))('message hook, the TUI modes', () => {
+  const TUI = 'tui_0123456789abcdef';
+  const CWD = '/home/user/code/axon';
+
+  test('presence registers the folder, prints the message and does not acknowledge it', async () => {
+    handler = (path) => path === '/api/live-sessions/wait'
+      ? { status: 200, json: { ended: false, messages: [message], labels: {} } }
+      : { status: 200, json: { session: {} } };
+    const r = await runHook(['--tool', 'opencode', '--presence'], { session_id: TUI, cwd: CWD, pid: process.pid });
+    expect(r.code).toBe(0);
+    expect(calls[0]).toMatchObject({
+      path: '/api/live-sessions/register',
+      body: { sessionId: TUI, kind: 'tui', cwd: CWD, pid: process.pid },
+    });
+    const out = JSON.parse(r.stdout.trim());
+    expect(out.ids).toEqual(['m_1']);
+    expect(out.text).toContain('> Run the tests.');
+    // The plugin acknowledges only after the prompt lands.
+    expect(calls.map((c) => c.path)).toEqual(['/api/live-sessions/register', '/api/live-sessions/wait']);
+  }, 20_000);
+
+  test('presence ends its row when the TUI it reports for is gone', async () => {
+    handler = () => ({ status: 200, json: { session: {} } });
+    const dead = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, ['-e', '']);
+      child.on('close', () => resolve(child.pid!));
+    });
+    const r = await runHook(['--tool', 'opencode', '--presence'], { session_id: TUI, cwd: CWD, pid: dead });
+    expect(r.code).toBe(0);
+    expect(calls).toEqual([{ path: '/api/live-sessions/event', body: { sessionId: TUI, event: 'SessionEnd' } }]);
+  }, 20_000);
+
+  test('report marks the session the TUI shows as tui, and ack acknowledges what it delivered', async () => {
+    handler = () => ({ status: 200, json: { session: {}, acked: 1 } });
+    const reported = await runHook(['--tool', 'opencode', '--report'], { session_id: 'opencode_ses_abc', cwd: CWD, kind: 'tui', pid: 4343 });
+    expect(reported.code).toBe(0);
+    expect(calls[0]).toMatchObject({
+      path: '/api/live-sessions/register',
+      body: { sessionId: 'opencode_ses_abc', kind: 'tui', cwd: CWD, pid: 4343 },
+    });
+    calls = [];
+    const acked = await runHook(['--tool', 'opencode', '--ack'], { session_id: TUI, ids: ['m_1', 'm_2'] });
+    expect(acked.code).toBe(0);
+    expect(calls).toEqual([{ path: '/api/live-sessions/ack', body: { sessionId: TUI, ids: ['m_1', 'm_2'] } }]);
+  }, 20_000);
 });

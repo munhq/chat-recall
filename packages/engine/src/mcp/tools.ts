@@ -52,8 +52,10 @@ import { recallTarget } from '../core/remote-target.js';
 import { redactSecrets } from '../core/secret-redactor.js';
 import { spawnChild, localAgents, PERMISSION_MODES, type LocalAgent } from '../core/session-spawn.js';
 import {
-  formatDelivery, formatSessionLine, formatAge, sessionName, type WireMessage, type WireLiveSession,
+  formatDelivery, formatSessionLine, formatAge, sessionName, toolOfSession, PRESENCE_PREFIX,
+  type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
+import { localAiProcesses } from '../core/local-processes.js';
 import { liveScanModifiedFiles } from '../core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
@@ -988,9 +990,11 @@ const RecallSessionRegisterSchema = z.object({
 const RecallMessageSendSchema = z.object({
   from: z.string().optional().describe(`The sending session, so the recipient can answer. ${SESSION_ARG}`),
   to: z.string().min(1)
-    .describe('The recipient: a session id, the start of one, a session name, or "parent" / "children" / "group" (relative to `from`).'),
+    .describe('The recipient: a session id, the start of one, a session name, an absolute folder, or "parent" / "children" / "group" (relative to `from`).'),
   body: z.string().min(1).max(16_000).describe('The message. Secrets in it are redacted before it leaves this machine.'),
   reply_to: z.string().optional().describe('The id of the message this answers.'),
+  expect_cwd: z.string().min(1).optional()
+    .describe('The folder the recipient must be in. The send is refused when the recipient is elsewhere.'),
 });
 
 const RecallInboxSchema = z.object({
@@ -2303,14 +2307,20 @@ session coordinates others: a parent gives work to its children, a child reports
 The recipient gets the message at its next prompt, tool call or turn end (Claude Code, through the
 chat-recall message hook). A session that waits for its user reads it when the user types next.
 "children" sends to every running child of \`from\`; "parent" sends to its parent; "group" sends to
-the parent and every running child — use it to announce a decision to the whole group.`,
+the parent and every running child — use it to announce a decision to the whole group.
+
+\`to\` also takes an absolute folder: the session running there is the recipient, and zero or more
+than one is refused instead of guessed. When the folder is known, pass it in both \`to\` and
+\`expect_cwd\`; a recipient that is in another folder is refused and nothing is sent. An opencode TUI
+that has no session yet appears as its folder, and the message becomes its first prompt.`,
         inputSchema: {
           type: 'object',
           properties: {
-            from:     { type: 'string', description: 'The sending session id, so the recipient can answer.' },
-            to:       { type: 'string', description: 'A session id, the start of one, a session name, "parent", "children" or "group".' },
-            body:     { type: 'string', description: 'The message. Secrets are redacted before it is sent.' },
-            reply_to: { type: 'string', description: 'The id of the message this answers.' },
+            from:       { type: 'string', description: 'The sending session id, so the recipient can answer.' },
+            to:         { type: 'string', description: 'A session id, the start of one, a session name, an absolute folder, "parent", "children" or "group".' },
+            body:       { type: 'string', description: 'The message. Secrets are redacted before it is sent.' },
+            reply_to:   { type: 'string', description: 'The id of the message this answers.' },
+            expect_cwd: { type: 'string', description: 'The folder the recipient must be in; the send is refused when it is elsewhere.' },
           },
           required: ['to', 'body'],
         },
@@ -2359,11 +2369,14 @@ recall_session_status shows that. Pass a permission mode only when the user chos
       {
         name: 'recall_session_status',
         description: `See which sessions of this account are running, what each works on, and what state each
-is in: working, idle and waiting for input, or ended. Each line shows the folder, the "doing" line the
-session set, the board cards in progress linked to it, and unread messages. With \`parent\`, list the
-children of one session — the check a coordinating session runs on the sessions it started.
-With \`session\`, show one session and its message thread. To read what a session did, follow up
-with recall_show and from_end.`,
+is in: working, idle and waiting for input, or ended. Each line starts with the name, the folder and
+the tool and process kind (an opencode TUI, a headless \`serve\` or \`run\`, a Claude Code session), so a
+recipient is checked before anything is sent to it; \`serve\` and \`run\` say "no window". The rest of the
+line is the state, the "doing" line the session set, the board cards in progress linked to it, and
+unread messages. An opencode TUI that has no session yet is listed by its folder, and so is any local
+opencode or claude process with no session (Linux). With \`parent\`, list the children of one session —
+the check a coordinating session runs on the sessions it started. With \`session\`, show one session and
+its message thread. To read what a session did, follow up with recall_show and from_end.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -5323,15 +5336,27 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // before it leaves the machine, like every synced transcript.
         const body = redactSecrets(params.body, { force: true });
         getWAL().log('message_send', { from: params.from, to: params.to, chars: body.length });
-        const r = await remotePost<{ messages: WireMessage[]; recipients: Array<{ sessionId: string; label: string | null; state: string }> }>(
-          '/api/live-sessions/messages', { from: params.from, to: params.to, body, replyTo: params.reply_to });
+        type SentTo = { sessionId: string; label: string | null; state: string; cwd: string | null; lastSeen?: number | null; processKind?: string | null };
+        const r = await remotePost<{ messages: WireMessage[]; recipients: SentTo[] }>(
+          '/api/live-sessions/messages',
+          { from: params.from, to: params.to, body, replyTo: params.reply_to, expectCwd: params.expect_cwd });
         const lines = r.recipients.map((rc, i) => {
-          const name = rc.label ? `${rc.label} (${rc.sessionId})` : rc.sessionId;
+          const presence = rc.sessionId.startsWith(PRESENCE_PREFIX);
+          const name = presence
+            ? `The opencode TUI${rc.cwd ? ` in ${rc.cwd}` : ''}`
+            : rc.label ? `${rc.label} (${rc.sessionId})` : rc.sessionId;
+          const tool = toolOfSession(rc.sessionId);
+          const where = !presence && rc.cwd ? ` in ${rc.cwd}` : '';
+          const process = rc.processKind ? ` (${tool}, ${rc.processKind})` : ` (${tool})`;
           const when =
-            rc.state === 'ended' ? 'That session has ended. The message waits in case it resumes.'
-              : rc.state === 'idle' ? 'That session waits for its user, so it reads the message when the user types next.'
-                : 'It receives the message at its next tool call or turn end.';
-          return `- ${name}: message ${r.messages[i]?.id}. ${when}`;
+            presence
+              ? 'It has no session yet, so the message becomes its first prompt.'
+              : rc.state === 'ended' ? 'That session has ended. The message waits in case it resumes.'
+                : rc.state === 'idle' && (tool === 'opencode' || tool === 'pi')
+                  ? 'It is idle, and its plugin starts a turn with the message.'
+                  : rc.state === 'idle' ? 'That session waits for its user, so it reads the message when the user types next.'
+                    : 'It receives the message at its next tool call or turn end.';
+          return `- ${name}${where}${process}: message ${r.messages[i]?.id}. ${when}`;
         });
         const redacted = body !== params.body ? '\nSecrets in the body were redacted before sending.' : '';
         return { content: [{ type: 'text', text: `Sent.\n${lines.join('\n')}${redacted}` }] };
@@ -5433,14 +5458,31 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>(
           '/api/live-sessions', { parent: params.parent, includeEnded: params.include_ended });
+        // A tool that is open and typed nothing into has no session row, so the
+        // sessions above cannot show it. /proc can, with its folder.
+        const processes = await localAiProcesses().catch(() => []);
+        const reportedPids = new Set(sessions.map((x) => x.pid).filter((p): p is number => typeof p === 'number'));
+        const folders = new Set(sessions.filter((x) => x.state !== 'ended' && x.cwd).map((x) => x.cwd as string));
+        const unlisted = processes.filter((p) => !reportedPids.has(p.pid) && !folders.has(p.cwd));
+        const localLines = unlisted.length
+          ? ['', `Local AI processes with no session yet (${unlisted.length}):`,
+            ...unlisted.map((p) => `- ${p.command} in ${p.cwd} (pid ${p.pid})`),
+            'Send to one by its folder: recall_message_send with to set to the folder.']
+          : [];
         if (!sessions.length) {
           const text = params.parent
             ? `No ${params.include_ended ? '' : 'running '}children of ${params.parent}. A child links itself with recall_session_register.`
-            : 'No running sessions reported. A Claude Code session reports here after its first prompt, once the message hook is installed (`chat-recall install-hooks`).';
-          return { content: [{ type: 'text', text }] };
+            : 'No running sessions reported. A session reports here after its first prompt, once the message hook is installed '
+              + '(`chat-recall install-hooks`); an opencode TUI registers when it opens.';
+          return { content: [{ type: 'text', text: [text, ...localLines].join('\n') }] };
         }
         const head = params.parent ? `Children of ${params.parent} (${sessions.length}):` : `Sessions (${sessions.length}), most recent first:`;
-        return { content: [{ type: 'text', text: [head, ...sessions.map((x) => formatSessionLine(withLocal(x), now))].join('\n') }] };
+        return {
+          content: [{
+            type: 'text',
+            text: [head, ...sessions.map((x) => formatSessionLine(withLocal(x), now)), ...localLines].join('\n'),
+          }],
+        };
       }
 
       case 'recall_session_register': {

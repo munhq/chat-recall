@@ -238,6 +238,10 @@ describe('the message hook in the other AI tools', () => {
     expect(read(join(tools(), 'codex', 'hooks.json')).hooks.UserPromptSubmit[0].hooks[0].command).toMatch(/chat_recall_messages_codex\.sh$/);
     expect(read(join(tools(), 'cursor', 'hooks.json')).hooks.stop[0].command).toMatch(/chat_recall_messages_cursor\.sh$/);
     expect(existsSync(join(tools(), 'config', 'opencode', 'plugins', 'chat-recall-messages.js'))).toBe(true);
+    // The TUI plugin is a package beside it, with both entries linked.
+    const tuiDir = join(tools(), 'config', 'opencode', 'plugins', 'chat-recall-tui');
+    expect(read(join(tuiDir, 'package.json')).exports).toEqual({ '.': './index.js', './tui': './tui.js' });
+    expect(readFileSync(join(tuiDir, 'tui.js'), 'utf-8')).toContain('["--presence"]');
     expect(existsSync(join(tools(), 'pi', 'agent', 'extensions', 'chat-recall-messages.js'))).toBe(true);
     const wrapper = readFileSync(join(root, 'data', 'hooks', 'chat_recall_messages_cursor.sh'), 'utf-8');
     expect(wrapper).toContain('--tool cursor');
@@ -246,5 +250,6 @@ describe('the message hook in the other AI tools', () => {
     expect(u.messagesRemoved.map((t) => t.label).sort()).toEqual(['Antigravity', 'Codex', 'Cursor', 'OpenCode', 'pi']);
     expect(read(agyFile)).toEqual({ other: { PreInvocation: [{ command: '/opt/other/state.sh' }] } });
     expect(existsSync(join(tools(), 'pi', 'agent', 'extensions', 'chat-recall-messages.js'))).toBe(false);
+    expect(existsSync(tuiDir)).toBe(false);
   });
 });

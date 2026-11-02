@@ -84,6 +84,10 @@ const allowed = new Set([
   ...Object.keys(cliPkg.optionalDependencies || {}),
   ...builtinModules,
   ...builtinModules.map((m) => `node:${m}`),
+  // Modules that appear only as text in a plugin source the CLI writes for
+  // another tool to run. opencode supplies this one to its TUI plugin at run
+  // time; the bundle holds the generated source, never an import of it.
+  '@opencode/plugin',
 ]);
 const isOptional = new Set(Object.keys(cliPkg.optionalDependencies || {}));
 // Every way the bundle can pull a bare specifier at runtime, each with its

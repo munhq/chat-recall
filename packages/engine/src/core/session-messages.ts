@@ -32,10 +32,40 @@ export interface WireLiveSession {
   /** The last poll of the session's waiter hook. */
   lastSeen?: number | null;
   unread: number;
+  /** The process the session runs in: tui, serve, run, claude-bg or claude. */
+  processKind?: SessionProcessKind | null;
+  /** The process id, so the status view can tell a live process from a stale row. */
+  pid?: number | null;
   /** Board cards in progress that name this session. */
   cards?: Array<{ id: string; title: string; status: string }>;
   /** What `claude agents` reports when the session runs on this machine. */
   local?: { id?: string; kind: string; status?: string; state?: string; waitingFor?: string };
+}
+
+/** The id prefix of the row a TUI registers before it has a session. */
+export const PRESENCE_PREFIX = 'tui_';
+
+/** The kind of process a session runs in. */
+export type SessionProcessKind = 'tui' | 'serve' | 'run' | 'claude-bg' | 'claude';
+export const SESSION_PROCESS_KINDS: readonly SessionProcessKind[] = ['tui', 'serve', 'run', 'claude-bg', 'claude'];
+
+export function isSessionProcessKind(v: unknown): v is SessionProcessKind {
+  return typeof v === 'string' && (SESSION_PROCESS_KINDS as readonly string[]).includes(v);
+}
+
+/** The row a TUI holds before it has a session. */
+export function isPresenceSession(sessionId: string): boolean {
+  return sessionId.startsWith(PRESENCE_PREFIX);
+}
+
+/** The AI tool behind a session id. */
+export function toolOfSession(sessionId: string): string {
+  if (sessionId.startsWith('opencode_')) return 'opencode';
+  if (sessionId.startsWith('codex_')) return 'Codex';
+  if (sessionId.startsWith('agy_')) return 'Antigravity';
+  if (sessionId.startsWith('cursor_')) return 'Cursor';
+  if (sessionId.startsWith('pi_')) return 'pi';
+  return 'Claude Code';
 }
 
 /** The marker the hook output starts with, so an agent can tell where it came from. */
@@ -120,9 +150,12 @@ export function formatDelivery(
  */
 const WAITER_GONE_MS = 90_000;
 
-/** One line per session, for the status tool. */
+/**
+ * One line per session, for the status tool. The folder, the tool and the
+ * process kind come first, because a coordinator that picks a recipient by
+ * name needs to see that it picked the wrong folder before it sends.
+ */
 export function formatSessionLine(s: WireLiveSession, now = Date.now()): string {
-  const name = s.label ? `**${s.label}** (${s.sessionId})` : `**${s.sessionId}**`;
   const age = formatAge(now - s.updatedAt);
   const gone = s.state !== 'ended' && s.lastSeen != null && now - s.lastSeen > WAITER_GONE_MS;
   const state =
@@ -130,9 +163,24 @@ export function formatSessionLine(s: WireLiveSession, now = Date.now()): string 
       : gone ? `gone: no poll for ${formatAge(now - s.lastSeen!)} (the terminal closed before the session could report its end)`
         : s.state === 'idle' ? `idle for ${age}, waiting for input`
           : `working, last activity ${age} ago`;
-  const parts = [`- ${name}: ${state}`];
+
+  // A TUI without a session yet: no session id to show, and the folder is the
+  // address that reaches it.
+  if (s.sessionId.startsWith(PRESENCE_PREFIX)) {
+    const parts = [`- opencode TUI in ${s.cwd ?? 'an unknown folder'}: ${gone ? state : 'no session yet, waiting for its first prompt'}`];
+    if (s.unread) parts.push(`${s.unread} unread`);
+    return parts.join(' · ');
+  }
+
+  const tool = toolOfSession(s.sessionId);
+  // serve and run have no window: nobody can watch or take them over, and a
+  // coordinator who thinks otherwise waits for a person who is not there.
+  const noWindow = s.processKind === 'serve' || s.processKind === 'run' ? ' — no window' : '';
+  const name = s.label ? `**${s.label}** (${s.sessionId})` : `**${s.sessionId}**`;
+  const where = s.cwd ? ` in ${s.cwd}` : '';
+  const process = s.processKind ? ` (${tool}, ${s.processKind})` : ` (${tool})`;
+  const parts = [`- ${name}${where}${process}: ${state}${noWindow}`];
   if (s.unread) parts.push(`${s.unread} unread`);
-  if (s.cwd) parts.push(`in ${s.cwd}`);
   const lines = [parts.join(' · ')];
   if (s.local?.waitingFor) {
     lines.push(`  blocked: waiting for a ${s.local.waitingFor}${s.local.id ? ` — open it with \`claude attach ${s.local.id}\`` : ''}`);

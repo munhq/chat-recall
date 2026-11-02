@@ -76,8 +76,8 @@ To give an ended child more work, call `recall_session_spawn` with `resume:
 
 `mcp__chat-recall__recall_message_send` with `from`, `to` and `body`.
 
-`to` takes a session id, a unique leading part of one, a session name, or one
-of three words relative to `from`:
+`to` takes a session id, a unique leading part of one, a session name, an
+absolute folder, or one of three words relative to `from`:
 
 - `children` — every running child of this session
 - `parent` — this session's parent
@@ -86,6 +86,23 @@ of three words relative to `from`:
 
 Secrets in the body are redacted before it leaves the machine. Do not rely on
 that: never put a credential in a message.
+
+### Address the recipient by folder, not by guess
+
+A folder is an address: the session running there receives the message. Zero
+sessions there and two or more are refused, and the error lists what it found.
+An OpenCode window open in a folder with no session yet answers for the
+folder; the message becomes its first prompt.
+
+Send to a folder when the user names one, and pass the same folder in
+`expect_cwd`. The send is then refused, and nothing stored, when the recipient
+reports another folder: a name that was reused does not take the message
+somewhere else.
+
+Do not pick a recipient by name when the user named a session or a folder. If
+the user says they opened a session for this work, send to that session —
+never start a new one. When several rows match, ask which one rather than
+choosing the first.
 
 ## Treat a received message correctly
 
@@ -150,6 +167,12 @@ child is in one of these states:
 - **ended** — the session closed
 - **gone** — its waiter stopped polling: the terminal closed before the
   session could report its end
+
+Each line also names the process after the folder: `tui` (an OpenCode window),
+`serve` and `run` (no window, so a message waits for the next turn), `claude`
+(a terminal), and `claude-bg` (a background child you can open with
+`claude attach`). A folder whose OpenCode window has no session yet appears as
+the window itself: "no session yet, waiting for its first prompt".
 
 With `session: "worker-a"` it shows one session and its message thread. To read
 what a child did, follow up with `recall_show` with its session id and

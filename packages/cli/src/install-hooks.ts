@@ -17,7 +17,7 @@
  * `install-hooks --uninstall` records the choice, and the MCP server then
  * leaves the hooks out.
  */
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getHooksDir } from '@chat-recall/engine/core/paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
@@ -394,6 +394,11 @@ async function addMessagesToOtherTools(
     mkdirSync(dirname(target.configPath), { recursive: true });
     if (target.tool === 'opencode') {
       writeFileSync(target.configPath, reg.opencodeMessagesSource(wrapper));
+      // The TUI plugin is a package next to the file: opencode loads its
+      // server entry and its "./tui" entry from the package.json exports.
+      const dir = join(dirname(target.configPath), reg.OPENCODE_TUI_PACKAGE);
+      mkdirSync(dir, { recursive: true });
+      for (const file of reg.opencodeTuiFiles(wrapper)) writeFileSync(join(dir, file.name), file.source);
     } else if (target.tool === 'pi') {
       writeFileSync(target.configPath, reg.piMessagesSource(wrapper));
     } else {
@@ -414,6 +419,13 @@ async function removeMessagesFromOtherTools(): Promise<UninstallReport['messages
     if (target.tool === 'opencode' || target.tool === 'pi') {
       if (!reg.isOurPluginSource(readFileSync(target.configPath, 'utf-8'))) continue;
       unlinkSync(target.configPath);
+      if (target.tool === 'opencode') {
+        // Only a package we wrote goes: the marker is on the first line of the
+        // TUI entry, and a folder without it is someone else's plugin.
+        const dir = join(dirname(target.configPath), reg.OPENCODE_TUI_PACKAGE);
+        const tui = join(dir, 'tui.js');
+        if (existsSync(tui) && reg.isOurTuiSource(readFileSync(tui, 'utf-8'))) rmSync(dir, { recursive: true, force: true });
+      }
     } else {
       const config = readJson(target.configPath);
       if (!config) continue;

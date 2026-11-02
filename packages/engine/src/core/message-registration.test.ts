@@ -1,6 +1,11 @@
 import { describe, test, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  MESSAGES_ID, isOurPluginSource, messageCommand, messageWrapperSource, opencodeMessagesSource, piMessagesSource,
+  MESSAGES_ID, OPENCODE_TUI_PACKAGE, isOurPluginSource, isOurTuiSource, messageCommand, messageWrapperSource,
+  opencodeMessagesSource, opencodeTuiFiles, opencodeTuiSource, piMessagesSource,
   registerMessages, unregisterMessages,
 } from './message-registration.js';
 
@@ -66,6 +71,59 @@ describe('the wrapper and the plugin files', () => {
       const mod = await import(`data:text/javascript,${encodeURIComponent(src)}`);
       expect(Object.keys(mod).length).toBeGreaterThan(0);
     }
+  });
+
+  test('the opencode plugin tells the hook which process runs the session', () => {
+    const src = opencodeMessagesSource('/w.sh');
+    // The headless service and a run report themselves; the TUI has no
+    // subcommand and is reported by the TUI plugin.
+    expect(src).toContain('if (args.includes("serve")) return "serve"');
+    expect(src).toContain('if (args[0] === "run") return "run"');
+    expect(src).toContain('pid: process.pid');
+    expect(src).toContain('p.kind = KIND');
+  });
+
+  test('the TUI plugin is a package with both entries and its marker', () => {
+    const files = opencodeTuiFiles('/w.sh');
+    expect(files.map((f) => f.name)).toEqual(['package.json', 'index.js', 'tui.js']);
+    const pkg = JSON.parse(files[0].source);
+    expect(pkg.name).toBe(OPENCODE_TUI_PACKAGE);
+    expect(pkg.exports).toEqual({ '.': './index.js', './tui': './tui.js' });
+    const tui = files[2].source;
+    expect(isOurTuiSource(tui)).toBe(true);
+    expect(isOurPluginSource(tui)).toBe(false);
+    expect(tui).toContain('const HOOK = "/w.sh"');
+  });
+
+  test('the TUI plugin parses as an ES module', () => {
+    // It imports `@opencode/plugin/tui`, which only opencode resolves, so the
+    // file is syntax-checked rather than imported here.
+    const dir = mkdtempSync(join(tmpdir(), 'cr-tui-'));
+    try {
+      const file = join(dir, 'tui.mjs');
+      writeFileSync(file, opencodeTuiSource('/w.sh'));
+      expect(() => execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the TUI plugin registers the folder, then turns a message into its first session', () => {
+    const src = opencodeTuiSource('/w.sh');
+    // The presence run lives as long as the TUI shows no session.
+    expect(src).toContain('spawn(HOOK, ["--presence"]');
+    expect(src).toContain('session_id: PRESENCE');
+    expect(src).toContain('pid: PID');
+    // The first message creates the session, shows it, prompts it and acks.
+    expect(src).toContain('api.client.session.create({ title: "chat-recall message", location: { directory: dir } })');
+    expect(src).toContain('api.ui.router.navigate({ type: "session", sessionID: id })');
+    expect(src).toContain('api.client.session.prompt({ sessionID: id, text })');
+    expect(src).toContain('run({ session_id: PRESENCE, ids }, ["--ack"])');
+    // The session it shows is reported as tui, which the service never overwrites.
+    expect(src).toContain('kind: "tui"');
+    expect(src).toContain('["--report"]');
+    // Nothing runs in a process without a TUI.
+    expect(src).toContain('if (!api?.renderer');
   });
 });
 
