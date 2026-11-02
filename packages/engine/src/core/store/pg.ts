@@ -641,7 +641,18 @@ export class PgStore implements StorageDriver {
     // Registration counts as the first poll: the TUI registers before its
     // first long-poll returns, and a message may arrive in between.
     const fresh = Date.now() - LIVE_SESSION_STALE_MS;
-    return sessions.filter((s) => (s.lastSeen ?? s.updatedAt) >= fresh);
+    const live = sessions.filter((s) => (s.lastSeen ?? s.updatedAt) >= fresh);
+    // One window is one recipient. A TUI that loaded the plugin twice in one
+    // process registers twice, and two presence rows for one pid would make
+    // the folder answer "two sessions" to a send that has one window to reach.
+    const byProcess = new Map<string, LiveSession>();
+    for (const s of live) {
+      if (s.pid == null) continue;
+      const key = `${s.pid}\u0000${s.cwd ?? ''}`;
+      const seen = byProcess.get(key);
+      if (!seen || (s.lastSeen ?? s.updatedAt) > (seen.lastSeen ?? seen.updatedAt)) byProcess.set(key, s);
+    }
+    return live.filter((s) => s.pid == null || byProcess.get(`${s.pid}\u0000${s.cwd ?? ''}`) === s);
   }
 
   async sendSessionMessages(
