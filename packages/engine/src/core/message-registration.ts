@@ -339,6 +339,19 @@ const intro = (id) => INTRO.replace("\u0000SESSION\u0000", "opencode_" + id);
 
 async function setup(ctx) {
   const dir = ctx?.location?.directory;
+  // A session of a shared \`opencode serve\` belongs to the folder it was made
+  // in, and that is not this plugin instance's folder: the service sends one
+  // plugin instance the events of every project it serves. Asking the session
+  // is the only source that stays right. The instance's folder is the fallback
+  // for a session that cannot be read (just deleted, or an old server).
+  const dirOf = async (id) => {
+    try {
+      const s = await ctx.session.get({ sessionID: id });
+      const d = s?.location?.directory ?? s?.directory;
+      if (typeof d === "string" && d) return d;
+    } catch { /* unknown session: the instance folder is the best guess */ }
+    return dir;
+  };
   const children = new Set();
   const isChild = async (id) => {
     if (children.has(id)) return true;
@@ -353,7 +366,7 @@ async function setup(ctx) {
     if (!id || !event.prompt || (await isChild(id))) return;
     stopWaiter("opencode_" + id);
     // The first prompt registers the session; the hook adds only waiting messages.
-    const text = await runHook("opencode_" + id, "UserPromptSubmit", dir);
+    const text = await runHook("opencode_" + id, "UserPromptSubmit", await dirOf(id));
     if (text) event.prompt.text = [event.prompt.text, text].filter(Boolean).join("\\n\\n");
   });
   // The session id goes into the system context of each model call: the agent
@@ -372,13 +385,14 @@ async function setup(ctx) {
         // update) is not in started, and still gets its waiter.
         if (!id || (await isChild(id))) continue;
         if (RUN_END.has(ev.type)) {
-          await runHook("opencode_" + id, "Stop", dir);
+          const at = await dirOf(id);
+          await runHook("opencode_" + id, "Stop", at);
           // An idle session acts on a message from another session by itself:
           // the text becomes its next prompt.
-          startWaiter("opencode_" + id, dir, (text) => ctx.session.prompt({ sessionID: id, text }));
+          startWaiter("opencode_" + id, at, (text) => ctx.session.prompt({ sessionID: id, text }));
         } else if (ev.type === "session.deleted") {
           stopWaiter("opencode_" + id);
-          await runHook("opencode_" + id, "SessionEnd", dir);
+          await runHook("opencode_" + id, "SessionEnd", await dirOf(id));
         }
       }
     } catch { /* the subscription ends with the plugin */ }
@@ -464,12 +478,17 @@ import { randomBytes } from "node:crypto";
 import { Plugin } from "@opencode/plugin/tui";
 
 const HOOK = ${JSON.stringify(wrapperPath)};
-const PRESENCE = "tui_" + randomBytes(8).toString("hex");
 const PID = process.pid;
 const POLL_MS = 4000;
 const RUN_MS = 8000;
 
-const state = { api: undefined, presence: undefined, timer: undefined, reported: undefined, disposed: false };
+// One state per process, not per module instance. opencode loads this entry
+// more than once in one TUI process, and a reload keeps the old instance
+// alive; two instances would each open a presence loop, and the folder would
+// answer as two windows.
+const STATE = Symbol.for("chat-recall.tui-plugin");
+const state = globalThis[STATE] ??= { api: undefined, presence: undefined, timer: undefined, reported: undefined, disposed: false, id: undefined };
+state.id ??= "tui_" + randomBytes(8).toString("hex");
 
 /** Run the hook once and return what it printed. */
 function run(payload, args) {
@@ -550,7 +569,7 @@ function startPresence(api) {
   });
   child.on("error", () => { if (state.presence === child) state.presence = undefined; });
   child.on("close", () => { if (state.presence === child) state.presence = undefined; });
-  child.stdin.end(JSON.stringify({ session_id: PRESENCE, cwd: dir, pid: PID }));
+  child.stdin.end(JSON.stringify({ session_id: state.id, cwd: dir, pid: PID }));
 }
 
 /** The message becomes the TUI's first session and first prompt. */
@@ -575,7 +594,7 @@ async function openFirst(api, dir, msg) {
     // unacknowledged: their lease returns them.
     return;
   }
-  if (ids.length) await run({ session_id: PRESENCE, ids }, ["--ack"]);
+  if (ids.length) await run({ session_id: state.id, ids }, ["--ack"]);
 }
 
 /** Follow the route: report the session it shows, register the folder otherwise. */
@@ -603,7 +622,8 @@ export default Plugin.define({
     // Only the TUI has a renderer and a route. A headless process that loads
     // this entry has neither, and must not answer for anyone's folder.
     if (!api?.renderer || !api?.location?.directory || !api?.ui?.router) return;
-    if (state.disposed) return;
+    // A reload after dispose starts a new life on the same process-wide state.
+    if (state.disposed) { state.disposed = false; state.timer = undefined; state.reported = undefined; }
     state.api = api;
     tick();
     if (!state.timer) {

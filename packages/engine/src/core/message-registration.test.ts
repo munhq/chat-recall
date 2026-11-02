@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -83,6 +83,61 @@ describe('the wrapper and the plugin files', () => {
     expect(src).toContain('p.kind = KIND');
   });
 
+  test('the opencode plugin reports the folder of the session, not of the plugin instance', async () => {
+    // One `opencode serve` serves several projects: a plugin instance gets the
+    // events of every session there, so its own location is another project's
+    // folder. The session itself knows its folder (location.directory, from
+    // session_v2.directory).
+    const src = opencodeMessagesSource('/w.sh');
+    expect(src).toContain('const dirOf = async (id) =>');
+    expect(src).toContain('const s = await ctx.session.get({ sessionID: id })');
+    expect(src).toContain('s?.location?.directory ?? s?.directory');
+    expect(src).toContain('const at = await dirOf(id)');
+    expect(src).toContain('startWaiter("opencode_" + id, at');
+    expect(src).toContain('"SessionEnd", await dirOf(id)');
+
+    // Run it: the wrapper records the payload it is given, and the payload's
+    // cwd is the session's folder even when the instance's folder is another.
+    const dir = mkdtempSync(join(tmpdir(), 'cr-dir-'));
+    const out = join(dir, 'payloads');
+    const wrapper = join(dir, 'w.sh');
+    writeFileSync(wrapper, '#!/bin/sh\ncat >> "$CR_HOOK_OUT"\nprintf "\\n" >> "$CR_HOOK_OUT"\n');
+    execFileSync('chmod', ['+x', wrapper]);
+    process.env.CR_HOOK_OUT = out;
+    try {
+      const plugin = await import(`data:text/javascript,${encodeURIComponent(opencodeMessagesSource(wrapper))}`);
+      const hooks: Record<string, (event: unknown) => Promise<void>> = {};
+      const sessionFolders: Record<string, string | null> = {
+        mine: '/home/me/project',
+        flat: '/home/me/flat',
+        gone: null,
+      };
+      const ctx = {
+        location: { directory: '/home/me/other-project' },
+        session: {
+          hook: async (name: string, fn: (event: unknown) => Promise<void>) => { hooks[name] = fn; },
+          get: async ({ sessionID }: { sessionID: string }) => {
+            const f = sessionFolders[sessionID];
+            if (f === null) throw new Error('gone');
+            return sessionID === 'flat' ? { directory: f } : { location: { directory: f } };
+          },
+          prompt: async () => {},
+        },
+        event: { subscribe: async function* () {} },
+      };
+      await plugin.default.setup(ctx);
+      for (const id of ['mine', 'flat', 'gone']) {
+        await hooks.prompt({ sessionID: id, prompt: { text: 'hello' } });
+      }
+      const payloads = readFileSync(out, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      expect(payloads.map((p) => p.cwd)).toEqual(['/home/me/project', '/home/me/flat', '/home/me/other-project']);
+      expect(payloads[0]).toMatchObject({ session_id: 'opencode_mine', hook_event_name: 'UserPromptSubmit' });
+    } finally {
+      delete process.env.CR_HOOK_OUT;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('the TUI plugin is a package with both entries and its marker', () => {
     const files = opencodeTuiFiles('/w.sh');
     expect(files.map((f) => f.name)).toEqual(['package.json', 'index.js', 'tui.js']);
@@ -93,6 +148,16 @@ describe('the wrapper and the plugin files', () => {
     expect(isOurTuiSource(tui)).toBe(true);
     expect(isOurPluginSource(tui)).toBe(false);
     expect(tui).toContain('const HOOK = "/w.sh"');
+  });
+
+  test('the TUI plugin keeps one presence per process, not per module load', () => {
+    // opencode loads this entry twice in one TUI process (and a reload keeps
+    // the old instance), so two module instances must share one loop.
+    const tui = opencodeTuiSource('/w.sh');
+    expect(tui).toContain('Symbol.for("chat-recall.tui-plugin")');
+    expect(tui).toContain('globalThis[STATE] ??=');
+    expect(tui).toContain('state.id ??=');
+    expect(tui).not.toContain('const PRESENCE =');
   });
 
   test('the TUI plugin parses as an ES module', () => {
@@ -112,13 +177,13 @@ describe('the wrapper and the plugin files', () => {
     const src = opencodeTuiSource('/w.sh');
     // The presence run lives as long as the TUI shows no session.
     expect(src).toContain('spawn(HOOK, ["--presence"]');
-    expect(src).toContain('session_id: PRESENCE');
+    expect(src).toContain('session_id: state.id');
     expect(src).toContain('pid: PID');
     // The first message creates the session, shows it, prompts it and acks.
     expect(src).toContain('api.client.session.create({ title: "chat-recall message", location: { directory: dir } })');
     expect(src).toContain('api.ui.router.navigate({ type: "session", sessionID: id })');
     expect(src).toContain('api.client.session.prompt({ sessionID: id, text })');
-    expect(src).toContain('run({ session_id: PRESENCE, ids }, ["--ack"])');
+    expect(src).toContain('run({ session_id: state.id, ids }, ["--ack"])');
     // The session it shows is reported as tui, which the service never overwrites.
     expect(src).toContain('kind: "tui"');
     expect(src).toContain('["--report"]');

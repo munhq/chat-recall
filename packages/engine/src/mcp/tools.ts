@@ -56,6 +56,7 @@ import {
   type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
 import { localAiProcesses } from '../core/local-processes.js';
+import { LIVE_SESSION_STALE_MS } from '../core/store/driver.js';
 import { liveScanModifiedFiles } from '../core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
@@ -5458,6 +5459,11 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         const { sessions } = await remoteGetQS<{ sessions: WireLiveSession[] }>(
           '/api/live-sessions', { parent: params.parent, includeEnded: params.include_ended });
+        // A presence row lives only while its TUI keeps polling. A stale one is
+        // a window that closed before it had a session; listing it would show
+        // a "session" for work nobody ever started.
+        const live = sessions.filter((x) =>
+          !x.sessionId.startsWith(PRESENCE_PREFIX) || (x.lastSeen ?? x.updatedAt) >= now - LIVE_SESSION_STALE_MS);
         // A tool that is open and typed nothing into has no session row, so the
         // sessions above cannot show it. /proc can, with its folder.
         const processes = await localAiProcesses().catch(() => []);
@@ -5469,18 +5475,18 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             ...unlisted.map((p) => `- ${p.command} in ${p.cwd} (pid ${p.pid})`),
             'Send to one by its folder: recall_message_send with to set to the folder.']
           : [];
-        if (!sessions.length) {
+        if (!live.length) {
           const text = params.parent
             ? `No ${params.include_ended ? '' : 'running '}children of ${params.parent}. A child links itself with recall_session_register.`
             : 'No running sessions reported. A session reports here after its first prompt, once the message hook is installed '
               + '(`chat-recall install-hooks`); an opencode TUI registers when it opens.';
           return { content: [{ type: 'text', text: [text, ...localLines].join('\n') }] };
         }
-        const head = params.parent ? `Children of ${params.parent} (${sessions.length}):` : `Sessions (${sessions.length}), most recent first:`;
+        const head = params.parent ? `Children of ${params.parent} (${live.length}):` : `Sessions (${live.length}), most recent first:`;
         return {
           content: [{
             type: 'text',
-            text: [head, ...sessions.map((x) => formatSessionLine(withLocal(x), now)), ...localLines].join('\n'),
+            text: [head, ...live.map((x) => formatSessionLine(withLocal(x), now)), ...localLines].join('\n'),
           }],
         };
       }

@@ -342,6 +342,25 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
       await alice.post('/api/live-sessions/event', { sessionId: REAL, event: 'SessionEnd' });
     });
 
+    test('a TUI that registered twice in one process is one recipient', async () => {
+      // opencode loads the package's tui entry more than once in one process,
+      // and each load used to open its own presence loop.
+      const folder = '/home/user/code/twice-tui';
+      const first = 'tui_1111111111111111';
+      const second = 'tui_2222222222222222';
+      await alice.post('/api/live-sessions/register', { sessionId: first, kind: 'tui', cwd: folder, pid: 7171 });
+      await alice.post('/api/live-sessions/register', { sessionId: second, kind: 'tui', cwd: folder, pid: 7171 });
+      const r = await alice.post('/api/live-sessions/messages', { from: PARENT, to: folder, body: 'start here' });
+      expect(r.status).toBe(200);
+      expect(r.body.recipients).toHaveLength(1);
+      expect(r.body.recipients[0].sessionId).toBe(second);
+      // Another window in the same folder is still its own recipient.
+      await alice.post('/api/live-sessions/register', { sessionId: 'tui_3333333333333333', kind: 'tui', cwd: folder, pid: 7272 });
+      const two = await alice.post('/api/live-sessions/messages', { from: PARENT, to: folder, body: 'start here' });
+      expect(two.status).toBe(409);
+      expect(two.body.candidates).toHaveLength(2);
+    });
+
     test('a presence that stopped polling no longer answers', async () => {
       const folder = '/home/user/code/closed-tui';
       await alice.post('/api/live-sessions/register', { sessionId: OLD_PRESENCE, kind: 'tui', cwd: folder, pid: 6161 });
