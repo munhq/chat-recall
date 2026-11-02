@@ -220,6 +220,11 @@ export function isOurPluginSource(source: string): boolean {
   return source.includes(`${MESSAGES_ID}: written by`);
 }
 
+/** True for the TUI plugin entry that install-hooks wrote. */
+export function isOurTuiSource(source: string): boolean {
+  return source.startsWith('// Written by `chat-recall install-hooks`');
+}
+
 /**
  * The shared part of the opencode plugin and the pi extension: run the hook
  * with a payload in Claude's shape and return what it printed. Silent on
@@ -229,6 +234,25 @@ function runnerSource(wrapperPath: string): string {
   return `import { spawn } from "child_process";
 
 const HOOK = ${JSON.stringify(wrapperPath)};
+
+/**
+ * The process this plugin runs in. The headless service a TUI starts reports
+ * events for the same sessions, so the kind is what tells a coordinator which
+ * row has a window. The first argument is the subcommand ("serve", "run", or
+ * none for the TUI itself).
+ */
+const KIND = (() => {
+  const args = process.argv.slice(1).filter((a) => !a.startsWith("-"));
+  if (args.includes("serve")) return "serve";
+  if (args[0] === "run") return "run";
+  return undefined;
+})();
+
+function payload(sessionId, event, cwd) {
+  const p = { session_id: sessionId, hook_event_name: event, cwd, pid: process.pid };
+  if (KIND) p.kind = KIND;
+  return p;
+}
 
 function runHook(sessionId, event, cwd) {
   return new Promise((resolve) => {
@@ -244,7 +268,7 @@ function runHook(sessionId, event, cwd) {
     child.stdout.on("data", (c) => { out += c; });
     child.on("error", () => { clearTimeout(done); resolve(""); });
     child.on("close", () => { clearTimeout(done); resolve(out.trim()); });
-    child.stdin.end(JSON.stringify({ session_id: sessionId, hook_event_name: event, cwd }));
+    child.stdin.end(JSON.stringify(payload(sessionId, event, cwd)));
   });
 }
 
@@ -410,6 +434,213 @@ async function server({ directory }) {
 
 export default { id: "${MESSAGES_ID}", server, setup };
 `;
+}
+
+/**
+ * The TUI plugin that gives an idle opencode window an address.
+ *
+ * A TUI reports nothing to chat-recall until it has a session, so a message
+ * sent to the folder it is open in had no recipient. This plugin registers the
+ * folder from the moment the TUI opens (`message-hook.js --presence`), and
+ * when a message arrives it creates the session, shows it, and sends the
+ * message as the first prompt — the first turn the TUI would have run.
+ *
+ * It also reports the session the TUI shows as kind `tui`. The headless
+ * service that the TUI starts in the same folder reports `serve` for the same
+ * session on every prompt; the store never lets a later kind overwrite `tui`,
+ * which is how a coordinator sees which row has a window.
+ *
+ * A package directory: opencode discovers both the server entry and the
+ * `./tui` entry, and needs no entry in opencode.json (2.2.5).
+ */
+export function opencodeTuiSource(wrapperPath: string): string {
+  return `// Written by \`chat-recall install-hooks\`. Re-running replaces it.
+//
+// Registers this opencode TUI with chat-recall before it has a session, so a
+// message sent to the folder reaches it: the message becomes the TUI's first
+// session and first prompt. Also reports the session the TUI shows as "tui".
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { Plugin } from "@opencode/plugin/tui";
+
+const HOOK = ${JSON.stringify(wrapperPath)};
+const PRESENCE = "tui_" + randomBytes(8).toString("hex");
+const PID = process.pid;
+const POLL_MS = 4000;
+const RUN_MS = 8000;
+
+const state = { api: undefined, presence: undefined, timer: undefined, reported: undefined, disposed: false };
+
+/** Run the hook once and return what it printed. */
+function run(payload, args) {
+  return new Promise((resolve) => {
+    let out = "";
+    let child;
+    try {
+      child = spawn(HOOK, args, { stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      resolve("");
+      return;
+    }
+    const done = setTimeout(() => { child.kill(); resolve(""); }, RUN_MS);
+    child.stdout.on("data", (c) => { out += c; });
+    child.on("error", () => { clearTimeout(done); resolve(""); });
+    child.on("close", () => { clearTimeout(done); resolve(out.trim()); });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+function route(api) {
+  try {
+    const r = api.ui.router.current();
+    return r && typeof r === "object" ? r : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionOf(api) {
+  const r = route(api);
+  return r && r.type === "session" && typeof r.sessionID === "string" ? r.sessionID : undefined;
+}
+
+async function report(api, sessionID) {
+  if (!sessionID || sessionID === state.reported) return;
+  state.reported = sessionID;
+  await run({ session_id: "opencode_" + sessionID, cwd: api.location.directory, kind: "tui", pid: PID }, ["--report"]);
+}
+
+function stopPresence() {
+  const child = state.presence;
+  state.presence = undefined;
+  if (child) {
+    try { child.kill(); } catch { /* already gone */ }
+  }
+}
+
+/**
+ * Register the folder while the TUI shows no session. A message for the folder
+ * arrives on stdout as {"text", "ids"}; the lease expires if this plugin dies
+ * before the prompt lands, and the message is delivered again.
+ */
+function startPresence(api) {
+  if (state.disposed || state.presence) return;
+  const dir = api.location.directory;
+  let child;
+  try {
+    child = spawn(HOOK, ["--presence"], { stdio: ["pipe", "pipe", "ignore"] });
+  } catch {
+    return;
+  }
+  state.presence = child;
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let i;
+    while ((i = buffer.indexOf("\\n")) >= 0) {
+      const line = buffer.slice(0, i).trim();
+      buffer = buffer.slice(i + 1);
+      if (!line || state.presence !== child) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch { continue; }
+      stopPresence();
+      openFirst(api, dir, msg).catch(() => {});
+      break;
+    }
+  });
+  child.on("error", () => { if (state.presence === child) state.presence = undefined; });
+  child.on("close", () => { if (state.presence === child) state.presence = undefined; });
+  child.stdin.end(JSON.stringify({ session_id: PRESENCE, cwd: dir, pid: PID }));
+}
+
+/** The message becomes the TUI's first session and first prompt. */
+async function openFirst(api, dir, msg) {
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const ids = Array.isArray(msg.ids) ? msg.ids.filter((i) => typeof i === "string") : [];
+  if (!text) return;
+  let id;
+  try {
+    const created = await api.client.session.create({ title: "chat-recall message", location: { directory: dir } });
+    id = created?.data?.data?.id ?? created?.data?.id ?? created?.id;
+  } catch {
+    return;
+  }
+  if (typeof id !== "string" || !id) return;
+  try { api.ui.router.navigate({ type: "session", sessionID: id }); } catch { /* the route follows the new session */ }
+  await report(api, id);
+  try {
+    await api.client.session.prompt({ sessionID: id, text });
+  } catch {
+    // The session exists but the prompt did not land. Leave the messages
+    // unacknowledged: their lease returns them.
+    return;
+  }
+  if (ids.length) await run({ session_id: PRESENCE, ids }, ["--ack"]);
+}
+
+/** Follow the route: report the session it shows, register the folder otherwise. */
+function tick() {
+  const api = state.api;
+  if (state.disposed || !api) return;
+  const id = sessionOf(api);
+  if (id) {
+    report(api, id).catch(() => {});
+    stopPresence();
+  } else {
+    startPresence(api);
+  }
+}
+
+function shutdown() {
+  state.disposed = true;
+  if (state.timer) { clearInterval(state.timer); state.timer = undefined; }
+  stopPresence();
+}
+
+export default Plugin.define({
+  id: "chat-recall-tui",
+  async setup(api) {
+    // Only the TUI has a renderer and a route. A headless process that loads
+    // this entry has neither, and must not answer for anyone's folder.
+    if (!api?.renderer || !api?.location?.directory || !api?.ui?.router) return;
+    if (state.disposed) return;
+    state.api = api;
+    tick();
+    if (!state.timer) {
+      state.timer = setInterval(tick, POLL_MS);
+      if (typeof state.timer.unref === "function") state.timer.unref();
+    }
+    try { api.attention?.dispose?.(shutdown); } catch { /* no dispose registry */ }
+  },
+});
+`;
+}
+
+/**
+ * The folder name of the TUI plugin package that install-hooks writes under
+ * opencodePluginDir(). opencode finds `./tui` through the package.json exports
+ * and needs no entry in opencode.json.
+ */
+export const OPENCODE_TUI_PACKAGE = 'chat-recall-tui';
+
+/** The files of that package, in the order install-hooks writes them. */
+export function opencodeTuiFiles(wrapperPath: string): Array<{ name: string; source: string }> {
+  return [
+    {
+      name: 'package.json',
+      source: JSON.stringify({
+        name: OPENCODE_TUI_PACKAGE, private: true, type: 'module',
+        exports: { '.': './index.js', './tui': './tui.js' },
+      }, null, 2) + '\n',
+    },
+    {
+      // The package's server entry. The message plugin next to it is the
+      // server plugin; this one only has to exist for the package to load.
+      name: 'index.js',
+      source: `// Written by \`chat-recall install-hooks\`. Re-running replaces it.\nexport default { id: "${OPENCODE_TUI_PACKAGE}", setup() {} };\n`,
+    },
+    { name: 'tui.js', source: opencodeTuiSource(wrapperPath) },
+  ];
 }
 
 /**

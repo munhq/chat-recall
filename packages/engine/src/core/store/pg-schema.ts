@@ -953,10 +953,18 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   -- The last long-poll of the session's waiter hook. A session whose waiter
   -- stopped polling has gone away, whatever its last event said.
   last_seen       BIGINT,
+  -- The process the session runs in (tui, serve, run, claude-bg, claude). A
+  -- TUI and the headless service behind it report the same tool, so the kind
+  -- is what tells them apart.
+  process_kind    TEXT,
+  -- The process id, for the local view of running AI processes.
+  pid             INTEGER,
   started_at      BIGINT NOT NULL,
   updated_at      BIGINT NOT NULL,
   PRIMARY KEY (tenant, session_id)
 );
+ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS process_kind TEXT;
+ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS pid INTEGER;
 CREATE INDEX IF NOT EXISTS idx_live_sessions_owner ON live_sessions(tenant, owner_sub, updated_at);
 CREATE INDEX IF NOT EXISTS idx_live_sessions_parent ON live_sessions(tenant, parent_session);
 

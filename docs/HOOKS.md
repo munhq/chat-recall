@@ -32,7 +32,7 @@ task board and message hooks install on every platform.
 | Codex | `~/.codex/hooks.json` | `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | `PreToolUse` |
 | Antigravity | `~/.gemini/config/hooks.json` | `SessionStart`, `PreInvocation` (first call of a turn), `Stop` | `PreToolUse` |
 | Cursor | `~/.cursor/hooks.json` | `sessionStart`, `beforeSubmitPrompt`, `stop`, `sessionEnd` | `beforeShellExecution`, `afterFileEdit` |
-| OpenCode | `~/.config/opencode/plugins/` | plugin `chat-recall-messages.js`, with a waiter that wakes an idle session | plugin `chat-recall-guard.js` |
+| OpenCode | `~/.config/opencode/plugins/` | plugin `chat-recall-messages.js`, with a waiter that wakes an idle session; the package `chat-recall-tui/` next to it registers an OpenCode window before it has a session, so a message to its folder becomes its first prompt | plugin `chat-recall-guard.js` |
 | pi | `~/.pi/agent/extensions/` | extension `chat-recall-messages.js`, with a waiter that wakes an idle session | — |
 
 The other tools run the hooks through scripts in `~/.chat-recall/hooks/`. On

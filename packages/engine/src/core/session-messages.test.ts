@@ -81,4 +81,34 @@ describe('formatSessionLine', () => {
     expect(line).toContain('2 unread');
     expect(line).toContain('in /home/user/code/example');
   });
+
+  test('names the tool and the process before the state, so a recipient is checked first', () => {
+    const line = formatSessionLine(session({
+      sessionId: 'opencode_ses_abc', label: 'axon-console', cwd: '/home/user/code/axon', processKind: 'serve',
+    }), NOW);
+    expect(line).toBe(
+      '- **axon-console** (opencode_ses_abc) in /home/user/code/axon (opencode, serve): '
+      + 'working, last activity 30s ago — no window',
+    );
+  });
+
+  test('a TUI and a run are told apart from a headless service', () => {
+    expect(formatSessionLine(session({ sessionId: 'opencode_ses_x', processKind: 'tui' }), NOW)).toContain('(opencode, tui)');
+    expect(formatSessionLine(session({ sessionId: 'opencode_ses_x', processKind: 'serve' }), NOW)).toContain('— no window');
+    expect(formatSessionLine(session({ processKind: 'run' }), NOW)).toContain('— no window');
+    // A Claude Code session has a window, and a background one is attachable.
+    expect(formatSessionLine(session({ processKind: 'claude' }), NOW)).not.toContain('no window');
+    expect(formatSessionLine(session({ processKind: 'claude-bg' }), NOW)).not.toContain('no window');
+  });
+
+  test('a TUI with no session yet is an address, not an id', () => {
+    const line = formatSessionLine(session({
+      sessionId: 'tui_0123456789abcdef', cwd: '/home/user/code/axon', processKind: 'tui',
+      label: null, lastSeen: NOW - 5_000,
+    }), NOW);
+    expect(line).toBe('- opencode TUI in /home/user/code/axon: no session yet, waiting for its first prompt');
+    // Its row is held by the poll; one that stopped is gone like any other.
+    expect(formatSessionLine(session({ sessionId: 'tui_ff', cwd: '/x', lastSeen: NOW - 5 * 60_000 }), NOW))
+      .toContain('gone: no poll for 5m');
+  });
 });

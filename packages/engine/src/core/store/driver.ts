@@ -100,6 +100,30 @@ export interface TeamTaskComment { id: string; taskId: string; authorSub: string
  * the start of a session, 'ended' by SessionEnd.
  */
 export type LiveSessionState = 'working' | 'idle' | 'ended';
+
+import type { SessionProcessKind } from '../session-messages.js';
+
+/** The process a session runs in, as its hook last reported it. Two sessions of
+ * one tool look the same without it: an opencode TUI and the headless
+ * `opencode serve` behind it both report `opencode_…` ids from one process. */
+export type LiveSessionKind = SessionProcessKind;
+
+/**
+ * A recipient address that names a folder rather than a session. A presence
+ * row counts as a session only while its TUI is still polling, so the folder
+ * of a TUI that was killed does not answer for hours.
+ */
+export const LIVE_SESSION_STALE_MS = 90_000;
+
+export function isFolderAddress(address: string): boolean {
+  return address.startsWith('/') || /^[A-Za-z]:[\\/]/.test(address);
+}
+
+/** `to` and `expect_cwd` compare by one spelling of a folder. */
+export function normalizeFolder(folder: string): string {
+  return folder.replace(/[\\/]+$/, '');
+}
+
 export interface LiveSession {
   sessionId: string;
   ownerSub: string;
@@ -117,6 +141,10 @@ export interface LiveSession {
   lastSeen: number | null;
   /** Messages sent to this session that it has not received yet. */
   unread: number;
+  /** The process the session runs in, or null before a hook reported it. */
+  processKind: LiveSessionKind | null;
+  /** The process id, so a local view can tell a running process from a stale row. */
+  pid: number | null;
 }
 /** A write named a session id that another user's session already holds. */
 export class SessionOwnedElsewhereError extends Error {
@@ -134,6 +162,15 @@ export interface LiveSessionUpdate {
   parentSession?: string;
   /** Empty string clears it. */
   doing?: string;
+  /**
+   * The process kind. `tui` sticks: the TUI plugin reports the session it
+   * shows, and the service plugin behind it reports `serve` for the same
+   * session on its next event. Without the rule the two would overwrite each
+   * other at every prompt.
+   */
+  processKind?: LiveSessionKind;
+  /** The process id that runs the session. */
+  pid?: number;
 }
 export interface SessionMessage {
   id: string;

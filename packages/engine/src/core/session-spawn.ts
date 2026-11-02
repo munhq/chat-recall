@@ -122,6 +122,9 @@ export async function spawnChild(input: SpawnInput): Promise<SpawnResult> {
     CHAT_RECALL_PARENT_SESSION: input.parentId,
     ...(input.name ? { CHAT_RECALL_SESSION_NAME: input.name } : {}),
     ...(input.doing ? { CHAT_RECALL_SESSION_DOING: input.doing } : {}),
+    // The hook reports a child as a background Claude session, which
+    // `claude attach` opens.
+    CHAT_RECALL_SESSION_KIND: 'claude-bg',
   };
   // The parent's profile: an empty value is the default ~/.claude. Without a
   // record of the parent, this process's own environment decides.

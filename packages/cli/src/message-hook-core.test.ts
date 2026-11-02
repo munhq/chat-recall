@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { EMPTY_STATE, planRun, renderRun, renderWake, type HookState } from './message-hook-core.js';
+import { EMPTY_STATE, planRun, processKindOf, renderRun, renderWake, type HookState } from './message-hook-core.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 
 const SID = '11111111-0000-4000-8000-000000000001';
@@ -37,6 +37,17 @@ describe('planRun', () => {
   test('passes the working directory through', () => {
     expect(planRun({ session_id: SID, hook_event_name: 'SessionStart', cwd: '/home/user/code/example' }, EMPTY_STATE)?.cwd)
       .toBe('/home/user/code/example');
+  });
+});
+
+describe('processKindOf', () => {
+  test('the plugin payload wins, then the environment, then the tool default', () => {
+    expect(processKindOf('opencode', { kind: 'serve' }, { CHAT_RECALL_SESSION_KIND: 'claude-bg' })).toBe('serve');
+    expect(processKindOf('claude', {}, { CHAT_RECALL_SESSION_KIND: 'claude-bg' })).toBe('claude-bg');
+    expect(processKindOf('claude', {}, {})).toBe('claude');
+    // A tool whose plugin cannot see its process reports no kind.
+    expect(processKindOf('opencode', {}, {})).toBeUndefined();
+    expect(processKindOf('opencode', { kind: 'sideways' }, {})).toBeUndefined();
   });
 });
 

@@ -23,7 +23,8 @@ import type {
   StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, UpdateTeamTaskPatch,
   LiveSession, LiveSessionUpdate, SessionMessage,
 } from './driver.js';
-import { SessionOwnedElsewhereError } from './driver.js';
+import { SessionOwnedElsewhereError, isFolderAddress, normalizeFolder, LIVE_SESSION_STALE_MS } from './driver.js';
+import { isPresenceSession } from '../session-messages.js';
 import { resolveProjectId } from '../project-resolver.js';
 import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
@@ -533,6 +534,8 @@ export class PgStore implements StorageDriver {
       startedAt: Number(r.started_at) || 0, updatedAt: Number(r.updated_at) || 0,
       lastSeen: r.last_seen != null ? Number(r.last_seen) : null,
       unread: Number(r.unread) || 0,
+      processKind: r.process_kind ?? null,
+      pid: r.pid != null ? Number(r.pid) : null,
     };
   }
 
@@ -557,8 +560,8 @@ export class PgStore implements StorageDriver {
     // The WHERE on the conflict branch keeps one person's row out of reach of
     // another, so a guessed session id cannot be taken over.
     const rows = await this.q(
-      `INSERT INTO live_sessions (tenant,session_id,owner_sub,label,parent_session,cwd,state,last_event,started_at,updated_at,doing)
-       VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,COALESCE($7,'idle'),$8,$9,$9,NULLIF($10,''))
+      `INSERT INTO live_sessions (tenant,session_id,owner_sub,label,parent_session,cwd,state,last_event,started_at,updated_at,doing,process_kind,pid)
+       VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,COALESCE($7,'idle'),$8,$9,$9,NULLIF($10,''),$11,$12)
        ON CONFLICT (tenant, session_id) DO UPDATE SET
          label          = CASE WHEN $4::text IS NULL THEN live_sessions.label ELSE NULLIF($4,'') END,
          parent_session = CASE WHEN $5::text IS NULL THEN live_sessions.parent_session ELSE NULLIF($5,'') END,
@@ -566,11 +569,15 @@ export class PgStore implements StorageDriver {
          state          = COALESCE($7, live_sessions.state),
          last_event     = COALESCE($8, live_sessions.last_event),
          doing          = CASE WHEN $10::text IS NULL THEN live_sessions.doing ELSE NULLIF($10,'') END,
+         process_kind   = CASE WHEN $11::text IS NULL THEN live_sessions.process_kind
+                               WHEN live_sessions.process_kind = 'tui' AND $11 <> 'tui' THEN live_sessions.process_kind
+                               ELSE $11 END,
+         pid            = COALESCE($12, live_sessions.pid),
          updated_at     = $9
        WHERE live_sessions.owner_sub = excluded.owner_sub
        RETURNING session_id`,
       [this.t, u.sessionId, u.ownerSub, u.label ?? null, u.parentSession ?? null, u.cwd ?? null,
-        u.state ?? null, u.lastEvent ?? null, now, u.doing ?? null],
+        u.state ?? null, u.lastEvent ?? null, now, u.doing ?? null, u.processKind ?? null, u.pid ?? null],
     );
     if (!rows[0]) throw new SessionOwnedElsewhereError(u.sessionId);
     return (await this.getLiveSession(u.ownerSub, u.sessionId))!;
@@ -599,6 +606,7 @@ export class PgStore implements StorageDriver {
   }
 
   async resolveLiveSessions(ownerSub: string, address: string): Promise<LiveSession[]> {
+    if (isFolderAddress(address)) return this.resolveLiveSessionsInFolder(ownerSub, normalizeFolder(address));
     const exact = await this.getLiveSession(ownerSub, address);
     if (exact) return [exact];
     const byLabel = await this.q(
@@ -614,6 +622,26 @@ export class PgStore implements StorageDriver {
         WHERE s.tenant=$1 AND s.owner_sub=$2 AND left(s.session_id, length($3)) = $3
         ORDER BY s.updated_at DESC LIMIT 2`, [this.t, ownerSub, address]);
     return byPrefix.map((r) => this.rowToLiveSession(r));
+  }
+
+  /**
+   * The running sessions in one folder. A TUI that has no session yet answers
+   * for its folder only while no session is there: once it creates one, that
+   * session is the folder's address, and a send never has two candidates.
+   * A TUI that stopped polling is gone, and so is its presence.
+   */
+  private async resolveLiveSessionsInFolder(ownerSub: string, folder: string): Promise<LiveSession[]> {
+    const rows = await this.q(
+      `SELECT ${PgStore.LIVE_SESSION_COLUMNS} FROM live_sessions s
+        WHERE s.tenant=$1 AND s.owner_sub=$2 AND rtrim(s.cwd, '/\\') = $3 AND s.state <> 'ended'
+        ORDER BY s.updated_at DESC`, [this.t, ownerSub, folder]);
+    const sessions = rows.map((r) => this.rowToLiveSession(r));
+    const real = sessions.filter((s) => !isPresenceSession(s.sessionId));
+    if (real.length) return real;
+    // Registration counts as the first poll: the TUI registers before its
+    // first long-poll returns, and a message may arrive in between.
+    const fresh = Date.now() - LIVE_SESSION_STALE_MS;
+    return sessions.filter((s) => (s.lastSeen ?? s.updatedAt) >= fresh);
   }
 
   async sendSessionMessages(
