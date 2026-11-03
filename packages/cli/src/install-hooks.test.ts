@@ -266,7 +266,7 @@ describe('the message hook in the other AI tools', () => {
     expect(wrapper).toContain('--tool cursor');
 
     const u = await uninstallHooks();
-    expect(u.messagesRemoved.map((t) => t.label).sort()).toEqual(['Antigravity', 'Codex', 'Cursor', 'OpenCode', 'pi']);
+    expect(u.messagesRemoved.map((t) => t.label).sort()).toEqual(['Antigravity', 'Codex', 'Cursor', 'OpenCode', 'OpenCode TUI', 'pi']);
     expect(read(agyFile)).toEqual({ other: { PreInvocation: [{ command: '/opt/other/state.sh' }] } });
     expect(existsSync(join(tools(), 'pi', 'agent', 'extensions', 'chat-recall-messages.js'))).toBe(false);
     expect(existsSync(tuiDir)).toBe(false);

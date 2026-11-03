@@ -2,6 +2,13 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.30] — 2026-11-03
+
+### Fixed
+- **The OpenCode TUI plugin loads.** `chat-recall install-hooks` adds the plugin entry to the `plugin` list of OpenCode's `tui.jsonc` (or `tui.json` when only that file exists). OpenCode loads a TUI plugin only from that list, so a new TUI did not register its folder before this release. The file is edited in place: its comments and other entries stay, and an entry that is already listed is not added twice.
+- `--no-messages` and `--uninstall` remove only our entry. The plugin files stay until `--uninstall`.
+- `chat-recall doctor` reports whether the entry is listed.
+
 ## [0.7.29] — 2026-11-03
 
 ### Added
