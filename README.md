@@ -234,8 +234,6 @@ After `--uninstall` the MCP server does not put them back.
 |---|---|---|
 | `SessionStart` | New session (`startup` / `clear`) | Injects the project-scoped wake-up bundle |
 | `UserPromptSubmit` | When you type a prompt | Searches past sessions; if a similar one exists, injects "you've worked on this before" into the agent's context |
-| `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.chat-recall/memory/` |
-| `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
 | `SessionEnd` | When the session closes | Escalates the session's learnings in the background, so nothing is delayed |
 | `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | Each turn | Messages between sessions: tells the session its id, delivers what waits for it, reports its state |
 | `SessionStart`, `UserPromptSubmit`, `Stop` (background) | Until a message arrives | Waits for a message from another session and wakes this one, also when it is idle |

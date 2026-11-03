@@ -13,8 +13,6 @@ Registered in `settings.json` of each Claude profile (`~/.claude` and each
 |---|---|---|---|
 | `SessionStart` (`startup`, `clear`) | wake-up | Adds the wake-up bundle of the project | `--no-wakeup` |
 | `UserPromptSubmit` | resume hint | Searches for similar past sessions and adds a note when one exists | `--no-resume-hint` |
-| `Stop` | save | Saves topics, decisions and tools to `~/.chat-recall/memory/` | — |
-| `PreCompact` | save | Saves before Claude Code compacts the context | — |
 | `SessionEnd` | escalate | Adds the session's decisions and outcome to the knowledge graph, in the background | `--no-escalate` |
 | `PreToolUse` (shell, edit, write) | decision guard | Checks the call against the decision register | `--no-guard` |
 | `UserPromptSubmit`, `SessionEnd` | task board | Claims a board card when a prompt names its id, and closes it at the end of the session | `--no-task-board` |
@@ -39,7 +37,7 @@ development flag until it is on the approved-channels allowlist, and the account
 managed settings must allow channels. See
 [Run sessions that work together](./SESSIONS.md#a-channel-the-message-without-a-process).
 
-On Windows, the five shell hooks (save, resume hint, escalate, wake-up and
+On Windows, the four shell hooks (resume hint, escalate, wake-up and
 guard) are not installed, because Claude Code runs hooks through `cmd.exe`. The
 task board and message hooks install on every platform.
 

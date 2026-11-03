@@ -9,7 +9,6 @@ import {
   getIndexDir,
   getKnowledgeGraphDbPath,
   getDiaryDir,
-  getMemoryDir,
   getIdentityFilePath,
   getHooksDir,
   _resetMigrationStateForTests,
@@ -70,10 +69,6 @@ describe('path layout', () => {
 
   test('diary lives under index dir, not memory', () => {
     expect(getDiaryDir()).toBe(join(tmpRoot, 'data', 'index', 'diary'));
-  });
-
-  test('memory dir is sibling of index, not nested under it', () => {
-    expect(getMemoryDir()).toBe(join(tmpRoot, 'data', 'memory'));
   });
 
   test('identity.txt sits at the data root', () => {
