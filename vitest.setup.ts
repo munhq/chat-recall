@@ -1,4 +1,12 @@
 import { inject } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// The OpenCode config folder is found through XDG_CONFIG_HOME. A test that runs
+// the installer must not write into the developer's real OpenCode config, so
+// every test process gets its own config folder.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'cr-test-xdg-'));
 
 // resolveBackend() is fail-closed: an unset CHAT_RECALL_STORAGE throws instead
 // of silently falling back to sqlite (a misconfigured server must not boot onto

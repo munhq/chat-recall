@@ -2,7 +2,7 @@
  * The commands for the two board hooks and the message hook, on every
  * platform. install-hooks.ts writes them into each profile's settings.json.
  *
- * The other five hooks are POSIX shell scripts, and `install-hooks` refuses to
+ * The other four hooks are POSIX shell scripts, and `install-hooks` refuses to
  * register any of them on Windows: Claude Code runs a hook command through
  * cmd.exe, which cannot execute a `.sh`. Registering them there put an error on
  * every interaction.
@@ -24,7 +24,14 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string }> };
+/**
+ * The `timeout` of every command hook this module registers, in seconds.
+ * Claude Code applies 60 seconds to a command hook that has none. The value is
+ * written into settings.json so the bound is visible in the file.
+ */
+export const HOOK_TIMEOUT_SECONDS = 60;
+
+type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string; timeout?: number }> };
 
 /** The command string of a hook entry, or null for a malformed one. */
 function entryCommand(entry: unknown): string | null {
@@ -69,7 +76,7 @@ export function isBoardHookEntry(entry: unknown): boolean {
 export function boardHookEntries(execPath: string, cliEntry: string): Array<[string, HookEntry]> {
   return BOARD_HOOKS.map(({ event, mode }) => [
     event,
-    { matcher: '', hooks: [{ type: 'command', command: boardHookCommand(execPath, cliEntry, mode) }] },
+    { matcher: '', hooks: [{ type: 'command', command: boardHookCommand(execPath, cliEntry, mode), timeout: HOOK_TIMEOUT_SECONDS }] },
   ] as [string, HookEntry]);
 }
 
@@ -135,7 +142,7 @@ export function messageHookEntries(execPath: string, hookEntry: string): Array<[
   const turn = messageHookCommand(execPath, hookEntry);
   const waiter = messageHookCommand(execPath, hookEntry, true);
   return [
-    ...MESSAGE_HOOK_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: turn }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
+    ...MESSAGE_HOOK_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: turn, timeout: HOOK_TIMEOUT_SECONDS }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
     ...MESSAGE_WAITER_EVENTS.map((event) => [event, {
       matcher: '',
       hooks: [{ type: 'command', command: waiter, asyncRewake: true, timeout: MESSAGE_WAITER_TIMEOUT_SECONDS }],

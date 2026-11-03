@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   boardHookCommand, boardHookEntries, isBoardHookEntry,
-  MESSAGE_HOOK_EVENTS, MESSAGE_WAITER_EVENTS, MESSAGE_WAITER_TIMEOUT_SECONDS,
+  HOOK_TIMEOUT_SECONDS, MESSAGE_HOOK_EVENTS, MESSAGE_WAITER_EVENTS, MESSAGE_WAITER_TIMEOUT_SECONDS,
   messageHookCommand, messageHookEntries,
   isMessageHookEntry, isMessageWaiterEntry,
 } from './board-hooks.js';
@@ -97,14 +97,14 @@ describe('message hook registration', () => {
     // Claude Code kills an asyncRewake hook at its timeout: 600 s when the
     // entry sets none. A session idle for longer then had no waiter, and a
     // message to it waited for the user to type. Only the waiter carries the
-    // longer timeout; a turn run is a short request and keeps the default.
+    // longer timeout; a turn run is a short request and keeps the command-hook bound.
     const entries = messageHookEntries(NODE_POSIX, HOOK_POSIX);
     for (const [, e] of entries.filter(([, e]) => e.hooks[0].asyncRewake)) {
       expect(e.hooks[0].timeout).toBe(MESSAGE_WAITER_TIMEOUT_SECONDS);
       expect(MESSAGE_WAITER_TIMEOUT_SECONDS).toBeGreaterThan(3600);
     }
     for (const [, e] of entries.filter(([, e]) => !e.hooks[0].asyncRewake)) {
-      expect(e.hooks[0].timeout).toBeUndefined();
+      expect(e.hooks[0].timeout).toBe(HOOK_TIMEOUT_SECONDS);
     }
   });
 

@@ -195,7 +195,9 @@ describe('init against a server that cannot be reached', () => {
     expect(commandsFor('UserPromptSubmit').some((c) => c.includes('task-hook --claim'))).toBe(true);
     expect(commandsFor('SessionEnd').some((c) => c.includes('task-hook --close'))).toBe(true);
     expect(commandsFor('Stop').some((c) => c.includes('message-hook') && c.endsWith('--wait'))).toBe(true);
-    if (process.platform !== 'win32') expect(commandsFor('Stop').some((c) => c.includes('chat_recall_save_hook.sh'))).toBe(true);
+    // The save hook is removed: no Stop or PreCompact entry runs its script.
+    expect(commandsFor('Stop').some((c) => c.includes('chat_recall_save_hook.sh'))).toBe(false);
+    expect(commandsFor('PreCompact').some((c) => c.includes('chat_recall_save_hook.sh'))).toBe(false);
   });
 
   test('--skip-hooks leaves the hooks out', async () => {

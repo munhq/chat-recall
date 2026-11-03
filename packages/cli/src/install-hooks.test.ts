@@ -66,7 +66,6 @@ describe('installHooks', () => {
     expect(cfg.hooks.PostToolUse).toBeUndefined();
     expect(cfg.hooks.UserPromptSubmit.some(isBoardHookEntry)).toBe(true);
     if (process.platform !== 'win32') {
-      expect(commands(cfg, 'Stop').some((c) => c.includes('chat_recall_save_hook.sh'))).toBe(true);
       expect(commands(cfg, 'SessionStart').some((c) => c.includes('chat_recall_wakeup_hook.sh'))).toBe(true);
       expect(commands(cfg, 'PreToolUse').some((c) => c.includes('chat_recall_guard_hook.sh'))).toBe(true);
       // The scripts are copied where the commands point, and every path is quoted.
@@ -75,6 +74,29 @@ describe('installHooks', () => {
         expect(path && existsSync(path)).toBe(true);
       }
     }
+  });
+
+  test('every hook it registers has a timeout or runs async', async () => {
+    await installHooks(here);
+    const hooks = Object.values(read(settingsFile).hooks ?? {}).flat()
+      .flatMap((entry: any) => entry.hooks ?? []) as Array<Record<string, unknown>>;
+    expect(hooks.length).toBeGreaterThan(0);
+    for (const hook of hooks) {
+      const bounded = typeof hook.timeout === 'number' || hook.async === true;
+      expect(bounded, `no timeout and no async: ${String(hook.command)}`).toBe(true);
+    }
+  });
+
+  test('removes an old save-hook entry from Stop and PreCompact and keeps foreign hooks', async () => {
+    writeFileSync(settingsFile, JSON.stringify({ hooks: {
+      Stop: [FOREIGN, { matcher: '', hooks: [{ type: 'command', command: '"/x/chat_recall_save_hook.sh"' }] }],
+      PreCompact: [{ matcher: '', hooks: [{ type: 'command', command: '"/x/chat_recall_save_hook.sh" --precompact' }] }, FOREIGN],
+    } }));
+    await installHooks(here);
+    const cfg = read(settingsFile);
+    expect(JSON.stringify(cfg)).not.toContain('chat_recall_save_hook.sh');
+    expect(cfg.hooks.Stop).toContainEqual(FOREIGN);
+    expect(cfg.hooks.PreCompact).toEqual([FOREIGN]);
   });
 
   test('keeps every other setting and every foreign hook', async () => {
@@ -215,6 +237,20 @@ describe('ensureHooks — the repair the MCP server runs at start', () => {
     expect(claudeSettingsFiles()).toEqual([join(second, 'settings.json')]);
     const r = await ensureHooks(here);
     expect(r?.written).toEqual([join(second, 'settings.json')]);
+  });
+
+  test('ensureHooks removes an old save-hook entry without a version change', async () => {
+    await installHooks(here);
+    const cfg = read(settingsFile);
+    cfg.hooks.Stop.push(FOREIGN);
+    cfg.hooks.Stop.push({ matcher: '', hooks: [{ type: 'command', command: '"/x/chat_recall_save_hook.sh"' }] });
+    cfg.hooks.PreCompact = [{ matcher: '', hooks: [{ type: 'command', command: '"/x/chat_recall_save_hook.sh" --precompact' }] }];
+    writeFileSync(settingsFile, JSON.stringify(cfg));
+    expect(await ensureHooks(here)).not.toBeNull();
+    const after = read(settingsFile);
+    expect(JSON.stringify(after)).not.toContain('chat_recall_save_hook.sh');
+    expect(after.hooks.Stop).toContainEqual(FOREIGN);
+    expect(after.hooks.PreCompact).toBeUndefined();
   });
 
   test('keeps out of a machine where the user uninstalled the hooks', async () => {

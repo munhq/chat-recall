@@ -4,9 +4,7 @@
  *
  * Claude Code reads hooks from `settings.json`. This module wrote them to
  * `<profile>/hooks.json`, which Claude Code does not read outside a plugin, so
- * no hook it registered ever ran: the save hook creates
- * `~/.claude/chat-recall-memory` on every Stop, and that directory did not
- * exist on a machine where the Stop hook had been registered for months.
+ * no hook it registered ever ran.
  * Registration is in `settings.json` now, and our entries are removed from
  * `hooks.json`.
  *
@@ -24,14 +22,13 @@ import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import {
   boardHookEntries, isBoardHookEntry, isCurrentMessageWaiterEntry, messageHookEntries, isMessageHookEntry,
-  resolveCliEntry, resolveMessageHookEntry,
+  HOOK_TIMEOUT_SECONDS, resolveCliEntry, resolveMessageHookEntry,
 } from './board-hooks.js';
 import { cliVersion } from './http.js';
 import { registerTuiPlugin, tuiPluginEntry, unregisterTuiPlugin } from '@chat-recall/engine/core/opencode-tui-config.js';
 
 /** Which hooks to install. Every one is on unless the user turned it off. */
 export interface HookSelection {
-  save: boolean;
   resume: boolean;
   escalate: boolean;
   wakeup: boolean;
@@ -41,18 +38,25 @@ export interface HookSelection {
 }
 
 export const ALL_HOOKS: HookSelection = {
-  save: true, resume: true, escalate: true, wakeup: true, guard: true, taskBoard: true, messages: true,
+  resume: true, escalate: true, wakeup: true, guard: true, taskBoard: true, messages: true,
 };
 
 /** The shell scripts, by the selection key that installs each one. */
 const SCRIPTS = {
-  save: 'chat_recall_save_hook.sh',
   resume: 'chat_recall_resume_hook.sh',
   escalate: 'chat_recall_escalate_hook.sh',
   wakeup: 'chat_recall_wakeup_hook.sh',
   guard: 'chat_recall_guard_hook.sh',
 } as const;
 type ScriptKey = keyof typeof SCRIPTS;
+
+/**
+ * Scripts that an earlier version registered and this version removes. The save
+ * hook was removed in 0.7.31: it scanned every transcript before its throttle,
+ * so each Stop took 29 to 48 seconds. Its entries are removed from settings.json
+ * and hooks.json, and its copy is removed from the hooks folder.
+ */
+const LEGACY_SCRIPTS = ['chat_recall_save_hook.sh'] as const;
 
 /** Every event an entry of ours can sit on. Uninstall and reinstall walk all of them. */
 export const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse', 'PostToolUse'];
@@ -64,7 +68,13 @@ type Config = { hooks?: Record<string, unknown[]>; [k: string]: unknown };
 export function isOurEntry(entry: unknown): boolean {
   const cmd = (entry as { hooks?: Array<{ command?: unknown }> })?.hooks?.[0]?.command;
   if (typeof cmd !== 'string') return false;
-  return Object.values(SCRIPTS).some((s) => cmd.includes(s)) || isBoardHookEntry(entry) || isMessageHookEntry(entry);
+  return Object.values(SCRIPTS).some((s) => cmd.includes(s)) || isLegacyEntry(entry) || isBoardHookEntry(entry) || isMessageHookEntry(entry);
+}
+
+/** True for an entry of a script that this version no longer installs. */
+export function isLegacyEntry(entry: unknown): boolean {
+  const cmd = (entry as { hooks?: Array<{ command?: unknown }> })?.hooks?.[0]?.command;
+  return typeof cmd === 'string' && LEGACY_SCRIPTS.some((s) => cmd.includes(s));
 }
 
 /**
@@ -106,14 +116,11 @@ export function hookEntries(
   sel: HookSelection,
   paths: { scripts: Partial<Record<ScriptKey, string>>; execPath: string; cliEntry: string; messageHookEntry: string },
 ): Array<[string, Entry]> {
-  const cmd = (command: string, extra: Record<string, unknown> = {}): Entry['hooks'] => [{ type: 'command', command, ...extra }];
+  // Every command hook states its timeout, so settings.json shows the bound.
+  const cmd = (command: string, extra: Record<string, unknown> = {}): Entry['hooks'] => [{ type: 'command', command, timeout: HOOK_TIMEOUT_SECONDS, ...extra }];
   const q = (p: string) => `"${p}"`;
   const out: Array<[string, Entry]> = [];
   const s = paths.scripts;
-  if (sel.save && s.save) {
-    out.push(['Stop', { matcher: '', hooks: cmd(q(s.save)) }]);
-    out.push(['PreCompact', { matcher: '', hooks: cmd(`${q(s.save)} --precompact`) }]);
-  }
   if (sel.resume && s.resume) out.push(['UserPromptSubmit', { matcher: '', hooks: cmd(q(s.resume)) }]);
   // The escalation detaches its own background work, so session end is never delayed.
   if (sel.escalate && s.escalate) out.push(['SessionEnd', { matcher: '', hooks: cmd(q(s.escalate)) }]);
@@ -208,13 +215,15 @@ export interface InstallReport {
  * Install the selected hooks in every profile. Idempotent: a second run
  * replaces our entries and adds no duplicate.
  *
- * On Windows the five shell hooks are left out: Claude Code runs a hook
+ * On Windows the four shell hooks are left out: Claude Code runs a hook
  * command through cmd.exe, which cannot run a `.sh`. The board and message
  * hooks are node plus a bundle path, and install everywhere.
  */
 export async function installHooks(distDir: string, sel: HookSelection = ALL_HOOKS): Promise<InstallReport> {
   const shellSkipped = process.platform === 'win32';
   const scriptsDir = getHooksDir();
+  // The copy of a removed script is ours, and no entry runs it any more.
+  for (const name of LEGACY_SCRIPTS) rmSync(join(scriptsDir, name), { force: true });
   const scripts: Partial<Record<ScriptKey, string>> = {};
   if (!shellSkipped) {
     for (const key of Object.keys(SCRIPTS) as ScriptKey[]) {
@@ -305,7 +314,7 @@ function profileMissingHooks(settingsFile: string, sel: HookSelection): boolean 
     (Array.isArray(config.hooks?.[event]) ? config.hooks![event] : []).some(test);
   if (sel.messages && !(has('Stop', isCurrentMessageWaiterEntry) && has('SessionStart', isMessageHookEntry))) return true;
   if (sel.taskBoard && !has('UserPromptSubmit', isBoardHookEntry)) return true;
-  if (process.platform !== 'win32' && sel.save && !has('Stop', (e) => isOurEntry(e) && !isMessageHookEntry(e))) return true;
+  if (Object.values(config.hooks ?? {}).some((list) => Array.isArray(list) && list.some(isLegacyEntry))) return true;
   return false;
 }
 

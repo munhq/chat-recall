@@ -16,7 +16,6 @@
  *       lancedb/          (vector embeddings, when configured)
  *       wal/              (write-ahead log of MCP writes)
  *       diary/            (per-agent persistent diary)
- *     memory/             (auto-saved hook facts)
  *     identity.txt
  *     hooks/              (chat-recall hook scripts)
  *
@@ -70,12 +69,6 @@ export function getDiaryDir(): string {
   ensureDir(p);
   return p;
 }
-export function getMemoryDir(): string {
-  ensureMigrated();
-  const p = join(getDataDir(), 'memory');
-  ensureDir(p);
-  return p;
-}
 /**
  * Where the optional external secret detectors are installed.
  *
@@ -119,7 +112,6 @@ function legacyMappings(): LegacyEntry[] {
   return [
     { legacyPath: join(root, 'chat-recall-cache.db'),       newPath: join(newRoot, 'cache.db'),         isDir: false },
     { legacyPath: join(root, 'chat-recall-index'),          newPath: join(newRoot, 'index'),            isDir: true  },
-    { legacyPath: join(root, 'chat-recall-memory'),         newPath: join(newRoot, 'memory'),           isDir: true  },
     { legacyPath: join(root, 'chat-recall-identity.txt'),   newPath: join(newRoot, 'identity.txt'),     isDir: false },
     { legacyPath: join(root, 'chat-recall-hooks'),          newPath: join(newRoot, 'hooks'),            isDir: true  },
     // The legacy settings directory was named just "chat-recall" (no

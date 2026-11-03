@@ -2,6 +2,17 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.31] — 2026-11-03
+
+### Removed
+- **The save hook.** `Stop` and `PreCompact` no longer run `chat_recall_save_hook.sh`, and its script is no longer installed. The hook scanned every transcript before its 30-second throttle, so each Stop took 29 to 48 seconds on a machine with 15,183 transcripts. Its redirect also left an empty file whenever `jq` failed, so the saved facts were lost (#7, #8).
+- `getMemoryDir()`, the helper that only the save hook read, and the migration of the legacy `~/.claude/chat-recall-memory` folder.
+
+### Fixed
+- `chat-recall install-hooks` and the MCP server start remove the entries of the save hook from `settings.json` and `hooks.json` in every profile. Every other hook stays.
+- Every command hook that `install-hooks` registers in `settings.json` has a `timeout` of 60 seconds, the Claude Code default for a command hook, so the bound is written into the file.
+- The test suite sets `XDG_CONFIG_HOME` to a temporary folder in each test process, so a test run no longer writes the OpenCode config of the developer.
+
 ## [0.7.30] — 2026-11-03
 
 ### Fixed

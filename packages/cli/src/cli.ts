@@ -1649,7 +1649,6 @@ program
       const on = (ev: string, test: (h: unknown) => boolean) => (Array.isArray(hooks[ev]) ? hooks[ev] : []).some(test);
       const shell = (script: string) => (h: unknown) => String((h as any)?.hooks?.[0]?.command || '').includes(script);
       const checks: Array<[string, boolean]> = [
-        ['save', on('Stop', shell('chat_recall_save_hook.sh'))],
         ['wake-up', on('SessionStart', shell('chat_recall_wakeup_hook.sh'))],
         ['resume hint', on('UserPromptSubmit', shell('chat_recall_resume_hook.sh'))],
         ['task board', on('UserPromptSubmit', isBoardHookEntry) && on('SessionEnd', isBoardHookEntry)],
@@ -3311,7 +3310,6 @@ program
     }
 
     const r = await installHooks(here, {
-      save: true,
       resume: opts.resumeHint !== false,
       escalate: opts.escalate !== false,
       wakeup: opts.wakeup !== false,
@@ -3331,7 +3329,7 @@ program
       if (m.note) console.log(chalk.yellow(`  ! ${m.note}`));
     }
     if (r.shellSkipped) {
-      console.log(chalk.yellow('The five shell hooks are not installed on Windows: Claude Code runs hooks through cmd.exe, which cannot run them.'));
+      console.log(chalk.yellow('The four shell hooks are not installed on Windows: Claude Code runs hooks through cmd.exe, which cannot run them.'));
       console.log(chalk.dim('  The task-board and message hooks are installed. Under WSL, run this inside the WSL shell to get all of them.'));
     }
     console.log(chalk.dim(`  scripts: ${r.scriptsDir}`));
