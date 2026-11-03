@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import {
   boardHookCommand, boardHookEntries, isBoardHookEntry,
-  MESSAGE_HOOK_EVENTS, MESSAGE_WAITER_EVENTS, messageHookCommand, messageHookEntries,
+  MESSAGE_HOOK_EVENTS, MESSAGE_WAITER_EVENTS, MESSAGE_WAITER_TIMEOUT_SECONDS,
+  messageHookCommand, messageHookEntries,
   isMessageHookEntry, isMessageWaiterEntry,
 } from './board-hooks.js';
 
@@ -90,6 +91,21 @@ describe('message hook registration', () => {
     }
     for (const [, e] of turns) expect(isMessageWaiterEntry(e)).toBe(false);
     for (const [, e] of entries) expect(isMessageHookEntry(e)).toBe(true);
+  });
+
+  test('the waiter outlives an idle session, because nothing restarts it until the next turn', () => {
+    // Claude Code kills an asyncRewake hook at its timeout: 600 s when the
+    // entry sets none. A session idle for longer then had no waiter, and a
+    // message to it waited for the user to type. Only the waiter carries the
+    // longer timeout; a turn run is a short request and keeps the default.
+    const entries = messageHookEntries(NODE_POSIX, HOOK_POSIX);
+    for (const [, e] of entries.filter(([, e]) => e.hooks[0].asyncRewake)) {
+      expect(e.hooks[0].timeout).toBe(MESSAGE_WAITER_TIMEOUT_SECONDS);
+      expect(MESSAGE_WAITER_TIMEOUT_SECONDS).toBeGreaterThan(3600);
+    }
+    for (const [, e] of entries.filter(([, e]) => !e.hooks[0].asyncRewake)) {
+      expect(e.hooks[0].timeout).toBeUndefined();
+    }
   });
 
   test('the two kinds of hook do not claim each other\'s entries', () => {
