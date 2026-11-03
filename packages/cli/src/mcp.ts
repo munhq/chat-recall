@@ -37,6 +37,7 @@ import { openBrowser } from './open-browser.js';
 import { readFileSync } from 'node:fs';
 import { reportClientEvent } from './client-events.js';
 import { updateNotice } from './update-notice.js';
+import { beginChannel } from './channel.js';
 
 // Wire the host hooks BEFORE the transport accepts a call, so no early request
 // can see a half-configured surface.
@@ -478,7 +479,13 @@ async function main() {
     // Serving one client over this process's stdio: the path taken when the
     // daemon is turned off, and the fallback whenever it cannot be reached.
     const transport = new StdioServerTransport();
-    await createMcpServer().connect(transport);
+    const server = createMcpServer();
+    // A session that named chat-recall as a channel server gets the capability
+    // declared before the transport answers initialize, and delivery started
+    // after. Null for every other session, which is almost all of them.
+    const beginChannelDelivery = beginChannel(server);
+    await server.connect(transport);
+    beginChannelDelivery?.();
     // The transport never ends the process on its own. A session server whose
     // client is gone must exit, or it keeps its sync loop and its heap forever.
     const leave = () => process.exit(0);

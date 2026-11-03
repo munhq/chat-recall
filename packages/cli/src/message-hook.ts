@@ -25,6 +25,7 @@ import { recallTarget } from '@chat-recall/engine/core/remote-target.js';
 import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 import { fetchWithTimeout } from './http.js';
+import { channelOwnsSession, pruneSessionPids, recordSessionForPids } from './channel-state.js';
 import {
   EMPTY_STATE, emptyOutput, isHookTool, normalizePayload, planRun, processKindOf, renderRun, renderWake, sessionIdOf,
   type HookPayload, type HookState, type HookTool,
@@ -66,9 +67,15 @@ function pruneStates(now: number): void {
   try {
     for (const f of readdirSync(stateDir())) {
       const p = join(stateDir(), f);
-      if (now - statSync(p).mtimeMs > STATE_TTL_MS) unlinkSync(p);
+      try {
+        // by-pid/ is a directory in here, and unlinking it would abort the
+        // loop and leave every stale file behind.
+        if (!statSync(p).isFile()) continue;
+        if (now - statSync(p).mtimeMs > STATE_TTL_MS) unlinkSync(p);
+      } catch { /* another session pruned it first */ }
     }
   } catch { /* no directory yet */ }
+  pruneSessionPids();
 }
 
 function readStdin(): Promise<string> {
@@ -122,6 +129,10 @@ async function turn(payload: HookPayload, target: Target, tool: HookTool): Promi
     label: process.env.CHAT_RECALL_SESSION_NAME || undefined,
     doing: process.env.CHAT_RECALL_SESSION_DOING || undefined,
   } : {};
+
+  // The MCP server of this same session has no way to learn its id, and a
+  // channel needs it to poll. This is the only process that is told.
+  recordSessionForPids(plan.sessionId, ancestors());
 
   let messages: WireMessage[] = [];
   let labels: Record<string, string> = {};
@@ -230,6 +241,11 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
   const sessionId = sessionIdOf(payload);
   if (!sessionId) { debug('waiter: no session id'); return 0; }
   if (typeof payload.agent_id === 'string' && payload.agent_id) { debug('waiter: not inside a subagent'); return 0; }
+  // A session whose channel is delivering has no need of this process, and two
+  // consumers of the same lease would each deliver: the loser is spared only
+  // while the winner's lease holds. The marker is fresh only while the channel
+  // polls, so a channel that died hands delivery back here.
+  if (channelOwnsSession(sessionId)) { debug('waiter: the channel is delivering for this session'); return 0; }
   if (!claimWaiter(sessionId)) { debug('waiter: another waiter runs for this session'); return 0; }
   const watch = ancestors();
   let failures = 0;
@@ -237,6 +253,12 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
   try {
     for (;;) {
       if (!watch.every(alive)) { debug('waiter: the session process is gone'); return 0; }
+      // Both hooks of a session start at SessionStart, and this one may claim
+      // the slot a moment before the channel has the session id it needs. The
+      // check at the top therefore cannot be the only one: it would leave two
+      // consumers polling the same lease for as long as the session lives.
+      // Here the channel's marker can only have been written by a later tick.
+      if (channelOwnsSession(sessionId)) { debug('waiter: the channel took over'); return 0; }
       let r: { status: number; body: { ended?: boolean; messages?: WireMessage[]; labels?: Record<string, string> } | null };
       try {
         r = await post(target, '/api/live-sessions/wait', { sessionId, timeoutSecs: WAIT_SECS }, (WAIT_SECS + 15) * 1000);
@@ -261,6 +283,11 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
       if (r.body.ended) { debug('waiter: the session ended'); return 0; }
       const messages = r.body.messages ?? [];
       if (!messages.length) continue;
+      // A lease that this process took while the channel was claiming the
+      // session: deliver it through neither. Not acknowledging leaves the
+      // message on the server, and the channel takes it when the lease ends —
+      // late by a minute, never lost, and never twice.
+      if (channelOwnsSession(sessionId)) { debug('waiter: handing the lease to the channel'); return 0; }
       const text = renderWake(sessionId, messages, Date.now(), new Map(Object.entries(r.body.labels ?? {}))) + '\n';
       if (tool === 'claude') {
         await writeOut(process.stderr, text);
