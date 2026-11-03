@@ -22,7 +22,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { codexBackend, agyBackend, cursorBackend } from './backends/index.js';
 import { opencodeConfigDir, opencodePluginDir } from './guard-registration.js';
-import { selfIntroduction } from './session-messages.js';
+import { selfIntroduction, INTERRUPT_MARKER } from './session-messages.js';
 
 export type MessageTool = 'codex' | 'agy' | 'cursor' | 'opencode' | 'pi';
 
@@ -274,36 +274,85 @@ function runHook(sessionId, event, cwd) {
 
 /**
  * Wait for a message to an idle session. The hook long-polls the server and
- * prints the messages when one arrives; onText gets them. One waiter per
- * session; stopWaiter ends it when the session gets a prompt.
+ * prints the messages when one arrives; onText gets them. One watcher per
+ * session, owned by this process for as long as the session lives: a turn
+ * starting does not stop it, and a watcher that exits is started again.
+ * --supervised makes the hook say why it stopped (75 ended, 76 another
+ * watcher, 77 not a session to watch) instead of exiting silently.
  */
 const waiters = new Map();
 
 function startWaiter(sessionId, cwd, onText) {
-  if (waiters.has(sessionId)) return;
-  let out = "";
-  let child;
-  try {
-    child = spawn(HOOK, ["--wait"], { stdio: ["pipe", "pipe", "ignore"] });
-  } catch {
-    return;
-  }
-  waiters.set(sessionId, child);
-  child.stdout.on("data", (c) => { out += c; });
-  child.on("error", () => { waiters.delete(sessionId); });
-  child.on("close", () => {
-    if (waiters.get(sessionId) === child) waiters.delete(sessionId);
-    const text = out.trim();
-    if (text) Promise.resolve().then(() => onText(text)).catch(() => {});
-  });
-  child.stdin.end(JSON.stringify({ session_id: sessionId, hook_event_name: "Stop", cwd }));
+  const running = waiters.get(sessionId);
+  if (running && !running.stopped) return;
+  const rec = { child: null, stopped: false, timer: null, tries: 0 };
+  waiters.set(sessionId, rec);
+  const again = (ms) => {
+    if (rec.stopped) return;
+    clearTimeout(rec.timer);
+    rec.timer = setTimeout(launch, ms);
+  };
+  const launch = () => {
+    if (rec.stopped) return;
+    let out = "";
+    let child;
+    try {
+      child = spawn(HOOK, ["--wait", "--supervised"], { stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      again(5000);
+      return;
+    }
+    rec.child = child;
+    child.stdout.on("data", (c) => { out += c; });
+    // The close event follows an error, and carries the exit code.
+    child.on("error", () => {});
+    child.on("close", (code) => {
+      rec.child = null;
+      if (rec.stopped) return;
+      const text = out.trim();
+      if (text) {
+        rec.tries = 0;
+        Promise.resolve().then(() => onText(text)).catch(() => {}).then(() => again(0));
+        return;
+      }
+      // 75: the session ended. 76: another process already waits for it.
+      // 77: not a session the watcher serves. Asking again will not change
+      // any of them, so the next event starts a watcher instead.
+      if (code === 75 || code === 76 || code === 77) { waiters.delete(sessionId); return; }
+      rec.tries += 1;
+      again(Math.min(30000, 250 * 2 ** Math.min(rec.tries, 7)));
+    });
+    child.stdin.end(JSON.stringify({ session_id: sessionId, hook_event_name: "Stop", cwd }));
+  };
+  launch();
 }
 
 function stopWaiter(sessionId) {
-  const child = waiters.get(sessionId);
-  if (!child) return;
+  const rec = waiters.get(sessionId);
+  if (!rec) return;
+  rec.stopped = true;
+  clearTimeout(rec.timer);
   waiters.delete(sessionId);
-  try { child.kill(); } catch { /* gone */ }
+  try { rec.child?.kill(); } catch { /* gone */ }
+}
+
+/**
+ * Start watchers for the sessions that were already open when this plugin
+ * loaded. A reload replaces the plugin, so the new instance has no map from
+ * before, and an idle session emits no further event: without this sweep it
+ * would wait forever for a turn it never starts. Only recent sessions, most
+ * recently used first, because the list can hold every session in the folder.
+ */
+async function watchExisting(ctx, cwd, onTextFor) {
+  try {
+    const r = await ctx.session.list?.({});
+    const list = Array.isArray(r) ? r : (r?.data ?? r?.sessions ?? []);
+    const recent = list
+      .filter((s) => s && s.id && !s.parentID)
+      .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
+      .slice(0, 8);
+    for (const s of recent) startWaiter("opencode_" + s.id, cwd, onTextFor(s.id));
+  } catch { /* an older runtime has no list: events still start watchers */ }
 }
 `;
 }
@@ -334,6 +383,7 @@ export function opencodeMessagesSource(wrapperPath: string): string {
 // other sessions sent it to the next prompt.
 ${runnerSource(wrapperPath)}
 const RUN_END = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.idle"]);
+const INTERRUPT = ${JSON.stringify(INTERRUPT_MARKER)};
 const INTRO = ${JSON.stringify(selfIntroduction('\u0000SESSION\u0000'))};
 const intro = (id) => INTRO.replace("\u0000SESSION\u0000", "opencode_" + id);
 
@@ -361,10 +411,27 @@ async function setup(ctx) {
     } catch { /* unknown: treat as a main session */ }
     return false;
   };
+  // A message becomes a prompt, so an idle session acts on it with nobody
+  // typing. An urgent message stops the turn in progress first.
+  const deliver = (id) => async (text) => {
+    let body = text;
+    if (body.startsWith(INTERRUPT)) {
+      body = body.slice(INTERRUPT.length).replace(/^\\n+/, "");
+      try {
+        if (typeof ctx.session.interrupt === "function") await ctx.session.interrupt({ sessionID: id });
+        else if (typeof ctx.session.abort === "function") await ctx.session.abort({ sessionID: id });
+      } catch { /* the turn was already over */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await ctx.session.prompt({ sessionID: id, text: body });
+  };
   await ctx.session.hook("prompt", async (event) => {
     const id = event?.sessionID;
     if (!id || !event.prompt || (await isChild(id))) return;
-    stopWaiter("opencode_" + id);
+    // The watcher is not stopped for a turn. A message sent while this turn
+    // runs is already in flight to the runtime as the next prompt, and the
+    // hook below catches anything the watcher did not take.
+    startWaiter("opencode_" + id, await dirOf(id), deliver(id));
     // The first prompt registers the session; the hook adds only waiting messages.
     const text = await runHook("opencode_" + id, "UserPromptSubmit", await dirOf(id));
     if (text) event.prompt.text = [event.prompt.text, text].filter(Boolean).join("\\n\\n");
@@ -389,7 +456,9 @@ async function setup(ctx) {
           await runHook("opencode_" + id, "Stop", at);
           // An idle session acts on a message from another session by itself:
           // the text becomes its next prompt.
-          startWaiter("opencode_" + id, at, (text) => ctx.session.prompt({ sessionID: id, text }));
+          startWaiter("opencode_" + id, at, deliver(id));
+        } else if (ev.type === "session.created") {
+          startWaiter("opencode_" + id, await dirOf(id), deliver(id));
         } else if (ev.type === "session.deleted") {
           stopWaiter("opencode_" + id);
           await runHook("opencode_" + id, "SessionEnd", await dirOf(id));
@@ -397,6 +466,7 @@ async function setup(ctx) {
       }
     } catch { /* the subscription ends with the plugin */ }
   })();
+  await watchExisting(ctx, dir, deliver);
   return () => {
     controller.abort();
     for (const id of [...waiters.keys()]) stopWaiter(id);
@@ -674,6 +744,7 @@ export function piMessagesSource(wrapperPath: string): string {
 // Reports each pi session to chat-recall and adds the messages that other
 // sessions sent it to the next prompt.
 ${runnerSource(wrapperPath)}
+const INTERRUPT = ${JSON.stringify(INTERRUPT_MARKER)};
 export default function (pi) {
   let pending = "";
   const idOf = (ctx) => "pi_" + ctx.sessionManager.getSessionId();
@@ -683,7 +754,6 @@ export default function (pi) {
     pending = await runHook(idOf(ctx), "SessionStart", cwdOf(ctx));
   });
   pi.on("before_agent_start", async (event, ctx) => {
-    stopWaiter(idOf(ctx));
     if (event.messageType !== "user") return;
     const now = await runHook(idOf(ctx), "UserPromptSubmit", cwdOf(ctx));
     const text = [pending, now].filter(Boolean).join("\\n\\n");
@@ -694,7 +764,10 @@ export default function (pi) {
   pi.on("agent_end", async (_event, ctx) => {
     await runHook(idOf(ctx), "Stop", cwdOf(ctx));
     // An idle session acts on a message from another session by itself.
-    startWaiter(idOf(ctx), cwdOf(ctx), (text) => pi.sendUserMessage(text));
+    startWaiter(idOf(ctx), cwdOf(ctx), (text) => {
+      const body = text.startsWith(INTERRUPT) ? text.slice(INTERRUPT.length).replace(/^\\n+/, "") : text;
+      pi.sendUserMessage(body);
+    });
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     stopWaiter(idOf(ctx));

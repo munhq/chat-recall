@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'vitest';
-import { formatAge, formatDelivery, formatSessionLine, sessionName, shortId, type WireLiveSession } from './session-messages.js';
+import {
+  formatAge, formatDelivery, formatSessionLine, sessionName, shortId, interruptBody, readMessageBody,
+  INTERRUPT_BODY_PREFIX, INTERRUPT_MARKER, type WireLiveSession,
+} from './session-messages.js';
 
 const NOW = 1_750_000_000_000;
 const A = '11111111-0000-4000-8000-0000000000a1';
@@ -44,6 +47,21 @@ describe('formatDelivery', () => {
     expect(out).toContain('a session with no id');
     // No sender, so there is nobody to answer.
     expect(out).not.toContain('recall_message_send');
+  });
+
+  test('an urgent message is marked for a runtime that can stop a turn, and the reader never sees the flag', () => {
+    const out = formatDelivery(A, [{
+      id: 'm_1', fromSession: null, toSession: A, body: interruptBody('stop and read this'), replyTo: null,
+      createdAt: NOW, deliveredAt: NOW,
+    }], { now: NOW });
+    expect(out.startsWith(INTERRUPT_MARKER)).toBe(true);
+    expect(out).toContain('> stop and read this');
+    expect(out).not.toContain(INTERRUPT_BODY_PREFIX);
+  });
+
+  test('readMessageBody strips the flag from an urgent body only', () => {
+    expect(readMessageBody(interruptBody('hello'))).toEqual({ body: 'hello', interrupt: true });
+    expect(readMessageBody('hello')).toEqual({ body: 'hello', interrupt: false });
   });
 });
 

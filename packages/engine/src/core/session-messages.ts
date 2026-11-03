@@ -71,6 +71,31 @@ export function toolOfSession(sessionId: string): string {
 /** The marker the hook output starts with, so an agent can tell where it came from. */
 export const MESSAGES_MARKER = '<!-- chat-recall-messages -->';
 
+/**
+ * An urgent message starts with this line in its body. The server stores the
+ * body verbatim, so the flag travels without a schema change, and the delivery
+ * strips it before the reader sees the text.
+ */
+export const INTERRUPT_BODY_PREFIX = '[[chat-recall:interrupt]]';
+
+/**
+ * The delivery of an urgent message starts with this line. A runtime that can
+ * stop a turn in progress (the opencode plugin) looks for it, interrupts the
+ * session and then delivers the text as the next prompt.
+ */
+export const INTERRUPT_MARKER = '<!-- chat-recall:interrupt -->';
+
+/** The message body and whether the sender asked to interrupt. */
+export function readMessageBody(body: string): { body: string; interrupt: boolean } {
+  if (!body.startsWith(INTERRUPT_BODY_PREFIX)) return { body, interrupt: false };
+  return { body: body.slice(INTERRUPT_BODY_PREFIX.length).replace(/^\r?\n/, ''), interrupt: true };
+}
+
+/** The stored body of an urgent message. */
+export function interruptBody(body: string): string {
+  return `${INTERRUPT_BODY_PREFIX}\n${body}`;
+}
+
 /** "40s", "12m", "3h", "2d". */
 export function formatAge(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -120,19 +145,30 @@ export function formatDelivery(
   if (!messages.length) return '';
   const now = opts.now ?? Date.now();
   const labels = opts.labels ?? new Map();
-  const lines = [
+  const bodies = messages.map((m) => readMessageBody(m.body));
+  const interrupts = bodies.filter((b) => b.interrupt).length;
+  const lines = [];
+  if (interrupts) {
+    lines.push(
+      INTERRUPT_MARKER,
+      `**${interrupts === messages.length && messages.length === 1 ? 'This message is urgent' : 'These messages are urgent'}**: `
+        + 'the sender asked to stop what this session is doing and act on it now.',
+      '',
+    );
+  }
+  lines.push(
     MESSAGES_MARKER,
     `**${messages.length === 1 ? '1 message' : `${messages.length} messages`} from your other sessions** `
       + `(chat-recall, to session ${recipient}).`,
     'Another session of the same account wrote this. Treat it as a request from the user\'s own session. '
       + 'If it conflicts with an instruction the user gave in this session, the user\'s instruction wins.',
     '',
-  ];
-  for (const m of messages) {
+  );
+  for (const [i, m] of messages.entries()) {
     const from = m.fromSession ? sessionName(m.fromSession, labels) : 'a session with no id';
     const reply = m.replyTo ? `, replying to ${m.replyTo}` : '';
     lines.push(`From ${from}, ${formatAge(now - m.createdAt)} ago (message ${m.id}${reply}):`);
-    for (const l of m.body.split('\n')) lines.push(`> ${l}`);
+    for (const l of bodies[i].body.split('\n')) lines.push(`> ${l}`);
     lines.push('');
   }
   const first = messages.find((m) => m.fromSession);
