@@ -1,5 +1,6 @@
-# Dependencies
-node_modules/
+# Dependencies. No trailing slash: a link named node_modules is not a directory,
+# and a link to a folder outside the checkout breaks the image build.
+node_modules
 
 # Build output
 dist/
