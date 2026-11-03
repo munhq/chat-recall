@@ -2,6 +2,44 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.29] — 2026-11-03
+
+### Added
+- **A message can go to a folder.** `recall_message_send` takes the folder of a session as its recipient. `expect_cwd` refuses the send when the recipient is in another folder. An OpenCode TUI with no session yet gets the message as its first prompt. The send result names the folder and the process kind of each recipient.
+- **A channel delivers messages into an idle Claude Code session.** A session that starts with `--dangerously-load-development-channels server:chat-recall` takes its messages from the channel, and no waiter can time out. Other sessions keep the waiter. Setting `CHAT_RECALL_CHANNEL=1` or `=0` overrides the flag.
+- **A message can interrupt the turn of its recipient.** `recall_message_send` takes `interrupt: true`. The OpenCode plugin stops the turn in progress, then sends the message as a prompt. Other runtimes receive it at their next opportunity.
+
+### Fixed
+- **A message reaches a session that has been idle for more than ten minutes.** Claude Code ends an `asyncRewake` hook at its timeout, which is 600 seconds by default, and nothing starts another waiter while the session idles. The waiter now runs for one day. The MCP server replaces an older waiter when it starts, also when the installed version has not changed.
+- **An OpenCode watcher survives a turn and restarts when it exits.** The plugin keeps the watcher of a session for the life of the session, and restarts a watcher that exits, with a backoff. A plugin reload starts the watchers of the sessions that are already open.
+- **A watcher runs in the folder of its session.** One `opencode serve` serves several folders, so the folder of the plugin instance is not the folder of the session.
+
+## [0.7.28] — 2026-11-02
+
+Not published to npm. Its changes are in 0.7.29.
+
+### Fixed
+- **A message reaches an idle OpenCode session after its watcher died.** The plugin started one long-poll per session and stopped it at every prompt. A watcher that exited for any other reason left the session without one until its next turn. The watcher now starts with the prompt hook, and a turn does not stop it. The hook runs with `--supervised` and reports why it stopped: 75 when the session ended, 76 when another watcher holds the session, 77 when the session cannot be watched.
+- **pi:** the same restart rule, and the watcher is no longer stopped for a prompt.
+
+### Added
+- **`recall_message_send` takes `interrupt: true`.** An urgent message stops what the recipient is doing before it reads the message. The flag travels in the body, so a server that has not been upgraded still delivers it. The OpenCode plugin calls `session.interrupt`, then starts the turn. Claude Code, Codex, Antigravity, Cursor and pi deliver the message at their next opportunity.
+
+## [0.7.27] — 2026-11-01
+
+Not published to npm. Its changes are in 0.7.29.
+
+### Added
+- **A Claude Code session can take its messages from a channel, with no waiter to time out.** A channel is an MCP server that declares `capabilities.experimental["claude/channel"]`. It sends `notifications/claude/channel`, and the client takes a turn with the text, as if the user had typed it. The server long-polls the same `/wait` endpoint with the same lease, and acknowledges a batch only after the client took it.
+- **Opt-in by the command line.** A session started with `--channels server:chat-recall` or `--dangerously-load-development-channels server:chat-recall` uses the channel. A session started without the flag keeps the waiter. A channel session runs its MCP server in its own process, not in the shared daemon, because only that process can see the flag and its parent.
+- **The waiter stands down while a channel delivers.** The channel writes a marker for its session every 30 seconds. A waiter that finds the marker missing or stale takes delivery back.
+
+## [0.7.26] — 2026-11-01
+
+### Fixed
+- **A message reaches a session that has been idle for more than ten minutes.** Claude Code ends an `asyncRewake` hook at its timeout, which is 600 seconds by default. Nothing starts another waiter while the session idles, so a message waited until the user typed. The waiter entry now sets a one-day timeout. The waiter still ends with the session, because it watches the session's own process, and with the first message, which is the exit that wakes the session.
+- **A profile that already has the waiter is repaired when the MCP server starts.** The repair tests the timeout of the waiter entry, not only the installed version, so a profile written by 0.7.25 gets the new waiter.
+
 ## [0.7.25] — 2026-10-30
 
 ### Fixed
