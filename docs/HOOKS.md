@@ -19,7 +19,25 @@ Registered in `settings.json` of each Claude profile (`~/.claude` and each
 | `PreToolUse` (shell, edit, write) | decision guard | Checks the call against the decision register | `--no-guard` |
 | `UserPromptSubmit`, `SessionEnd` | task board | Claims a board card when a prompt names its id, and closes it at the end of the session | `--no-task-board` |
 | `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | messages | Reports the session, delivers waiting messages | `--no-messages` |
-| `SessionStart`, `UserPromptSubmit`, `Stop` (background) | message waiter | Waits for a message and wakes the session, also when it is idle; it runs for a day, because Claude Code ends an async `asyncRewake` hook at its timeout and nothing starts another one while the session idles | `--no-messages` |
+| `SessionStart`, `UserPromptSubmit`, `Stop` (background) | message waiter | Waits for a message and wakes the session, also when it is idle; it runs for a day, because Claude Code ends an async `asyncRewake` hook at its timeout and nothing starts another one while the session idles. It stands down while a channel delivers for the session | `--no-messages` |
+
+### Channels
+
+A session started with `--channels server:chat-recall` or
+`--dangerously-load-development-channels server:chat-recall` gets its messages from
+Claude Code instead of from the waiter: the MCP server declares the channel capability,
+long-polls the same endpoint and sends `notifications/claude/channel`, and the client
+takes a turn with it. No hook and no process of ours is involved in the delivery, so
+nothing can time out.
+
+The session is served in the MCP server's own process rather than by the shared daemon,
+because the flag is on the session's command line and only that process can see it.
+`CHAT_RECALL_CHANNEL=1` turns it on and `0` turns it off, whatever the command line says.
+
+Two limits come from Claude Code, not from this repository: a plain server needs the
+development flag until it is on the approved-channels allowlist, and the account's
+managed settings must allow channels. See
+[Run sessions that work together](./SESSIONS.md#a-channel-the-message-without-a-process).
 
 On Windows, the five shell hooks (save, resume hint, escalate, wake-up and
 guard) are not installed, because Claude Code runs hooks through `cmd.exe`. The
@@ -61,6 +79,7 @@ in the same files stay.
 |---|---|
 | `CHAT_RECALL_MESSAGE_HOOK=0` | Turns the message hook off |
 | `CHAT_RECALL_MESSAGE_HOOK_DEBUG=1` | Writes the reason for each silent exit of the message hook to stderr |
+| `CHAT_RECALL_CHANNEL=1` | Delivers messages through Claude Code's channel, as if the session had passed the flag; `0` never does |
 | `CHAT_RECALL_GUARD=0` | Turns the decision guard off |
 | `CHAT_RECALL_GUARD_ENFORCE=1` | Makes the decision guard block instead of warn |
 | `CHAT_RECALL_WAKEUP_TIMEOUT` | Seconds before the wake-up hook gives up (default 10) |

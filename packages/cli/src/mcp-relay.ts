@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SOCKET_FLAG, daemonEnabled, ensureSocketDir, logPath, socketPath } from './mcp-socket.js';
+import { channelDecision } from './channel-detect.js';
 import { resilientBridge } from './relay-lifecycle.js';
 
 declare const __CLI_VERSION__: string;
@@ -131,6 +132,16 @@ async function connectOrStart(dir: string, path: string): Promise<Socket | null>
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
+  // A channel session is served in THIS process, not by the shared daemon.
+  // The daemon holds one server per connection but sits in its own process
+  // tree, so it can see neither the session's command line nor its parent —
+  // and delivery needs both. One heavier process for the sessions that ask for
+  // it is the price of not paying that cost for every session, which is the
+  // reason the daemon exists at all.
+  if (channelDecision().enabled) {
+    await serveInProcess();
+    return;
+  }
   if (!daemonEnabled()) {
     await serveInProcess();
     return;

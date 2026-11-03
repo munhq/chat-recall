@@ -96,6 +96,32 @@ Claude Code, OpenCode and pi wake an idle session. In Codex, Antigravity and Cur
 idle session reads its messages when its user types next. A session can also wait for a
 message with `recall_inbox` and `wait_secs`, up to 600 seconds.
 
+### A channel: the message without a process
+
+A Claude Code session can also let Claude Code itself push the message in, through a
+*channel*: a local MCP server that declares the capability, and the client injects what
+it sends as if the user had typed it. chat-recall uses it only when the session asks:
+
+```
+claude --dangerously-load-development-channels server:chat-recall
+```
+
+Nothing else changes for a session started without the flag: it keeps the waiter. The
+flag is read from the command line of the session, so there is no setting to turn on and
+no state to migrate.
+
+A plain MCP server is not on Anthropic's approved-channels allowlist, which is why the
+development flag is the one that works. It also needs `channelsEnabled: true` in the
+account's *managed* settings: Claude Team and Enterprise have it off by default, and a
+subscription login cannot widen that from its own settings file. An API-key login passes
+(`proxium launch claude` is one). The first launch in a profile asks once whether you are
+using the flag for local development.
+
+While a channel delivers for a session, that session's waiter stands down: two consumers
+of the same lease would each deliver. The channel writes a marker of the session every
+30 seconds in `hook-state/messages/`, and a waiter that finds the marker gone or older
+than two minutes takes delivery back.
+
 ## See what each session does
 
 `recall_session_status` lists the sessions of the account. For each one it
