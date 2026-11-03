@@ -27,6 +27,7 @@ import {
   resolveCliEntry, resolveMessageHookEntry,
 } from './board-hooks.js';
 import { cliVersion } from './http.js';
+import { registerTuiPlugin, tuiPluginEntry, unregisterTuiPlugin } from '@chat-recall/engine/core/opencode-tui-config.js';
 
 /** Which hooks to install. Every one is on unless the user turned it off. */
 export interface HookSelection {
@@ -248,6 +249,8 @@ export async function installHooks(distDir: string, sel: HookSelection = ALL_HOO
   if (sel.messages && !shellSkipped) {
     report.messageTargets = await addMessagesToOtherTools(scriptsDir, process.execPath, resolveMessageHookEntry(distDir));
   }
+  // Without messages, the TUI plugin entry goes too. The plugin files stay: only our list entry is ours to remove here.
+  if (!sel.messages) unregisterTuiPlugin();
 
   writeJsonAtomic(statePath(), { version: cliVersion(), selection: sel } satisfies InstallState);
   return report;
@@ -399,6 +402,15 @@ async function addMessagesToOtherTools(
       const dir = join(dirname(target.configPath), reg.OPENCODE_TUI_PACKAGE);
       mkdirSync(dir, { recursive: true });
       for (const file of reg.opencodeTuiFiles(wrapper)) writeFileSync(join(dir, file.name), file.source);
+      // opencode loads a TUI plugin only from the plugin list of tui.jsonc.
+      const tui = registerTuiPlugin();
+      if (tui.status === 'unparseable') {
+        out.push({
+          label: 'OpenCode TUI',
+          configPath: tui.path,
+          note: `Not added: ${tui.reason}. Add "${tuiPluginEntry()}" to its plugin list by hand.`,
+        });
+      }
     } else if (target.tool === 'pi') {
       writeFileSync(target.configPath, reg.piMessagesSource(wrapper));
     } else {
@@ -414,6 +426,9 @@ async function addMessagesToOtherTools(
 async function removeMessagesFromOtherTools(): Promise<UninstallReport['messagesRemoved']> {
   const reg = await import('@chat-recall/engine/core/message-registration.js');
   const out: UninstallReport['messagesRemoved'] = [];
+  // Our TUI entry goes even when the message plugin of the tool is not ours to remove.
+  const tui = unregisterTuiPlugin();
+  if (tui.removed) out.push({ label: 'OpenCode TUI', configPath: tui.path });
   for (const target of reg.messageTargets()) {
     if (!existsSync(target.configPath)) continue;
     if (target.tool === 'opencode' || target.tool === 'pi') {

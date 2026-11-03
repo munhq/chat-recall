@@ -27,6 +27,8 @@ import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, ST
 import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
 import { collectEnvNeeds, renderEnvNeeds } from './env-needed.js';
 import { askForStar } from './star-nudge.js';
+import { hasTuiPluginEntry, tuiConfigPath, tuiPluginEntry } from '@chat-recall/engine/core/opencode-tui-config.js';
+import { opencodeConfigDir } from '@chat-recall/engine/core/guard-registration.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -1716,6 +1718,19 @@ program
       }
     } catch (err) {
       note(false, 'Messages', `check failed: ${err}`);
+    }
+
+    // The TUI plugin entry of opencode. opencode reads a TUI plugin only from
+    // this list, so without the entry a new TUI never registers its folder.
+    try {
+      if (existsSync(opencodeConfigDir())) {
+        const path = tuiConfigPath();
+        const present = existsSync(path) && hasTuiPluginEntry(readFileSync(path, 'utf-8'), tuiPluginEntry());
+        note(present, 'Messages — OpenCode TUI',
+          present ? path : `${path} has no "${tuiPluginEntry()}" entry — run \`chat-recall install-hooks\``);
+      }
+    } catch (err) {
+      note(false, 'Messages — OpenCode TUI', `check failed: ${err}`);
     }
 
     // Skills, per target tool. An agent with no skill file has 50 recall_*
