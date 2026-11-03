@@ -52,7 +52,7 @@ import { recallTarget } from '../core/remote-target.js';
 import { redactSecrets } from '../core/secret-redactor.js';
 import { spawnChild, localAgents, PERMISSION_MODES, type LocalAgent } from '../core/session-spawn.js';
 import {
-  formatDelivery, formatSessionLine, formatAge, sessionName, toolOfSession, PRESENCE_PREFIX,
+  formatDelivery, formatSessionLine, formatAge, sessionName, interruptBody, toolOfSession, PRESENCE_PREFIX,
   type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
 import { localAiProcesses } from '../core/local-processes.js';
@@ -993,6 +993,8 @@ const RecallMessageSendSchema = z.object({
   to: z.string().min(1)
     .describe('The recipient: a session id, the start of one, a session name, an absolute folder, or "parent" / "children" / "group" (relative to `from`).'),
   body: z.string().min(1).max(16_000).describe('The message. Secrets in it are redacted before it leaves this machine.'),
+  interrupt: z.boolean().optional()
+    .describe('Stop what the recipient is doing and act on this now. A runtime that can interrupt a turn does so; every other runtime delivers it at the next opportunity.'),
   reply_to: z.string().optional().describe('The id of the message this answers.'),
   expect_cwd: z.string().min(1).optional()
     .describe('The folder the recipient must be in. The send is refused when the recipient is elsewhere.'),
@@ -2305,8 +2307,9 @@ remembering specific keys.`,
         description: `Send a message to another running AI session of this account. Use it when one
 session coordinates others: a parent gives work to its children, a child reports back.
 
-The recipient gets the message at its next prompt, tool call or turn end (Claude Code, through the
-chat-recall message hook). A session that waits for its user reads it when the user types next.
+The recipient gets the message at its next prompt, tool call or turn end. A session with a live
+watcher (opencode and pi start one when a run ends) is idle only in name: the message starts its
+next turn with nobody typing. \`interrupt: true\` stops what the recipient is doing first.
 "children" sends to every running child of \`from\`; "parent" sends to its parent; "group" sends to
 the parent and every running child — use it to announce a decision to the whole group.
 
@@ -5335,8 +5338,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         requireRemote();
         // The body goes into another agent's context, so it is redacted here,
         // before it leaves the machine, like every synced transcript.
-        const body = redactSecrets(params.body, { force: true });
-        getWAL().log('message_send', { from: params.from, to: params.to, chars: body.length });
+        const redactedBody = redactSecrets(params.body, { force:true });
+        // An urgent message carries the interrupt marker, which the opencode plugin reads.
+        const body = params.interrupt ? interruptBody(redactedBody) : redactedBody;
+        getWAL().log('message_send', { from: params.from, to: params.to, chars: body.length, interrupt: !!params.interrupt });
         type SentTo = { sessionId: string; label: string | null; state: string; cwd: string | null; lastSeen?: number | null; processKind?: string | null };
         const r = await remotePost<{ messages: WireMessage[]; recipients: SentTo[] }>(
           '/api/live-sessions/messages',
@@ -5355,11 +5360,11 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
               : rc.state === 'ended' ? 'That session has ended. The message waits in case it resumes.'
                 : rc.state === 'idle' && (tool === 'opencode' || tool === 'pi')
                   ? 'It is idle, and its plugin starts a turn with the message.'
-                  : rc.state === 'idle' ? 'That session waits for its user, so it reads the message when the user types next.'
+                  : rc.state === 'idle' ? 'That session is idle. A session with a live watcher reads it and starts a turn by itself; one without reads it when its user types next.'
                     : 'It receives the message at its next tool call or turn end.';
           return `- ${name}${where}${process}: message ${r.messages[i]?.id}. ${when}`;
         });
-        const redacted = body !== params.body ? '\nSecrets in the body were redacted before sending.' : '';
+        const redacted = redactedBody !== params.body ? '\nSecrets in the body were redacted before sending.' : '';
         return { content: [{ type: 'text', text: `Sent.\n${lines.join('\n')}${redacted}` }] };
       }
 

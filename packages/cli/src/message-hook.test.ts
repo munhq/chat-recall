@@ -88,6 +88,22 @@ describe.skipIf(!existsSync(HOOK))('message hook, the waiter', () => {
     expect(calls.filter((c) => c.path === '/api/live-sessions/wait')).toHaveLength(5);
   }, 120_000);
 
+  test('supervised: a stopped waiter says why, so a plugin starts it only when it helps', async () => {
+    handler = () => ({ status: 200, json: { ended: true, messages: [] } });
+    const ended = await runHook(['--wait', '--supervised'], { session_id: SID, hook_event_name: 'Stop' });
+    expect(ended.code).toBe(75);
+
+    const dir = join(root, 'data', 'hook-state', 'messages');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${SID}.waiter`), String(process.pid));
+    const taken = await runHook(['--wait', '--supervised'], { session_id: SID, hook_event_name: 'Stop' });
+    expect(taken.code).toBe(76);
+    rmSync(join(dir, `${SID}.waiter`), { force: true });
+
+    const child = await runHook(['--wait', '--supervised'], { session_id: SID, hook_event_name: 'Stop', agent_id: 'a1' });
+    expect(child.code).toBe(77);
+  }, 20_000);
+
   test('a second waiter for the same session exits at once', async () => {
     const dir = join(root, 'data', 'hook-state', 'messages');
     mkdirSync(dir, { recursive: true });

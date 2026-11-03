@@ -237,16 +237,16 @@ function releaseWaiter(sessionId: string): void {
 /** Tools whose plugin runs the waiter and starts a turn with what it prints. */
 const PLUGIN_WAITERS: ReadonlySet<HookTool> = new Set(['opencode', 'pi']);
 
-async function wait(payload: HookPayload, target: Target, tool: HookTool = 'claude'): Promise<number> {
+async function wait(payload: HookPayload, target: Target, tool: HookTool = 'claude', supervised = false): Promise<number> {
   const sessionId = sessionIdOf(payload);
-  if (!sessionId) { debug('waiter: no session id'); return 0; }
-  if (typeof payload.agent_id === 'string' && payload.agent_id) { debug('waiter: not inside a subagent'); return 0; }
+  if (!sessionId) { debug('waiter: no session id'); return supervised ? 77 : 0; }
+  if (typeof payload.agent_id === 'string' && payload.agent_id) { debug('waiter: not inside a subagent'); return supervised ? 77 : 0; }
   // A session whose channel is delivering has no need of this process, and two
   // consumers of the same lease would each deliver: the loser is spared only
   // while the winner's lease holds. The marker is fresh only while the channel
   // polls, so a channel that died hands delivery back here.
   if (channelOwnsSession(sessionId)) { debug('waiter: the channel is delivering for this session'); return 0; }
-  if (!claimWaiter(sessionId)) { debug('waiter: another waiter runs for this session'); return 0; }
+  if (!claimWaiter(sessionId)) { debug('waiter: another waiter runs for this session'); return supervised ? 76 : 0; }
   const watch = ancestors();
   let failures = 0;
   let notFound = 0;
@@ -266,7 +266,7 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
         r = { status: 0, body: null };
         debug(`waiter: request failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (r.status === 401 || r.status === 402 || r.status === 403) { debug(`waiter: HTTP ${r.status}`); return 0; }
+      if (r.status === 401 || r.status === 402 || r.status === 403) { debug(`waiter: HTTP ${r.status}`); return supervised ? 77 : 0; }
       if (!r.body) {
         // A 404 at start is the SessionStart report still on its way, so a few
         // are retried. More of them mean a server without this route, or a
@@ -274,13 +274,13 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
         // Anything else is the network: back off, and stop after an hour.
         failures += 1;
         notFound = r.status === 404 ? notFound + 1 : 0;
-        if (notFound >= 5 || failures > 120) return 0;
+        if (notFound >= 5 || failures > 120) return supervised ? 77 : 0;
         await new Promise((res) => setTimeout(res, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5))));
         continue;
       }
       failures = 0;
       notFound = 0;
-      if (r.body.ended) { debug('waiter: the session ended'); return 0; }
+      if (r.body.ended) { debug('waiter: the session ended'); return supervised ? 75 : 0; }
       const messages = r.body.messages ?? [];
       if (!messages.length) continue;
       // A lease that this process took while the channel was claiming the
@@ -424,7 +424,9 @@ async function main(): Promise<number> {
   const target = recallTarget();
   if (!target) { debug('no login: run `chat-recall login`'); return 0; }
   if (process.argv.includes('--wait')) {
-    return toolArg === 'claude' || PLUGIN_WAITERS.has(toolArg) ? wait(payload, target, toolArg) : 0;
+    return toolArg === 'claude' || PLUGIN_WAITERS.has(toolArg)
+      ? wait(payload, target, toolArg, process.argv.includes('--supervised'))
+      : 0;
   }
   await turn(payload, target, toolArg);
   return 0;

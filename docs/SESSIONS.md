@@ -81,6 +81,11 @@ which row has a window before you send to it:
 message to one waits for the next turn. A window keeps its kind when the
 service it started reports the same session.
 
+`interrupt: true` asks the recipient to stop what it is doing and act on the message
+now. OpenCode stops the turn in progress and starts a new one; the other tools deliver
+it at the next opportunity, because their runtime has no way to stop a turn from
+outside.
+
 ## When a message arrives
 
 | Tool | When the recipient gets the message |
@@ -88,7 +93,7 @@ service it started reports the same session.
 | Claude Code | Within about a second, also when the session is idle. A background hook waits for messages and wakes the session. |
 | Codex | At the next prompt. Approve the hook once with `/hooks` in Codex. |
 | Antigravity | At the next prompt. |
-| OpenCode | Within a few seconds, also when the session is idle. The plugin starts a turn with the message. |
+| OpenCode | Within a few seconds, also when the session is idle. The plugin owns a watcher for each session for as long as the session lives: a turn starting does not end it, and a watcher that exits is started again. |
 | pi | Within a few seconds, also when the session is idle. The extension starts a turn with the message. |
 | Cursor | When the agent stops, as a follow-up prompt. |
 
