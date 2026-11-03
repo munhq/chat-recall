@@ -19,7 +19,7 @@ Registered in `settings.json` of each Claude profile (`~/.claude` and each
 | `PreToolUse` (shell, edit, write) | decision guard | Checks the call against the decision register | `--no-guard` |
 | `UserPromptSubmit`, `SessionEnd` | task board | Claims a board card when a prompt names its id, and closes it at the end of the session | `--no-task-board` |
 | `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd` | messages | Reports the session, delivers waiting messages | `--no-messages` |
-| `SessionStart`, `UserPromptSubmit`, `Stop` (background) | message waiter | Waits for a message and wakes the session, also when it is idle | `--no-messages` |
+| `SessionStart`, `UserPromptSubmit`, `Stop` (background) | message waiter | Waits for a message and wakes the session, also when it is idle; it runs for a day, because Claude Code ends an async `asyncRewake` hook at its timeout and nothing starts another one while the session idles | `--no-messages` |
 
 On Windows, the five shell hooks (save, resume hint, escalate, wake-up and
 guard) are not installed, because Claude Code runs hooks through `cmd.exe`. The

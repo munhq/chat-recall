@@ -23,7 +23,7 @@ import { getHooksDir } from '@chat-recall/engine/core/paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import {
-  boardHookEntries, isBoardHookEntry, messageHookEntries, isMessageHookEntry, isMessageWaiterEntry,
+  boardHookEntries, isBoardHookEntry, isCurrentMessageWaiterEntry, messageHookEntries, isMessageHookEntry,
   resolveCliEntry, resolveMessageHookEntry,
 } from './board-hooks.js';
 import { cliVersion } from './http.js';
@@ -300,7 +300,7 @@ function profileMissingHooks(settingsFile: string, sel: HookSelection): boolean 
   if (!config) return false;          // unparseable: not ours to repair
   const has = (event: string, test: (e: unknown) => boolean) =>
     (Array.isArray(config.hooks?.[event]) ? config.hooks![event] : []).some(test);
-  if (sel.messages && !(has('Stop', isMessageWaiterEntry) && has('SessionStart', isMessageHookEntry))) return true;
+  if (sel.messages && !(has('Stop', isCurrentMessageWaiterEntry) && has('SessionStart', isMessageHookEntry))) return true;
   if (sel.taskBoard && !has('UserPromptSubmit', isBoardHookEntry)) return true;
   if (process.platform !== 'win32' && sel.save && !has('Stop', (e) => isOurEntry(e) && !isMessageHookEntry(e))) return true;
   return false;

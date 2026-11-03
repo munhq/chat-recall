@@ -87,6 +87,19 @@ export const MESSAGE_HOOK_EVENTS: readonly string[] = ['SessionStart', 'UserProm
  */
 export const MESSAGE_WAITER_EVENTS: readonly string[] = ['SessionStart', 'UserPromptSubmit', 'Stop'];
 
+/**
+ * How long Claude Code leaves the waiter running, in seconds.
+ *
+ * Claude Code enforces `timeout` on an asyncRewake hook, unlike a plain async
+ * one, and kills it at 600 s when the entry sets none. Nothing starts another
+ * waiter while the session is idle, so a session idle for longer than that went
+ * deaf: a message to it waited until its user typed, which started a turn and
+ * delivered the message with the prompt. A day outlives any real idle period,
+ * and the waiter still ends with the session (it watches the session's own
+ * process) or with the first message (exit 2, which wakes the session).
+ */
+export const MESSAGE_WAITER_TIMEOUT_SECONDS = 86_400;
+
 /** The command Claude Code runs for the message hook. Both paths quoted, as above. */
 export function messageHookCommand(execPath: string, hookEntry: string, waiter = false): string {
   return `"${execPath}" "${hookEntry}"${waiter ? ' --wait' : ''}`;
@@ -103,7 +116,19 @@ export function isMessageWaiterEntry(entry: unknown): boolean {
   return isMessageHookEntry(entry) && /--wait$/.test(entryCommand(entry)!.trim());
 }
 
-type HookCommand = { type: string; command: string; asyncRewake?: boolean };
+/**
+ * True when the waiter entry carries the lifetime this version needs.
+ *
+ * A profile written before the waiter had a timeout keeps a waiter that dies
+ * after 600 s, and `ensureHooks` must replace it even when the version it
+ * recorded has not changed.
+ */
+export function isCurrentMessageWaiterEntry(entry: unknown): boolean {
+  if (!isMessageWaiterEntry(entry)) return false;
+  return (entry as { hooks?: Array<{ timeout?: unknown }> }).hooks?.[0]?.timeout === MESSAGE_WAITER_TIMEOUT_SECONDS;
+}
+
+type HookCommand = { type: string; command: string; asyncRewake?: boolean; timeout?: number };
 
 /** The `[event, entry]` pairs for the message hook: the turn runs, then the waiters. */
 export function messageHookEntries(execPath: string, hookEntry: string): Array<[string, { matcher: string; hooks: HookCommand[] }]> {
@@ -111,7 +136,10 @@ export function messageHookEntries(execPath: string, hookEntry: string): Array<[
   const waiter = messageHookCommand(execPath, hookEntry, true);
   return [
     ...MESSAGE_HOOK_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: turn }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
-    ...MESSAGE_WAITER_EVENTS.map((event) => [event, { matcher: '', hooks: [{ type: 'command', command: waiter, asyncRewake: true }] }] as [string, { matcher: string; hooks: HookCommand[] }]),
+    ...MESSAGE_WAITER_EVENTS.map((event) => [event, {
+      matcher: '',
+      hooks: [{ type: 'command', command: waiter, asyncRewake: true, timeout: MESSAGE_WAITER_TIMEOUT_SECONDS }],
+    }] as [string, { matcher: string; hooks: HookCommand[] }]),
   ];
 }
 
