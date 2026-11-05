@@ -30,7 +30,7 @@ import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
-import { getObjectStore, rawObjectKey } from './object-store.js';
+import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
 type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => infer R ? Awaited<R> : never;
@@ -807,13 +807,21 @@ export class PgStore implements StorageDriver {
   }
 
   // ── content cache ──
+  //
+  // #11: the body of an envelope is bulk storage, not queryable data. When an
+  // object store is configured, the bytes go to the bucket and the row keeps
+  // only the key, the digest and the size, with `content_json` set to ''. Rows
+  // written before a bucket existed, and every row on a deployment that has
+  // none, keep the body in Postgres. `readCachedBody` reads either shape, so
+  // the two forms coexist during and after a move.
   async getCachedContent(id: string, sourceType: string, mtime: number): Promise<string | null> {
-    const row = await this.one(`SELECT content_json FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3 AND mtime>=$4`, [this.t, id, sourceType, intMs(mtime)]);
-    return row?.content_json || null;
+    const row = await this.one(`SELECT content_json, object_key FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3 AND mtime>=$4`, [this.t, id, sourceType, intMs(mtime)]);
+    return row ? readCachedBody(row) : null;
   }
   async getCachedContentStale(id: string, sourceType: string): Promise<{ content: string; mtime: number } | null> {
-    const row = await this.one(`SELECT content_json, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType]);
-    return row ? { content: row.content_json, mtime: Number(row.mtime) } : null;
+    const row = await this.one(`SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType]);
+    if (!row) return null;
+    return { content: (await readCachedBody(row)) ?? '', mtime: Number(row.mtime) };
   }
   /**
    * Prior cached content for a whole batch, in one query.
@@ -837,9 +845,13 @@ export class PgStore implements StorageDriver {
     const out = new Map<string, { content: string; mtime: number }>();
     if (ids.length === 0) return out;
     const rows = await this.q(
-      `SELECT id, content_json, mtime FROM content_cache WHERE tenant=$1 AND source_type=$2 AND id = ANY($3)`,
+      `SELECT id, content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND source_type=$2 AND id = ANY($3)`,
       [this.t, sourceType, ids]);
-    for (const r of rows) out.set(r.id, { content: r.content_json, mtime: Number(r.mtime) });
+    // The bodies may be objects now. Read them in parallel: the ingest asks for
+    // a whole batch, and one sequential round trip per session would put the
+    // bucket's latency on every sync. A row without a key costs nothing here.
+    const bodies = await Promise.all(rows.map((r: any) => readCachedBody(r)));
+    rows.forEach((r: any, i: number) => out.set(r.id, { content: bodies[i] ?? '', mtime: Number(r.mtime) }));
     return out;
   }
 
@@ -876,11 +888,7 @@ export class PgStore implements StorageDriver {
   }
 
   async setCachedContent(id: string, sourceType: string, mtime: number, content: string): Promise<void> {
-    await this.q(
-      `INSERT INTO content_cache (tenant,id,source_type,content_json,mtime) VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (tenant,id,source_type) DO UPDATE SET content_json=excluded.content_json, mtime=excluded.mtime`,
-      [this.t, id, sourceType, applyChunkPrivacy(content), intMs(mtime)],
-    );
+    await this.tx((client) => this.writeCachedContent(client, [{ id, sourceType, mtime, content }]));
   }
 
   // ── secret findings ──
@@ -1178,13 +1186,71 @@ export class PgStore implements StorageDriver {
     const byKey = new Map<string, typeof rows[number]>();
     for (const r of rows) byKey.set(`${r.sourceType}\u0000${r.id}`, r);
     const list = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+    if (list.length === 0) return;
+
+    const objects = getObjectStore();
+    let prepared = list.map((r) => {
+      const body = applyChunkPrivacy(r.content);
+      if (!objects) return { r, body, contentJson: body, objectKey: '', hash: '', bytes: 0 };
+      const hash = contentDigest(body);
+      return {
+        r,
+        body,
+        contentJson: '',
+        objectKey: contentObjectKey(this.t, r.sourceType, r.id, hash),
+        hash,
+        bytes: Buffer.byteLength(body, 'utf8'),
+      };
+    });
+
+    // The object is written FIRST, as for the raw archive: a row that names an
+    // object which was never stored breaks every later read, while an object
+    // with no row costs storage and serves nobody. If the bucket refuses the
+    // write, fall back to the column for this batch rather than failing a sync
+    // — the read path accepts either shape, so the conversation is kept.
+    if (objects) {
+      try {
+        await Promise.all(prepared.map((p) => objects.put(p.objectKey, gzipText(p.body))));
+      } catch (e) {
+        const { createLogger } = await import('../logger.js');
+        createLogger('pg').warn({ err: e, rows: prepared.length }, 'content cache: object PUT failed, keeping bodies in Postgres');
+        prepared = list.map((r) => {
+          const body = applyChunkPrivacy(r.content);
+          return { r, body, contentJson: body, objectKey: '', hash: '', bytes: 0 };
+        });
+      }
+    }
+
+    // The keys this batch supersedes. Read before the upsert, in the same
+    // transaction, so a concurrent writer's newer key is never deleted here.
+    let prevKeys: string[] = [];
+    if (objects) {
+      const prev = await client.query(
+        `SELECT id, source_type, object_key FROM content_cache WHERE tenant=$1 AND id = ANY($2)`,
+        [this.t, list.map((r) => r.id)]);
+      const wanted = new Set(list.map((r) => `${r.sourceType}\u0000${r.id}`));
+      prevKeys = prev.rows
+        .filter((p: any) => p.object_key && wanted.has(`${p.source_type}\u0000${p.id}`))
+        .map((p: any) => p.object_key as string);
+    }
+
     await bulkInsert(client, 'content_cache',
-      ['tenant', 'id', 'source_type', 'content_json', 'mtime'],
-      list.map((r) => [this.t, r.id, r.sourceType, applyChunkPrivacy(r.content), intMs(r.mtime)]),
+      ['tenant', 'id', 'source_type', 'content_json', 'object_key', 'content_hash', 'content_bytes', 'mtime'],
+      prepared.map((p) => [this.t, p.r.id, p.r.sourceType, p.contentJson, p.objectKey, p.hash, p.bytes, intMs(p.r.mtime)]),
       `ON CONFLICT (tenant,id,source_type) DO UPDATE
-          SET content_json=excluded.content_json, mtime=excluded.mtime
+          SET content_json=excluded.content_json, object_key=excluded.object_key,
+              content_hash=excluded.content_hash, content_bytes=excluded.content_bytes,
+              mtime=excluded.mtime
         WHERE content_cache.content_json IS DISTINCT FROM excluded.content_json
+           OR content_cache.object_key   IS DISTINCT FROM excluded.object_key
            OR content_cache.mtime        IS DISTINCT FROM excluded.mtime`);
+
+    // An updated body lives under a new hash key; the old object is named by no
+    // row after the commit, so delete it then. An unchanged body keeps the same
+    // key and is never in this set.
+    const live = new Set(prepared.map((p) => p.objectKey).filter(Boolean));
+    const dead = prevKeys.filter((k) => !live.has(k));
+    if (dead.length > 0) await this.deleteObjectsAfterCommit(dead);
   }
 
   private async writeTouchMtime(client: any, rows: Array<{ sessionId: string; mtime: number }>): Promise<void> {
@@ -1658,8 +1724,11 @@ export class PgStore implements StorageDriver {
     ))?.b ?? 0;
     let cache = 0;
     try {
+      // #11: an object-backed row has an empty content_json, so its body length
+      // is kept in content_bytes. Summing both keeps the storage meter honest
+      // whether the bytes sit in the table or in the bucket.
       cache = (await this.oneRo(
-        `SELECT COALESCE(SUM(length(content_json)),0)::bigint AS b FROM content_cache WHERE tenant=$1`, [this.t],
+        `SELECT COALESCE(SUM(length(content_json) + content_bytes),0)::bigint AS b FROM content_cache WHERE tenant=$1`, [this.t],
       ))?.b ?? 0;
     } catch { /* table shape differs on old deployments — chunks alone still meter */ }
     return Number(chunks) + Number(cache);
@@ -1817,7 +1886,6 @@ export class PgStore implements StorageDriver {
       // keeps surfacing in vector results. It is absent when no embedder was
       // ever configured.
       ['memory_vectors', `DELETE FROM memory_vectors WHERE tenant=$1 AND item_id = ANY($2) AND source_type='session'`],
-      ['content_cache', `DELETE FROM content_cache WHERE tenant=$1 AND id = ANY($2) AND source_type='session'`],
       ['secret_findings', `DELETE FROM secret_findings WHERE tenant=$1 AND session_id = ANY($2)`],
       ['session_metadata', `DELETE FROM session_metadata WHERE tenant=$1 AND session_id = ANY($2)`],
       ['compute_cache', `DELETE FROM compute_cache WHERE tenant=$1 AND session_id = ANY($2)`],
@@ -1826,7 +1894,7 @@ export class PgStore implements StorageDriver {
     ];
     const keys = await this.tx(async (client: any) => {
       const present = new Set<string>();
-      const names = [...statements.map(([t]) => t), 'raw_sessions', 'memory_metadata'];
+      const names = [...statements.map(([t]) => t), 'raw_sessions', 'content_cache', 'memory_metadata'];
       const reg = await client.query(
         `SELECT n FROM unnest($1::text[]) AS n WHERE to_regclass(n) IS NOT NULL`, [names]);
       for (const r of reg.rows) present.add(r.n);
@@ -1844,6 +1912,15 @@ export class PgStore implements StorageDriver {
           `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id = ANY($2) RETURNING object_key`,
           [this.t, ids]);
         objectKeys = purged.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
+      }
+      if (present.has('content_cache')) {
+        // #11: the cached envelopes are objects when a bucket is configured, and
+        // a deleted row is what named them. RETURNING makes this one round trip;
+        // the objects go after COMMIT with the archive ones.
+        const purged = await client.query(
+          `DELETE FROM content_cache WHERE tenant=$1 AND id = ANY($2) AND source_type='session' RETURNING object_key`,
+          [this.t, ids]);
+        objectKeys = objectKeys.concat(purged.rows.map((r: any) => r.object_key).filter(Boolean));
       }
       if (present.has('memory_metadata')) {
         await client.query(

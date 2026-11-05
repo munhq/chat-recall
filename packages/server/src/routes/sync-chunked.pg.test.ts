@@ -24,6 +24,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pgAdminUrl, pgTestUrl } from '@chat-recall/engine/test-support/pg-urls.js';
+import { readCachedBody } from '@chat-recall/engine/core/store/object-store.js';
 
 const PG_URL = pgTestUrl();
 const TENANT = `sync_chunked_${process.pid}`;
@@ -54,8 +55,10 @@ const PROJECT = '/home/user/code/example';
 
   async function storedEnvelope(): Promise<{ messages: Array<{ line: number }>; o?: number; rebuild?: unknown }> {
     const r = await admin.query(
-      `SELECT content_json FROM content_cache WHERE tenant = $1 AND id = $2 AND source_type = 'session'`, [TENANT, SESSION]);
-    return JSON.parse(r.rows[0].content_json);
+      `SELECT content_json, object_key FROM content_cache WHERE tenant = $1 AND id = $2 AND source_type = 'session'`, [TENANT, SESSION]);
+    // #11: the body may live in object storage; readCachedBody reads either.
+    const body = await readCachedBody(r.rows[0]);
+    return JSON.parse(body!);
   }
 
   /** ~10 MB: turns, with a state record after every fifth one, as Claude Code writes them. */
@@ -155,7 +158,8 @@ const PROJECT = '/home/user/code/example';
     // final append replaces the stored copy.
     const gapped = { ...first, messages: [...first.messages.slice(0, 1000), ...first.messages.slice(1029)] };
     await admin.query(
-      `UPDATE content_cache SET content_json = $3 WHERE tenant = $1 AND id = $2 AND source_type = 'session'`,
+      `UPDATE content_cache SET content_json = $3, object_key = '', content_hash = '', content_bytes = 0
+        WHERE tenant = $1 AND id = $2 AND source_type = 'session'`,
       [TENANT, SESSION, JSON.stringify(gapped)]);
     const staged = await post({ ...head, chunk_head: true });
     expect(staged.status).toBe(200);

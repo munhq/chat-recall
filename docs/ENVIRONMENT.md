@@ -74,6 +74,15 @@ bucket, so both shapes coexist. Move them with
 `npx tsx scripts/backfill-raw-to-object-store.ts`, which is safe to stop and
 re-run and verifies every object before clearing a row.
 
+The same bucket holds cached conversation bodies (`content_cache`), which were
+about 1 GB of a 3 GB hosted database. With a bucket configured, a new body is a
+gzipped object and the row keeps the key, its digest and its size; rows written
+before, and every row on a deployment with no bucket, keep the body in
+`content_json`, and the read path accepts both shapes. Move existing bodies with
+`npx tsx scripts/backfill-content-to-object-store.ts` (same flags and the same
+verify-before-clearing rule). A failed object write falls back to the column, so
+a bucket outage slows a sync down rather than losing a conversation.
+
 Other server-internal flags (`CHAT_RECALL_EDITION`, `_ROLE`, `_SERVER_MODE`,
 `_TENANT`, `_FEATURE_*`, `_VECTOR_PARTITIONS`, `_TELEMETRY`) tune SaaS/edition
 behavior; consult the server source before setting them.

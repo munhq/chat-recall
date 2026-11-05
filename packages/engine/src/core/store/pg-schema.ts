@@ -72,10 +72,19 @@ CREATE TABLE IF NOT EXISTS content_cache (
   tenant       TEXT NOT NULL DEFAULT 'default',
   id           TEXT NOT NULL,
   source_type  TEXT NOT NULL,
-  content_json TEXT NOT NULL,
+  content_json TEXT NOT NULL DEFAULT '',
   mtime        BIGINT NOT NULL,
   PRIMARY KEY (tenant, id, source_type)
 );
+-- #11: the envelope body moves to object storage (see object-store.ts and
+-- PgStore's content-cache accessors). The row keeps the key, the digest and the
+-- uncompressed size; content_json stays for deployments with no bucket and
+-- for rows written before one existed, so both shapes read. ADD COLUMN with a
+-- constant default is metadata-only on Postgres 11+, so this takes no long lock
+-- and rewrites nothing.
+ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS object_key    TEXT   NOT NULL DEFAULT '';
+ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS content_hash  TEXT   NOT NULL DEFAULT '';
+ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS content_bytes BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS kv_store (
   tenant      TEXT NOT NULL DEFAULT 'default',

@@ -12,10 +12,69 @@
  *   docker run -d -p 9000:9000 -e MINIO_ROOT_USER=testkey \
  *     -e MINIO_ROOT_PASSWORD=testsecret123 minio/minio server /data
  */
-import { describe, test, expect } from 'vitest';
-import { ObjectStore, ObjectNotFound, objectStoreFromEnv, rawObjectKey, signRequest, presignUrl } from './object-store.js';
+import { describe, test, expect, afterEach } from 'vitest';
+import {
+  ObjectStore, ObjectNotFound, objectStoreFromEnv, rawObjectKey, signRequest, presignUrl,
+  contentObjectKey, contentDigest, gzipText, gunzipText, readCachedBody, resetObjectStore, setObjectStoreForTests,
+  type RawObjectStore,
+} from './object-store.js';
 
 const CONFIGURED = !!process.env.RAW_ARCHIVE_S3_ENDPOINT && !!process.env.RAW_ARCHIVE_S3_BUCKET;
+
+describe('contentObjectKey', () => {
+  const hash = contentDigest('{"v":1}');
+
+  test('scopes the key to tenant, source type and a body digest', () => {
+    expect(contentObjectKey('acme', 'session', 'abc-123', hash))
+      .toBe(`content/acme/session/abc-123.${hash}.json.gz`);
+  });
+
+  test('an id carrying a slash cannot escape its tenant prefix', () => {
+    const key = contentObjectKey('acme', 'session', '../other-tenant/steal', hash);
+    expect(key.startsWith('content/acme/session/')).toBe(true);
+    expect(key).not.toContain('/../');
+  });
+
+  test('a tenant or source type carrying a slash stays inside one level', () => {
+    expect(contentObjectKey('a/b', 'c/d', 'x', hash).split('/')).toHaveLength(4);
+  });
+
+  test('a changed body gets a different key, so the old object is untouched', () => {
+    expect(contentObjectKey('t', 's', 'i', contentDigest('one')))
+      .not.toBe(contentObjectKey('t', 's', 'i', contentDigest('two')));
+  });
+});
+
+describe('readCachedBody', () => {
+  afterEach(() => resetObjectStore());
+
+  test('reads the body from the row on a deployment with no bucket', async () => {
+    expect(await readCachedBody({ content_json: '{"x":1}', object_key: '' })).toBe('{"x":1}');
+    expect(await readCachedBody({ content_json: '', object_key: '' })).toBeNull();
+  });
+
+  test('reads a keyed body from object storage', async () => {
+    setObjectStoreForTests({ bucket: 'b', get: async () => gzipText('{"from":"s3"}') } as unknown as RawObjectStore);
+    expect(await readCachedBody({ content_json: '', object_key: 'content/t/s/i.h.json.gz' })).toBe('{"from":"s3"}');
+  });
+
+  test('falls back to a row body when the object read fails mid-move', async () => {
+    setObjectStoreForTests({ bucket: 'b', get: async () => { throw new ObjectNotFound('gone'); } } as unknown as RawObjectStore);
+    expect(await readCachedBody({ content_json: '{"copy":true}', object_key: 'content/t/s/i.h.json.gz' })).toBe('{"copy":true}');
+  });
+
+  test('a keyed row with no bucket throws rather than pretending to be empty', async () => {
+    await expect(readCachedBody({ content_json: '', object_key: 'content/t/s/i.h.json.gz' }))
+      .rejects.toThrow(/no configuration/);
+  });
+});
+
+describe('gzipText', () => {
+  test('round-trips a body', () => {
+    const body = JSON.stringify({ messages: ['one', 'two'] });
+    expect(gunzipText(gzipText(body))).toBe(body);
+  });
+});
 
 describe('rawObjectKey', () => {
   test('scopes the key to the tenant', () => {
