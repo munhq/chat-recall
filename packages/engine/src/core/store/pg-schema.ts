@@ -167,6 +167,15 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
                ) STORED,
   PRIMARY KEY (tenant, chunk_id)
 );
+-- #10: write-through flag — true once the embed worker has a row in
+-- memory_vectors for this chunk. The pending-vectors count and the embed
+-- worker's claim both read it instead of a NOT EXISTS anti-join against
+-- memory_vectors, which probed the vector index once per chunk (661 ms on
+-- 314,805 chunks). The embedder sets it when it inserts a vector and clears it
+-- when it drops one (see vector.ts). ADD COLUMN with a constant default is a
+-- metadata-only change in Postgres 11+, so it rewrites nothing and takes no
+-- long lock on the live table.
+ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS has_vector BOOLEAN NOT NULL DEFAULT false;
 -- btree_gin lets the tenant column join the tsvector in one GIN index, which
 -- puts it in the index condition. The index is built by buildConcurrentIndexes
 -- in pg-pool.ts, because CREATE INDEX CONCURRENTLY cannot run inside the

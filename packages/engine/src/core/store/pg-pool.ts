@@ -221,6 +221,16 @@ const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: r
     create: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embeddable ON memory_chunks (tenant, chunk_id) INCLUDE (item_id, source_type) WHERE ${EMBEDDABLE_CHUNK_INDEX_PREDICATE}`,
     drops: [],
   },
+  {
+    // #10: the pending-vectors count and the embed worker claim both filter on
+    // `has_vector = false`. This index holds only the embeddable chunks still
+    // waiting for a vector, so the count is an index-only scan over a small
+    // partial index instead of an anti-join over every chunk (661 ms). It
+    // shrinks as the backfill drains, which is the state KEDA watches.
+    name: 'idx_chunks_pending_vector',
+    create: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_pending_vector ON memory_chunks (tenant, chunk_id) INCLUDE (item_id, source_type) WHERE has_vector = false AND ${EMBEDDABLE_CHUNK_INDEX_PREDICATE}`,
+    drops: [],
+  },
 ];
 
 /**
