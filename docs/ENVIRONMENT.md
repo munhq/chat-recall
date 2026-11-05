@@ -87,6 +87,14 @@ Other server-internal flags (`CHAT_RECALL_EDITION`, `_ROLE`, `_SERVER_MODE`,
 `_TENANT`, `_FEATURE_*`, `_VECTOR_PARTITIONS`, `_TELEMETRY`) tune SaaS/edition
 behavior; consult the server source before setting them.
 
+## Metrics (`/metrics`)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `METRICS_TOKEN` | unset | Bearer token for `GET /metrics` (and `/metrics/rl-cost`). Unset exposes the endpoint to anyone who can reach the port; set it in any deployment a stranger can reach. |
+| `DASHBOARD_REFRESH_MS` | `60000` | How often the background refresher recomputes the per-tenant capacity counts (sessions, chunks, raw sessions, secret findings) and fleet health. A scrape serves the last snapshot and runs no COUNT, so this is the ONLY place those counts run — lower it and every API pod runs one count pass per tenant at that rate, over the read pool. Minimum 5000. |
+| `BACKLOG_REFRESH_MS` | `120000` | How often the pending-vector and pending-summary backlog counts are recomputed for the scraper. A scrape serves the last value. Minimum 5000. |
+
 ## Billing (Stripe)
 
 Set on the **server**. Billing is entirely optional: with `STRIPE_SECRET_KEY`
