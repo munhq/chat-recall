@@ -1,14 +1,77 @@
 {
   "version": 1,
+  "base": "origin/main",
   "github": "munhq/chat-recall",
   "store": "server",
   "server": {
     "url": "https://desk.munhq.com",
     "tokenEnv": "DESK_TOKEN"
   },
-  "release": {
-    "versionFile": "packages/cli/package.json"
+  "size": {
+    "warn": 1500,
+    "fail": 5000,
+    "tests": [
+      "**/test/**",
+      "**/tests/**",
+      "**/__tests__/**",
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/*_test.go",
+      "**/*.t.sol"
+    ],
+    "overrideLabel": "size/override"
   },
+  "generated": [
+    "*.lock",
+    "bun.lockb",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "go.sum",
+    "*.gen.*",
+    "**/generated/**",
+    "*.pb.go",
+    "*_pb.ts",
+    "*.snap"
+  ],
+  "scope": {
+    "separate": [
+      "docs/specs/**",
+      "docs/plans/**"
+    ],
+    "nonCode": [
+      "**/*.md",
+      "docs/**",
+      ".github/**",
+      ".desk/**",
+      ".review-kit/**"
+    ],
+    "maxPackages": 2
+  },
+  "checks": [
+    {
+      "id": "CHK-C1",
+      "rule": "A TODO or FIXME links an issue",
+      "pattern": "\\b(TODO|FIXME)\\b(?!.*(#\\d+|issues/\\d+))",
+      "include": [
+        "**"
+      ],
+      "blocking": false
+    }
+  ],
+  "validation": [
+    {
+      "name": "root",
+      "command": "npm run test",
+      "setup": "npm ci",
+      "stage": "main"
+    },
+    {
+      "name": "typecheck",
+      "command": "npx tsc -b",
+      "setup": "npm ci",
+      "stage": "land"
+    }
+  ],
   "checkouts": [
     {
       "repo": "munhq/chat-recall-site",
@@ -40,7 +103,94 @@
       "tags": [
         "main"
       ],
-      "timeoutMinutes": 45
+      "timeoutMinutes": 45,
+      "needs": []
     }
-  ]
+  ],
+  "deploys": [],
+  "release": {
+    "versionFile": "packages/cli/package.json",
+    "tagPrefix": "v"
+  },
+  "review": {
+    "instructions": "REVIEW.md",
+    "policyPacks": [],
+    "context": [
+      "AGENTS.md"
+    ],
+    "rules": "rules",
+    "profiles": {
+      "full": "profiles/full.md",
+      "security": "profiles/security.md",
+      "architecture": "profiles/architecture.md",
+      "smart-contract": "profiles/smart-contract.md",
+      "devops": "profiles/devops.md",
+      "reliability": "profiles/reliability.md"
+    },
+    "maxNits": 5,
+    "maxDiffChars": 120000,
+    "attentionMarkers": [],
+    "units": [],
+    "boundaries": [],
+    "models": {},
+    "requirements": {
+      "enforce": false,
+      "terms": [],
+      "recent": 30,
+      "maxChars": 40000,
+      "prTypes": [
+        "feat"
+      ],
+      "projects": [],
+      "instructions": [
+        "AGENTS.md",
+        "CLAUDE.md"
+      ]
+    }
+  },
+  "pr": {
+    "types": [
+      "feat",
+      "fix",
+      "refactor",
+      "perf",
+      "test",
+      "docs",
+      "spec",
+      "chore",
+      "ci",
+      "build"
+    ],
+    "evidence": [],
+    "requireIssueState": false
+  },
+  "workspace": {
+    "worktrees": "off"
+  },
+  "merge": {
+    "method": "merge",
+    "after": [],
+    "requireChecks": true
+  },
+  "issue": {
+    "types": [
+      "feature",
+      "bug",
+      "design",
+      "chore",
+      "epic"
+    ],
+    "sections": [
+      "Why",
+      "Goal",
+      "Proposal and plan",
+      "Done when"
+    ],
+    "requireQuestions": [],
+    "requirePriority": [],
+    "requireEpic": [],
+    "requireResearch": [],
+    "gatePrs": false,
+    "stallDays": 3
+  }
 }
