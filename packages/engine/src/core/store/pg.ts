@@ -61,6 +61,25 @@ const TENANT_BOOTSTRAPPED = new Set<string>();
  */
 const TRGM_CANDIDATE_CAP = 2000;
 
+/**
+ * How many ts_rank-ordered rows the full-text search ranks before it joins the
+ * row bodies back in (`#10`).
+ *
+ * The old query computed ts_rank, the normalized window and the recency prior
+ * over EVERY matching chunk and selected `text` for all of them. A common term
+ * matches tens of thousands of chunks, so the query detoasted the whole match
+ * set — measured 8,969 ms mean on production. Ranking a bounded candidate set
+ * first, then fetching the body only for the rows that survive, keeps the answer
+ * identical for the top 20 (a candidate below this cap cannot overcome a 0.15
+ * recency bonus against a full-rank hit) while skipping the detoast and the
+ * second sort for the rest.
+ *
+ * 500, not 200: a query whose top hits are all subagent/tool-result rows
+ * (demoted ×0.4/×0.5) needs headroom for the primary rows below them to still
+ * enter the top 20. Raise it only with a measurement; it is a bound on latency,
+ * not a quality knob.
+ */
+const FTS_CANDIDATE_CAP = 500;
 
 export class PgStore implements StorageDriver {
   private pool: any;
@@ -1394,7 +1413,10 @@ export class PgStore implements StorageDriver {
     // silently returned nothing for every project.
     if (projectIdFilter) { params.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); where += ` AND project_path ILIKE $${params.length}`; }
     if (windowFloor !== undefined) { params.push(windowFloor); where += ` AND mtime >= $${params.length}`; }
+    params.push(FTS_CANDIDATE_CAP);
+    const capParam = params.length;
     params.push(topK * 5);
+    const limitParam = params.length;
     params.push(Date.now());
     const nowParam = params.length;
     // Ranking = normalized relevance × subagent demotion + bounded recency bonus.
@@ -1415,23 +1437,31 @@ export class PgStore implements StorageDriver {
     // ts_rank normalization flag 1 divides by 1+log(doc length): long
     // keyword-dense blobs (subagent transcripts, pasted logs) otherwise
     // dominate on raw term frequency no matter what multiplier we apply.
-    const sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime, rank
+    //
+    // PERFORMANCE (#10): the candidate subquery ranks and bounds the match set
+    // FIRST, selecting only chunk_id and rank, so Postgres never detoasts the
+    // body of a row that cannot reach the top 20. The bodies are joined back in
+    // only for those candidates. `c` is the same table and the same tenant, so
+    // RLS and the visible-set semantics are unchanged.
+    const sql = `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime, cand.rank
                  FROM (
-                   SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
-                          ts_rank(tsv, to_tsquery('english',$2), 1) AS rank
+                   SELECT chunk_id, ts_rank(tsv, to_tsquery('english',$2), 1) AS rank
                    FROM memory_chunks WHERE ${where}
-                 ) s
-                 ORDER BY (rank / NULLIF(max(rank) OVER (), 0))
-                          * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.4
-                                  WHEN chunk_type LIKE 'tool_result%' OR chunk_type = 'harness' THEN 0.5
+                   ORDER BY rank DESC
+                   LIMIT $${capParam}
+                 ) cand
+                 JOIN memory_chunks c ON c.tenant = $1 AND c.chunk_id = cand.chunk_id
+                 ORDER BY (cand.rank / NULLIF(max(cand.rank) OVER (), 0))
+                          * (CASE WHEN c.chunk_type LIKE 'subagent%' THEN 0.4
+                                  WHEN c.chunk_type LIKE 'tool_result%' OR c.chunk_type = 'harness' THEN 0.5
                                   ELSE 1.0 END)
-                          + 0.15 * exp(-LEAST(GREATEST($${nowParam}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
+                          + 0.15 * exp(-LEAST(GREATEST($${nowParam}::double precision - COALESCE(c.mtime, 0), 0) / (14.0 * 86400000), 60))
                           -- Importance prior: the classifier tags decisions/milestones as
                           -- ':imp4'/':imp5' in chunk_type. Surface them above equal-keyword
                           -- chatter with a small bounded boost (imp5 → +0.10, untagged → +0.02).
-                          + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC,
-                          mtime DESC NULLS LAST
-                 LIMIT $${params.length - 1}`;
+                          + 0.10 * (COALESCE(NULLIF(substring(c.chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC,
+                          c.mtime DESC NULLS LAST
+                 LIMIT $${limitParam}`;
     let rows: any[];
     try {
       rows = await this.qr(sql, params);
@@ -2400,7 +2430,7 @@ function pgRowToCodeAction(r: any): any {
  * is what makes multi-word recall actually find things. Returns null when the
  * query has no usable terms (caller returns []).
  */
-function orPrefixTsQuery(query: string): string | null {
+export function orPrefixTsQuery(query: string): string | null {
   const words = query.toLowerCase().match(/[a-z0-9_]{2,}/g) || [];
   if (words.length === 0) return null;
   // Dedupe and cap so a pathological query can't build a huge tsquery.
@@ -2417,7 +2447,7 @@ function orPrefixTsQuery(query: string): string | null {
  * AND is too strict to return enough hits. Returns null (→ use OR) outside the
  * 2–4 term window, where AND is either pointless (1 term) or too strict (5+).
  */
-function andPrefixTsQuery(query: string): string | null {
+export function andPrefixTsQuery(query: string): string | null {
   const words = [...new Set((query.toLowerCase().match(/[a-z0-9_]{2,}/g) || []))];
   if (words.length < 2 || words.length > 4) return null;
   return words.map((w) => `${w}:*`).join(' & ');

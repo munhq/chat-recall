@@ -90,6 +90,12 @@ const FILES = [
   // sweep sent. It must run before the first server with the scheduler boots,
   // which the initContainer order gives.
   './migrations/0017_trial_reminder_claims.sql',
+  // One-off backfill. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Marks memory_chunks.has_vector for chunks that already have a vector, so the
+  // pending-vectors gauge does not count the whole corpus as pending after the
+  // #10 rollout. It adds the column itself: migrations run before the server's
+  // schema bootstrap, so an unguarded reference would fail (see 0012's warning).
+  './migrations/0018_chunk_has_vector.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is

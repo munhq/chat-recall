@@ -355,12 +355,18 @@ export class PgVectorStore implements VectorStore {
     if (!this.tableReady) return valid.length;
     const items = new Map<string, { s: string; i: string }>();
     for (const c of valid) items.set(`${c.sourceType}:${c.itemId}`, { s: c.sourceType, i: c.itemId });
-    for (const { s, i } of items.values()) await this.q(`DELETE FROM memory_vectors WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, s, i]);
+    for (const { s, i } of items.values()) {
+      await this.q(`DELETE FROM memory_vectors WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, s, i]);
+      // #10: the re-embed replaces every vector of the item, so clear the flag
+      // first and set it again only for the chunks that actually get a row.
+      await this.q(`UPDATE memory_chunks SET has_vector=false WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, s, i]);
+    }
     let embeddings: number[][] | null = null;
     if (this.embedder && this.vectorOk) {
       try { embeddings = await (this.embedder as any).embed(valid.map(c => c.text)); }
       catch (e) { this.lastError = e instanceof Error ? e.message : String(e); embeddings = null; }
     }
+    const embeddedIds: string[] = [];
     for (let k = 0; k < valid.length; k++) {
       const c = valid[k];
       const emb = embeddings?.[k];
@@ -372,6 +378,12 @@ export class PgVectorStore implements VectorStore {
          ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding`,
         emb ? [this.t, c.chunkId, c.itemId, c.sourceType, c.title, c.text, c.chunkType, c.projectPath, pid, c.filePath, this.intMs(c.mtime), this.vecLiteral(emb)]
             : [this.t, c.chunkId, c.itemId, c.sourceType, c.title, c.text, c.chunkType, c.projectPath, pid, c.filePath, this.intMs(c.mtime)]);
+      if (emb) embeddedIds.push(c.chunkId);
+    }
+    // #10: mark the chunks whose vector landed. A chunk left with no embedding
+    // stays false, so the backfill worker picks it up on a later sweep.
+    if (embeddedIds.length > 0) {
+      await this.q(`UPDATE memory_chunks SET has_vector=true WHERE tenant=$1 AND chunk_id = ANY($2::text[])`, [this.t, embeddedIds]);
     }
     return valid.length;
   }
@@ -434,8 +446,7 @@ export class PgVectorStore implements VectorStore {
         `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
            FROM memory_chunks c
            WHERE c.tenant = $1 AND length(c.text) > 0
-             AND NOT EXISTS (
-               SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+             AND c.has_vector = false
              ${embeddableChunkSql('c', policy, '$3', '$4')}
            LIMIT $2
            FOR UPDATE OF c SKIP LOCKED`,
@@ -450,6 +461,7 @@ export class PgVectorStore implements VectorStore {
       }
       if (!embeddings) return { embedded: 0, scanned: rows.length };
       let n = 0;
+      const embeddedIds: string[] = [];
       for (let k = 0; k < rows.length; k++) {
         const r = rows[k];
         const emb = embeddings[k];
@@ -461,7 +473,12 @@ export class PgVectorStore implements VectorStore {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
            ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding`,
           [this.t, r.chunk_id, r.item_id, r.source_type, r.title || '', r.text, r.chunk_type || '', r.project_path || '', pid, r.file_path || '', this.intMs(r.mtime), this.vecLiteral(emb)]);
+        embeddedIds.push(r.chunk_id);
         n++;
+      }
+      // #10: same transaction as the inserts, so the flag never lags the row.
+      if (embeddedIds.length > 0) {
+        await client.query(`UPDATE memory_chunks SET has_vector=true WHERE tenant=$1 AND chunk_id = ANY($2::text[])`, [this.t, embeddedIds]);
       }
       return { embedded: n, scanned: rows.length };
     });
@@ -511,7 +528,9 @@ export class PgVectorStore implements VectorStore {
         const windows: string[] = [];
         for (let i = 0; i < text.length && windows.length < maxWindows; i += step) windows.push(text.slice(i, i + win));
         if (windows.length <= 1) continue; // shouldn't happen (len > maxChars ≥ win), but stay safe
-        await client.query(`UPDATE memory_chunks SET text=$2 WHERE tenant=$1 AND chunk_id=$3`, [this.t, windows[0], g.chunk_id]);
+        // #10: the original's vector is dropped below, and every new window
+        // starts without one, so clear the flag for all of them.
+        await client.query(`UPDATE memory_chunks SET text=$2, has_vector=false WHERE tenant=$1 AND chunk_id=$3`, [this.t, windows[0], g.chunk_id]);
         await client.query(`DELETE FROM memory_vectors WHERE tenant=$1 AND chunk_id=$2`, [this.t, g.chunk_id]);
         for (let wi = 1; wi < windows.length; wi++) {
           await client.query(

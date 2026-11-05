@@ -24,6 +24,19 @@ an embedding model is configured and the account's plan includes embeddings.
 Otherwise the query runs as keyword search. See
 [Environment variables](./ENVIRONMENT.md).
 
+## Ranking cost
+
+Keyword search ranks the best 500 matches of a query before it reads their
+text. A common word can match tens of thousands of chunks, and ranking all of
+them took seconds on a large database. The bound changes nothing you see: the
+same top results come back in the same order.
+
+Each chunk carries `has_vector`, a flag the embedder sets when it stores a
+vector for the chunk and clears when it removes one. The pending-vector count
+that scales the embed workers reads this column instead of checking the vector
+table for every chunk, so it stays fast on a large corpus. The name is also the
+one to look for in the schema when a chunk with a vector appears queued.
+
 ## What a search covers
 
 `recall_search` and `chat-recall search` search sessions. `recall_memory_search`

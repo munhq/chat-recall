@@ -257,6 +257,12 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * (embed-policy.ts), not every chunk without a vector: 109,434 of the 275,470
  * non-empty chunks of the largest tenant are embeddable. The count took 5.0 s
  * over all chunks and 1.1 s with the policy filter.
+ *
+ * #10: it now reads `memory_chunks.has_vector`, the write-through flag the
+ * embedder maintains (vector.ts), instead of `NOT EXISTS (SELECT 1 FROM
+ * memory_vectors …)` per chunk — 661 ms on 314,805 chunks. The count is served
+ * from idx_chunks_pending_vector, which holds only embeddable chunks still
+ * waiting for a vector.
  */
 async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
@@ -268,8 +274,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
       r = (await tenantQuery(pool, t, `
       SELECT
         (SELECT count(*) FROM memory_chunks c
-           WHERE c.tenant = $1 AND c.text <> ''
-             AND NOT EXISTS (SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+           WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
              ${embeddableChunkSql('c', policy, '$3', '$4')}) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
