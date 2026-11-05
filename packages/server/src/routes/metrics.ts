@@ -424,32 +424,76 @@ export function startBacklogRefresher(): void {
   setInterval(() => { void refreshBacklog(); }, ms).unref();
 }
 
+// ── Capacity/fleet/business cache (scrape-safe) ─────────────────────────────
+// #9: the per-tenant capacity COUNTs (5 subqueries × every tenant) ran 6,219
+// times in 1.5 hours and became a top-5 query on the primary. Like the backlog,
+// compute on a BACKGROUND timer and serve the last snapshot instantly so a
+// Prometheus scrape never runs the heavy counts.
+interface DashboardSnapshot {
+  sessions: number; chunks: number; raw: number; findings: number; verified: number; tenants: number;
+  fleet: { failures: Record<string, number>; active: number; stale: number };
+  at: number;
+}
+let dashboardCache: DashboardSnapshot = {
+  sessions: 0, chunks: 0, raw: 0, findings: 0, verified: 0, tenants: 0,
+  fleet: { failures: {}, active: 0, stale: 0 }, at: 0,
+};
+let dashboardRefreshing = false;
+let dashboardStarted = false;
+
+/** Default pause between dashboard metric refreshes. Consumers (Prometheus
+ *  scrape, operator eyes) tolerate staleness of a minute; the cost of running
+ *  per-tenant COUNTs every scrape is not. */
+export const DEFAULT_DASHBOARD_REFRESH_MS = 60_000;
+export function dashboardRefreshMs(raw: string | undefined = process.env.DASHBOARD_REFRESH_MS): number {
+  return Math.max(5000, Number(raw) || DEFAULT_DASHBOARD_REFRESH_MS);
+}
+
+async function refreshDashboard(): Promise<void> {
+  if (dashboardRefreshing) return;
+  dashboardRefreshing = true;
+  try {
+    const pool = await openPgPoolRo();
+    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+    const cap = await collectCapacity(pool, slugs);
+    const fleet = await collectFleetHealth(pool, slugs);
+    dashboardCache = { ...cap, tenants: slugs.length, fleet, at: Date.now() };
+  } catch (e) {
+    log.warn({ err: e instanceof Error ? e.message : String(e) }, 'dashboard metrics refresh failed (serving last value)');
+  } finally {
+    dashboardRefreshing = false;
+  }
+}
+
+export function startDashboardRefresher(): void {
+  if (dashboardStarted) return;
+  dashboardStarted = true;
+  void refreshDashboard();
+  const ms = dashboardRefreshMs();
+  setInterval(() => { void refreshDashboard(); }, ms).unref();
+}
+
 // ── GET /metrics ─────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   const access = metricsAccess(req);
   if (!access.ok) return res.status(access.status).type('text/plain').send(access.message);
 
   try {
-    // Monitoring aggregations: capacity/backlog/business COUNTs (+ tenant
-    // enumeration) are all pure reads that tolerate a scrape-interval of replica
-    // lag — route to the read replica to offload per-scrape COUNT load off the
-    // primary (falls back to primary when no RO DSN is set).
-    const pool = await openPgPoolRo();
-    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
-
-    const cap = await collectCapacity(pool, slugs);
+    // Capacity + fleet come from the background cache (#9): a scrape never runs
+    // the per-tenant COUNTs. Business metrics (control-plane tables, not RLS-
+    // walled, cheap) still refresh on scrape so MRR/churn stay timely.
+    const cap = dashboardCache;
     gSessions.set(cap.sessions);
     gChunks.set(cap.chunks);
     gRawSessions.set(cap.raw);
     gSecretFindings.set(cap.findings);
     gSecretFindingsVerified.set(cap.verified);
-    gTenants.set(slugs.length);
+    gTenants.set(cap.tenants);
 
-    const fleet = await collectFleetHealth(pool, slugs);
     gClientFailures24h.reset();   // a kind that stopped happening must go to 0, not keep its last value
-    for (const [kind, n] of Object.entries(fleet.failures)) gClientFailures24h.labels(kind).set(n);
-    gCollectorsActive.set(fleet.active);
-    gCollectorsStale.set(fleet.stale);
+    for (const [kind, n] of Object.entries(cap.fleet.failures)) gClientFailures24h.labels(kind).set(n);
+    gCollectorsActive.set(cap.fleet.active);
+    gCollectorsStale.set(cap.fleet.stale);
 
     const ps = latestPoolStats();
     gPoolTotal.set(ps.total);
@@ -461,6 +505,7 @@ router.get('/', async (req, res) => {
     gPendingSummaries.set(backlogCache.pendingSummaries);
     gPendingRealSummaries.set(backlogCache.pendingRealSummaries);
 
+    const pool = await openPgPoolRo();
     await collectBusiness(pool);
 
     gUp.set(1);
