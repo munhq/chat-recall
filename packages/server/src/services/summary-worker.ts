@@ -40,6 +40,7 @@ import {
   type SourceType,
 } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { readCachedBody } from '@chat-recall/engine/core/store/object-store.js';
 import { isServerMode } from '../util/mode.js';
 import { tenantLimits } from '../util/billing.js';
 
@@ -485,15 +486,18 @@ export async function generateMissingSummaries(
     // (2) Fetch content for the leased real sessions (one read), OUTSIDE any tx.
     const contentById = new Map<string, SessionContent>();
     const cc = (await tenantQuery(pool, tenant,
-      `SELECT id, content_json FROM content_cache WHERE tenant=$1 AND source_type='session' AND id = ANY($2)`,
+      `SELECT id, content_json, object_key FROM content_cache WHERE tenant=$1 AND source_type='session' AND id = ANY($2)`,
       [tenant, claim.real])).rows;
-    for (const row of cc) {
-      if (!row.content_json) continue;
+    // #11: an envelope body may be an object rather than a column; readCachedBody
+    // accepts either shape and reads the objects in parallel.
+    const bodies = await Promise.all(cc.map((row: any) => readCachedBody(row).catch(() => null)));
+    cc.forEach((row: any, i: number) => {
+      if (!bodies[i]) return;
       try {
-        const built = envelopeToSessionContent(row.id, JSON.parse(row.content_json) as CachedEnvelope);
+        const built = envelopeToSessionContent(row.id, JSON.parse(bodies[i]!) as CachedEnvelope);
         if (built) contentById.set(row.id, built);
       } catch { /* leave unset → no-content fail */ }
-    }
+    });
 
     // (3) LLM with a FIXED concurrency semaphore (lane pool), each result
     // persisted in its own short tx. The LLM never runs inside a transaction.

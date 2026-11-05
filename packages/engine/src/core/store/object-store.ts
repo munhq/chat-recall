@@ -24,6 +24,7 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hmac } from '@noble/hashes/hmac.js';
+import { gzipSync, gunzipSync } from 'node:zlib';
 
 export interface ObjectStoreConfig {
   endpoint: string;
@@ -76,6 +77,55 @@ export function objectStoreFromEnv(): ObjectStoreConfig | null {
 export function rawObjectKey(tenant: string, sessionId: string, version?: string): string {
   const v = version ? `.${encodeURIComponent(version)}` : '';
   return `raw/${encodeURIComponent(tenant)}/${encodeURIComponent(sessionId)}${v}.gz`;
+}
+
+/**
+ * The object key for one cached envelope (`content_cache`).
+ *
+ * `hash` is the digest of the body, so the key names exactly one stored copy:
+ * a re-sync that changes the conversation writes a new object instead of
+ * replacing the bytes a committed row still names. An identical re-write
+ * produces the same key and is a no-op PUT, which is why there is no random
+ * version here as there is for the raw archive.
+ *
+ * Every segment is percent-encoded, so an id carrying a slash cannot reach
+ * outside its tenant's prefix. `tenant` is the value the store was opened with,
+ * never anything a request supplies.
+ */
+export function contentObjectKey(tenant: string, sourceType: string, id: string, hash: string): string {
+  return `content/${encodeURIComponent(tenant)}/${encodeURIComponent(sourceType)}/${encodeURIComponent(id)}.${hash}.json.gz`;
+}
+
+/** The content digest that versions a cached object. */
+export function contentDigest(text: string): string { return sha256hex(text); }
+
+/** A cached envelope is JSON text; gzip takes its ~82 KB down to a few KB. */
+export function gzipText(text: string): Buffer { return gzipSync(Buffer.from(text, 'utf8')); }
+export function gunzipText(body: Buffer): string { return gunzipSync(body).toString('utf8'); }
+
+/**
+ * Read a cached body from the store its row names.
+ *
+ * Rows written before object storage existed carry the body in `content_json`
+ * and no key, and they keep working. A keyed row is read from the bucket. If
+ * that read fails but the row still carries a body (the win during a move),
+ * the body in Postgres wins over an error, so a bucket hiccup cannot lose a
+ * conversation that is duplicated in the row.
+ */
+export async function readCachedBody(row: { content_json?: string | null; object_key?: string | null }): Promise<string | null> {
+  if (row.object_key) {
+    const store = getObjectStore();
+    if (!store) {
+      throw new Error(`cached content ${row.object_key} is in object storage, which this server has no configuration for`);
+    }
+    try {
+      return gunzipText(await store.get(row.object_key));
+    } catch (e) {
+      if (row.content_json) return row.content_json;
+      throw e;
+    }
+  }
+  return row.content_json || null;
 }
 
 /** Every character S3 leaves unreserved in a path segment. */
