@@ -33,7 +33,7 @@ import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/a
 import { enabledSocialProviders as socialProviderNames } from './auth/better-auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
-import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
+import metricsRouter, { startBacklogRefresher, startDashboardRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
 import clientEventsRouter from './routes/client-events.js';
 import vaultRouter from './routes/vault.js';
@@ -941,7 +941,9 @@ const httpServer = app.listen(PORT, HOST, () => {
   // Backlog refresher: keep /metrics/backlog instant (background-computed) so the
   // KEDA scalers (OVMS summaries + Ollama embeddings) never time out reading it.
   // Runs on every tier that serves HTTP (the API service is what KEDA scrapes).
-  if (isServerMode()) startBacklogRefresher();
+  // #9: capacity/fleet dashboard COUNTs also run on a background timer so
+  // Prometheus scrapes never execute the per-tenant 5-subquery counts inline.
+  if (isServerMode()) { startBacklogRefresher(); startDashboardRefresher(); }
 
   // Loud boot-time error when the cloud edition runs /metrics without a token
   // (business/security gauges guarded only by the private-peer-IP stopgap).
