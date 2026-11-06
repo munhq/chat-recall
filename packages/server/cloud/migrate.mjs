@@ -114,9 +114,20 @@ const FILES = [
 for (const f of FILES) {
   const done = await c.query('SELECT 1 FROM schema_migrations WHERE name = $1', [f]);
   if (done.rowCount > 0) { console.log(`skipped ${f} (already applied)`); continue; }
-  const res = await c.query(readFileSync(new URL(f, import.meta.url), 'utf8'));
-  // A multi-statement query returns one Result per statement.
-  const results = Array.isArray(res) ? res : [res];
+  const raw = readFileSync(new URL(f, import.meta.url), 'utf8');
+  // A migration whose first line is `-- migrate:split` is run one `-- @@` part
+  // at a time. A single multi-statement query is one implicit transaction, so a
+  // procedure's COMMIT inside it fails with "invalid transaction termination".
+  // One statement per call gives the batching backfill its commit.
+  const parts = raw.startsWith('-- migrate:split')
+    ? raw.split('\n-- @@\n').map((s) => s.trim()).filter(Boolean)
+    : [raw];
+  const results = [];
+  for (const part of parts) {
+    const res = await c.query(part);
+    // A multi-statement query returns one Result per statement.
+    results.push(...(Array.isArray(res) ? res : [res]));
+  }
   const touched = results.reduce((n, r) => n + (r?.rowCount ?? 0), 0);
   const changed = results
     .filter((r) => r?.rowCount)
