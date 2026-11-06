@@ -1553,29 +1553,36 @@ export class PgStore implements StorageDriver {
     // keyword-dense blobs (subagent transcripts, pasted logs) otherwise
     // dominate on raw term frequency no matter what multiplier we apply.
     //
-    // PERFORMANCE (#10): the candidate subquery ranks and bounds the match set
-    // FIRST, selecting only chunk_id and rank, so Postgres never detoasts the
-    // body of a row that cannot reach the top 20. The bodies are joined back in
-    // only for those candidates. `c` is the same table and the same tenant, so
-    // RLS and the visible-set semantics are unchanged.
-    const sql = `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime, cand.rank
+    // PERFORMANCE (#10): ranking never reads a body. The innermost query keeps
+    // the 500 best raw ranks (chunk_id, chunk_type, mtime — no `text`); the
+    // middle query applies the normalized-relevance, demotion, recency and
+    // importance priors and keeps the top `topK*5`. The bodies are joined back
+    // in for those rows only, so a search detoasts at most ~100 excerpts
+    // instead of every candidate, and the sort never touches the toasted
+    // column. `c` is the same table and the same tenant, so RLS and the
+    // visible-set semantics are unchanged.
+    //
+    // The importance term (the classifier tags decisions/milestones as
+    // ':imp4'/':imp5' in chunk_type) is a small bounded boost above
+    // equal-keyword chatter (imp5 → +0.10, untagged → +0.02).
+    const sql = `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime, s.rank
                  FROM (
-                   SELECT chunk_id, ts_rank(tsv, to_tsquery('english',$2), 1) AS rank
-                   FROM memory_chunks WHERE ${where}
-                   ORDER BY rank DESC
-                   LIMIT $${capParam}
-                 ) cand
-                 JOIN memory_chunks c ON c.tenant = $1 AND c.chunk_id = cand.chunk_id
-                 ORDER BY (cand.rank / NULLIF(max(cand.rank) OVER (), 0))
-                          * (CASE WHEN c.chunk_type LIKE 'subagent%' THEN 0.4
-                                  WHEN c.chunk_type LIKE 'tool_result%' OR c.chunk_type = 'harness' THEN 0.5
+                   SELECT chunk_id, rank, mtime,
+                          (rank / NULLIF(max(rank) OVER (), 0))
+                          * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.4
+                                  WHEN chunk_type LIKE 'tool_result%' OR chunk_type = 'harness' THEN 0.5
                                   ELSE 1.0 END)
-                          + 0.15 * exp(-LEAST(GREATEST($${nowParam}::double precision - COALESCE(c.mtime, 0), 0) / (14.0 * 86400000), 60))
-                          -- Importance prior: the classifier tags decisions/milestones as
-                          -- ':imp4'/':imp5' in chunk_type. Surface them above equal-keyword
-                          -- chatter with a small bounded boost (imp5 → +0.10, untagged → +0.02).
-                          + 0.10 * (COALESCE(NULLIF(substring(c.chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC,
-                          c.mtime DESC NULLS LAST
+                          + 0.15 * exp(-LEAST(GREATEST($${nowParam}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
+                          + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) AS score
+                   FROM (
+                     SELECT chunk_id, chunk_type, mtime, ts_rank(tsv, to_tsquery('english',$2), 1) AS rank
+                     FROM memory_chunks WHERE ${where}
+                     ORDER BY rank DESC
+                     LIMIT $${capParam}
+                   ) cand
+                 ) s
+                 JOIN memory_chunks c ON c.tenant = $1 AND c.chunk_id = s.chunk_id
+                 ORDER BY s.score DESC, s.mtime DESC NULLS LAST
                  LIMIT $${limitParam}`;
     let rows: any[];
     try {
