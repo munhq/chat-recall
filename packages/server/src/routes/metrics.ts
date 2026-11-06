@@ -31,7 +31,7 @@ import {
   gUp, gSessions, gChunks, gRawSessions, gSecretFindings, gSecretFindingsVerified, gTenants,
   gClientFailures24h, gCollectorsActive, gCollectorsStale,
   gPoolTotal, gPoolIdle, gPoolWaiting,
-  gPendingVectors, gPendingSummaries, gPendingRealSummaries,
+  gPendingVectors, gPendingVectorsCapped, gPendingSummaries, gPendingRealSummaries,
   gSubscriptions, gSubscriptionsByPlan, gMrrUsd, gTrialsActive, gTrialsExpiring24h,
   gTeamsTotal, gMembersTotal, gSignups24h, gConversions24h, gChurn24h,
 } from '../metrics/registry.js';
@@ -264,19 +264,38 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * from idx_chunks_pending_vector_v2, which holds only embeddable, non-trivial
  * chunks still waiting for a vector, so the per-chunk metadata EXISTS that
  * discarded 95% of the old index scan is gone too.
+ *
+ * #10, last step: the count is BOUNDED per tenant (PENDING_VECTORS_CAP, default
+ * 20,000). An exact count has to scan the tenant's whole pending index — 111,841
+ * entries on the largest tenant, 45–68 ms even as an index-only scan with a
+ * clean visibility map, and it grows with the backlog. The gauge only has to
+ * cross a scaling or alert threshold, so the check stops at the ceiling and
+ * reports `pendingVectorsCapped` when it hit it: the number is exact below the
+ * ceiling and "at least this much" above it, and the check is bounded no matter
+ * how large the backlog gets.
  */
+export const DEFAULT_PENDING_VECTORS_CAP = 20_000;
+/** Per-tenant ceiling on the pending-vector count, from PENDING_VECTORS_CAP. */
+export function pendingVectorCap(raw: string | undefined = process.env.PENDING_VECTORS_CAP): number {
+  return Math.max(100, Number(raw) || DEFAULT_PENDING_VECTORS_CAP);
+}
+
 async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
   const policy = embedPolicy();
-  let pendingVectors = 0, pendingSummaries = 0, pendingRealSummaries = 0;
+  const cap = pendingVectorCap();
+  let pendingVectors = 0, pendingSummaries = 0, pendingRealSummaries = 0, pendingVectorsCapped = false;
   for (const t of slugs) {
     let r: Record<string, unknown> | undefined;
     try {
       r = (await tenantQuery(pool, t, `
       SELECT
-        (SELECT count(*) FROM memory_chunks c
-           WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
-             ${embeddableChunkFlagSql('c', policy)}) AS pending_vectors,
+        (SELECT count(*) FROM (
+           SELECT 1 FROM memory_chunks c
+             WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
+               ${embeddableChunkFlagSql('c', policy)}
+             LIMIT $3
+         ) pv) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
         (SELECT count(*) FROM session_metadata sm
@@ -286,7 +305,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
                             AND m.extra_json LIKE '{%'
                             AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
         ) AS pending_real_summaries
-      `, [t, minTurns], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+      `, [t, minTurns, cap], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
     } catch (e) {
       // Same rule as collectCapacity: skip the tenant, keep the scrape. The
       // backlog feeds KEDA, and a slightly low number scales correctly while a
@@ -296,11 +315,13 @@ async function collectBacklog(pool: any, slugs: string[]) {
       continue;
     }
     if (!r) continue;
-    pendingVectors += Number(r.pending_vectors);
+    const n = Number(r.pending_vectors);
+    if (n >= cap) pendingVectorsCapped = true;
+    pendingVectors += n;
     pendingSummaries += Number(r.pending_summaries);
     pendingRealSummaries += Number(r.pending_real_summaries);
   }
-  return { pendingVectors, pendingSummaries, pendingRealSummaries };
+  return { pendingVectors, pendingSummaries, pendingRealSummaries, pendingVectorsCapped };
 }
 
 /**
@@ -359,8 +380,8 @@ async function collectBusiness(pool: any) {
 // <unknown> and stop scaling (FailedGetExternalMetric). So we compute it on a
 // BACKGROUND timer and serve the last snapshot instantly; KEDA/Prometheus never
 // block on the query.
-interface BacklogSnapshot { pendingVectors: number; pendingSummaries: number; pendingRealSummaries: number; tenants: number; at: number; }
-let backlogCache: BacklogSnapshot = { pendingVectors: 0, pendingSummaries: 0, pendingRealSummaries: 0, tenants: 0, at: 0 };
+interface BacklogSnapshot { pendingVectors: number; pendingSummaries: number; pendingRealSummaries: number; pendingVectorsCapped: boolean; tenants: number; at: number; }
+let backlogCache: BacklogSnapshot = { pendingVectors: 0, pendingSummaries: 0, pendingRealSummaries: 0, pendingVectorsCapped: false, tenants: 0, at: 0 };
 let backlogRefreshing = false;
 
 /**
@@ -508,6 +529,7 @@ router.get('/', async (req, res) => {
 
     // Backlog from the background cache (never run the heavy query on a scrape).
     gPendingVectors.set(backlogCache.pendingVectors);
+    gPendingVectorsCapped.set(backlogCache.pendingVectorsCapped ? 1 : 0);
     gPendingSummaries.set(backlogCache.pendingSummaries);
     gPendingRealSummaries.set(backlogCache.pendingRealSummaries);
 
@@ -555,8 +577,8 @@ router.get('/backlog', (req, res) => {
   if (!access.ok) return res.status(access.status).json({ error: access.message });
   // Served from the in-memory snapshot — instant, so KEDA's metrics-api never
   // times out. `at` lets a consumer see snapshot freshness if it cares.
-  const { pendingVectors, pendingSummaries, pendingRealSummaries, tenants } = backlogCache;
-  res.json({ pendingVectors, pendingSummaries, pendingRealSummaries, tenants });
+  const { pendingVectors, pendingSummaries, pendingRealSummaries, pendingVectorsCapped, tenants } = backlogCache;
+  res.json({ pendingVectors, pendingSummaries, pendingRealSummaries, pendingVectorsCapped, tenants });
 });
 
 export default router;
