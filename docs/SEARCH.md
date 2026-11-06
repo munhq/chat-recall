@@ -28,8 +28,10 @@ Otherwise the query runs as keyword search. See
 
 Keyword search ranks the best 500 matches of a query before it reads their
 text. A common word can match tens of thousands of chunks, and ranking all of
-them took seconds on a large database. The bound changes nothing you see: the
-same top results come back in the same order.
+them took seconds on a large database. The 500 candidates are then scored from
+their own rank, type and timestamp, and only the top results have their text
+read. The bound changes nothing you see: the same top results come back in the
+same order.
 
 Each chunk carries `has_vector`, a flag the embedder sets when it stores a
 vector for the chunk and clears when it removes one. The pending-vector count
