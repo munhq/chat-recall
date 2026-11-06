@@ -45,27 +45,36 @@ export const EMBEDDABLE_CHUNK_INDEX_PREDICATE = `text <> '' AND ${embeddableChun
 
 /**
  * The `AND ...` clauses that keep only embeddable chunks, for a query over
- * `memory_chunks <alias>`. `minTurnsParam` and `maxOutParam` are the bind
- * placeholders ('$3', '$4') that the caller fills with `policy.minTurns` and
- * `policy.maxTrivialOut`.
+ * `memory_chunks <alias>`.
+ *
+ * #10 follow-up: the trivial-session test is no longer an `EXISTS` against
+ * `memory_metadata` per chunk — it reads the chunk's own `trivial` flag, which
+ * the writer maintains (pg.ts: writeChunkRows sets it from the parent metadata,
+ * writeItemRows clears it when a session grows past the threshold). The flag is
+ * also in the partial index predicate (pg-pool.ts), so the pending-vectors
+ * count is an index-only scan over the chunks that will actually be embedded
+ * instead of walking every trivial chunk and discarding it.
  */
-export function embeddableChunkSql(
-  alias: string,
-  policy: EmbedPolicy,
-  minTurnsParam: string,
-  maxOutParam: string,
-): string {
+export function embeddableChunkFlagSql(alias: string, policy: EmbedPolicy): string {
   const c = alias;
   const chunkFilter = policy.includeAll ? '' : `AND ${embeddableChunkTypeSql(c)}`;
-  return `${chunkFilter}
-             AND NOT (
-               ${c}.source_type = 'session'
-               AND EXISTS (
-                 SELECT 1 FROM memory_metadata m
-                  WHERE m.tenant = ${c}.tenant AND m.id = ${c}.item_id AND m.source_type = 'session'
-                    AND m.extra_json LIKE '{%'
-                    AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) <= ${minTurnsParam}
-                    AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'outputTokens', '')::bigint, 0) < ${maxOutParam}
-               )
-             )`;
+  return `${chunkFilter} AND NOT ${c}.trivial`;
+}
+
+/**
+ * SQL boolean: the metadata row `<m>` is a trivial session under `policy`.
+ *
+ * Kept next to the flag so the writer and the predicate cannot drift: the same
+ * expression decides a chunk's `trivial` value at write time. `minParam` and
+ * `outParam` are the bind placeholders ('$3', '$4') the caller fills with
+ * `policy.minTurns` and `policy.maxTrivialOut`.
+ */
+export function trivialSessionPredicateSql(
+  m: string,
+  minParam: string,
+  outParam: string,
+): string {
+  return `(${m}.extra_json LIKE '{%'
+    AND COALESCE(NULLIF(${m}.extra_json::jsonb ->> 'messageCount', '')::int, 999) <= ${minParam}
+    AND COALESCE(NULLIF(${m}.extra_json::jsonb ->> 'outputTokens', '')::bigint, 0) < ${outParam})`;
 }

@@ -37,6 +37,11 @@ that scales the embed workers reads this column instead of checking the vector
 table for every chunk, so it stays fast on a large corpus. The name is also the
 one to look for in the schema when a chunk with a vector appears queued.
 
+Each chunk also carries `trivial`, a flag the writer sets when its session is
+too short to embed (few turns and little output). The pending-vector count and
+the embed worker skip a chunk with `trivial = true`, so a short session never
+adds work to the queue.
+
 ## What a search covers
 
 `recall_search` and `chat-recall search` search sessions. `recall_memory_search`

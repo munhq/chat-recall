@@ -22,7 +22,7 @@
 import express from 'express';
 import { openPgPool, openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { embedPolicy, embeddableChunkSql } from '@chat-recall/engine/core/store/embed-policy.js';
+import { embedPolicy, embeddableChunkFlagSql } from '@chat-recall/engine/core/store/embed-policy.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 import { edition } from '../util/mode.js';
 import { billingEnabled } from '../util/billing.js';
@@ -261,8 +261,9 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * #10: it now reads `memory_chunks.has_vector`, the write-through flag the
  * embedder maintains (vector.ts), instead of `NOT EXISTS (SELECT 1 FROM
  * memory_vectors …)` per chunk — 661 ms on 314,805 chunks. The count is served
- * from idx_chunks_pending_vector, which holds only embeddable chunks still
- * waiting for a vector.
+ * from idx_chunks_pending_vector_v2, which holds only embeddable, non-trivial
+ * chunks still waiting for a vector, so the per-chunk metadata EXISTS that
+ * discarded 95% of the old index scan is gone too.
  */
 async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
@@ -275,7 +276,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
       SELECT
         (SELECT count(*) FROM memory_chunks c
            WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
-             ${embeddableChunkSql('c', policy, '$3', '$4')}) AS pending_vectors,
+             ${embeddableChunkFlagSql('c', policy)}) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
         (SELECT count(*) FROM session_metadata sm
@@ -285,7 +286,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
                             AND m.extra_json LIKE '{%'
                             AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
         ) AS pending_real_summaries
-      `, [t, minTurns, policy.minTurns, policy.maxTrivialOut], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+      `, [t, minTurns], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
     } catch (e) {
       // Same rule as collectCapacity: skip the tenant, keep the scrape. The
       // backlog feeds KEDA, and a slightly low number scales correctly while a

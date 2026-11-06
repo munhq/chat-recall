@@ -31,6 +31,7 @@ import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
+import { embedPolicy, trivialSessionPredicateSql } from './embed-policy.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
 type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => infer R ? Awaited<R> : never;
@@ -1102,6 +1103,31 @@ export class PgStore implements StorageDriver {
   // methods below wrap these in a transaction of their own, and
   // writeIngestBatch runs them all in a shared one.
 
+  /**
+   * #10 follow-up: release chunks from the trivial set when their session grows
+   * past the threshold.
+   *
+   * A session's messageCount and outputTokens only ever rise, so the decision is
+   * monotonic: trivial → non-trivial, once. New chunks carry the current value
+   * from writeChunkRows, but chunks written earlier keep `trivial = true` until
+   * this runs. Without it they would stay out of the pending index and never be
+   * embedded. The `trivial = true` guard makes it a no-op for every session that
+   * has not just crossed the line.
+   */
+  private async releaseTrivialChunks(client: any, sessionIds: string[]): Promise<void> {
+    if (sessionIds.length === 0) return;
+    const policy = embedPolicy();
+    await client.query(
+      `UPDATE memory_chunks c SET trivial = false
+        WHERE c.tenant = $1 AND c.source_type = 'session' AND c.trivial = true
+          AND c.item_id = ANY($2)
+          AND NOT EXISTS (
+            SELECT 1 FROM memory_metadata m
+             WHERE m.tenant = c.tenant AND m.id = c.item_id AND m.source_type = 'session'
+               AND ${trivialSessionPredicateSql('m', '$3', '$4')})`,
+      [this.t, sessionIds, policy.minTurns, policy.maxTrivialOut]);
+  }
+
   private async writeItemRows(client: any, items: MemoryItem[]): Promise<void> {
     const byKey = new Map<string, MemoryItem>();
     for (const it of items) byKey.set(`${it.sourceType}\u0000${it.id}`, it);
@@ -1133,6 +1159,9 @@ export class PgStore implements StorageDriver {
           OR memory_metadata.file_path       IS DISTINCT FROM excluded.file_path
           OR memory_metadata.mtime           IS DISTINCT FROM excluded.mtime
           OR memory_metadata.extra_json      IS DISTINCT FROM excluded.extra_json`);
+    // Release chunks that just crossed the trivial threshold (monotonic).
+    const sessionIds = list.filter((it) => it.sourceType === 'session').map((it) => it.id);
+    await this.releaseTrivialChunks(client, sessionIds);
   }
 
   /**
@@ -1147,16 +1176,35 @@ export class PgStore implements StorageDriver {
     for (const c of valid) byId.set(c.chunkId, c);
     const rows = [...byId.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
     const a = currentAuthor();
+    // #10 follow-up: carry the trivial-session decision onto the chunk row. The
+    // metadata rows are written before the chunks in the same ingest transaction
+    // (writeIngestBatch step 1 before step 5), so this read sees the current
+    // extra_json. One lookup for the batch's session items, not per chunk.
+    const sessionIds = [...new Set(rows.filter((c) => c.sourceType === 'session').map((c) => c.itemId))];
+    const trivialByItem = new Map<string, boolean>();
+    if (sessionIds.length > 0) {
+      const policy = embedPolicy();
+      const r = await client.query(
+        `SELECT m.id, ${trivialSessionPredicateSql('m', '$3', '$4')} AS trivial
+           FROM memory_metadata m
+          WHERE m.tenant = $1 AND m.source_type = 'session' AND m.id = ANY($2)`,
+        [this.t, sessionIds, policy.minTurns, policy.maxTrivialOut]);
+      for (const row of r.rows as Array<{ id: string; trivial: boolean }>) {
+        trivialByItem.set(row.id, row.trivial === true);
+      }
+    }
     await bulkInsert(client, 'memory_chunks',
-      ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
+      ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device', 'trivial'],
       rows.map((c) => {
         const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
         const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
-        return [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime), a.sub, a.device];
+        const trivial = c.sourceType === 'session' ? (trivialByItem.get(c.itemId) ?? false) : false;
+        return [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime), a.sub, a.device, trivial];
       }),
       `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
          chunk_type=excluded.chunk_type, project_path=excluded.project_path,
          project_id=excluded.project_id, file_path=excluded.file_path, mtime=excluded.mtime,
+         trivial=excluded.trivial,
          author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
          author_device=COALESCE(memory_chunks.author_device, excluded.author_device)
        WHERE memory_chunks.text         IS DISTINCT FROM excluded.text
@@ -1164,7 +1212,8 @@ export class PgStore implements StorageDriver {
           OR memory_chunks.chunk_type   IS DISTINCT FROM excluded.chunk_type
           OR memory_chunks.project_path IS DISTINCT FROM excluded.project_path
           OR memory_chunks.project_id   IS DISTINCT FROM excluded.project_id
-          OR memory_chunks.file_path    IS DISTINCT FROM excluded.file_path`);
+          OR memory_chunks.file_path    IS DISTINCT FROM excluded.file_path
+          OR memory_chunks.trivial      IS DISTINCT FROM excluded.trivial`);
 
     if (mode === 'replace') {
       const items = new Map<string, [string, string]>();
