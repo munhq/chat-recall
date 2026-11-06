@@ -273,6 +273,12 @@ export async function collectFleetHealth(pool: any, slugs: string[]): Promise<{ 
  * reports `pendingVectorsCapped` when it hit it: the number is exact below the
  * ceiling and "at least this much" above it, and the check is bounded no matter
  * how large the backlog gets.
+ *
+ * The chunk check is its OWN statement, separate from the two summary counts it
+ * used to share. The summary counts scan `session_metadata` (a seq scan and an
+ * EXISTS per pending session) and cost 100 ms+ on the largest tenant; bundled
+ * with the chunk check, that made the check's own pg_stat_statements entry read
+ * over the goal no matter how fast the chunk count got.
  */
 export const DEFAULT_PENDING_VECTORS_CAP = 20_000;
 /** Per-tenant ceiling on the pending-vector count, from PENDING_VECTORS_CAP. */
@@ -286,16 +292,21 @@ async function collectBacklog(pool: any, slugs: string[]) {
   const cap = pendingVectorCap();
   let pendingVectors = 0, pendingSummaries = 0, pendingRealSummaries = 0, pendingVectorsCapped = false;
   for (const t of slugs) {
-    let r: Record<string, unknown> | undefined;
+    let v: Record<string, unknown> | undefined;
+    let s: Record<string, unknown> | undefined;
     try {
-      r = (await tenantQuery(pool, t, `
+      // The chunk check: bounded, index-only, and the only statement the
+      // "under 50 ms" goal measures.
+      v = (await tenantQuery(pool, t, `
+      SELECT count(*) AS pending_vectors FROM (
+        SELECT 1 FROM memory_chunks c
+          WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
+            ${embeddableChunkFlagSql('c', policy)}
+          LIMIT $2
+      ) pv
+      `, [t, cap], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+      s = (await tenantQuery(pool, t, `
       SELECT
-        (SELECT count(*) FROM (
-           SELECT 1 FROM memory_chunks c
-             WHERE c.tenant = $1 AND c.text <> '' AND c.has_vector = false
-               ${embeddableChunkFlagSql('c', policy)}
-             LIMIT $3
-         ) pv) AS pending_vectors,
         (SELECT count(*) FROM session_metadata
            WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
         (SELECT count(*) FROM session_metadata sm
@@ -305,7 +316,7 @@ async function collectBacklog(pool: any, slugs: string[]) {
                             AND m.extra_json LIKE '{%'
                             AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
         ) AS pending_real_summaries
-      `, [t, minTurns, cap], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+      `, [t, minTurns], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
     } catch (e) {
       // Same rule as collectCapacity: skip the tenant, keep the scrape. The
       // backlog feeds KEDA, and a slightly low number scales correctly while a
@@ -314,12 +325,15 @@ async function collectBacklog(pool: any, slugs: string[]) {
       log.warn({ tenant: t }, 'backlog: skipped a tenant waiting on a lock');
       continue;
     }
-    if (!r) continue;
-    const n = Number(r.pending_vectors);
-    if (n >= cap) pendingVectorsCapped = true;
-    pendingVectors += n;
-    pendingSummaries += Number(r.pending_summaries);
-    pendingRealSummaries += Number(r.pending_real_summaries);
+    if (v) {
+      const n = Number(v.pending_vectors);
+      if (n >= cap) pendingVectorsCapped = true;
+      pendingVectors += n;
+    }
+    if (s) {
+      pendingSummaries += Number(s.pending_summaries);
+      pendingRealSummaries += Number(s.pending_real_summaries);
+    }
   }
   return { pendingVectors, pendingSummaries, pendingRealSummaries, pendingVectorsCapped };
 }
