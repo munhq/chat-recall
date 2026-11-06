@@ -227,9 +227,16 @@ const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: r
     // waiting for a vector, so the count is an index-only scan over a small
     // partial index instead of an anti-join over every chunk (661 ms). It
     // shrinks as the backfill drains, which is the state KEDA watches.
-    name: 'idx_chunks_pending_vector',
-    create: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_pending_vector ON memory_chunks (tenant, chunk_id) INCLUDE (item_id, source_type) WHERE has_vector = false AND ${EMBEDDABLE_CHUNK_INDEX_PREDICATE}`,
-    drops: [],
+    //
+    // #10 follow-up (v2): `trivial = false` keeps trivial-session chunks — which
+    // will never be embedded — out of the scan. On the largest tenant 59,238 of
+    // 62,333 entries were trivial, so the count read 95% dead rows. The old name
+    // carried the old predicate, and CREATE INDEX ... IF NOT EXISTS cannot change
+    // an existing index, so v2 is a new name and the old one is dropped once v2
+    // is valid.
+    name: 'idx_chunks_pending_vector_v2',
+    create: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_pending_vector_v2 ON memory_chunks (tenant, chunk_id) INCLUDE (item_id, source_type) WHERE has_vector = false AND trivial = false AND ${EMBEDDABLE_CHUNK_INDEX_PREDICATE}`,
+    drops: ['idx_chunks_pending_vector'],
   },
 ];
 

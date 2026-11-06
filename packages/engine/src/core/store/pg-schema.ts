@@ -185,6 +185,13 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
 -- metadata-only change in Postgres 11+, so it rewrites nothing and takes no
 -- long lock on the live table.
 ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS has_vector BOOLEAN NOT NULL DEFAULT false;
+-- #10 follow-up: true when this chunk's parent session is "trivial" (few turns
+-- and little output — see embed-policy.ts), so the chunk will never be embedded.
+-- Maintained by the writer (pg.ts): set at chunk insert from the parent
+-- memory_metadata, cleared when a session grows past the threshold. It is in the
+-- idx_chunks_pending_vector_v2 predicate, so trivial chunks stay out of the
+-- pending scan entirely. Constant default ⇒ metadata-only ADD COLUMN.
+ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS trivial BOOLEAN NOT NULL DEFAULT false;
 -- btree_gin lets the tenant column join the tsvector in one GIN index, which
 -- puts it in the index condition. The index is built by buildConcurrentIndexes
 -- in pg-pool.ts, because CREATE INDEX CONCURRENTLY cannot run inside the

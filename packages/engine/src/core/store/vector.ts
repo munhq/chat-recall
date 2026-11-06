@@ -1,4 +1,4 @@
-import { embedPolicy, embeddableChunkSql } from './embed-policy.js';
+import { embedPolicy, embeddableChunkFlagSql } from './embed-policy.js';
 import { currentTenant } from './tenant-context.js';
 import { tenantQuery, tenantTx, openPgPoolRo } from './pg-pool.js';
 /**
@@ -447,10 +447,10 @@ export class PgVectorStore implements VectorStore {
            FROM memory_chunks c
            WHERE c.tenant = $1 AND length(c.text) > 0
              AND c.has_vector = false
-             ${embeddableChunkSql('c', policy, '$3', '$4')}
+             ${embeddableChunkFlagSql('c', policy)}
            LIMIT $2
            FOR UPDATE OF c SKIP LOCKED`,
-        [this.t, limit, policy.minTurns, policy.maxTrivialOut])).rows;
+        [this.t, limit])).rows;
       if (rows.length === 0) return { embedded: 0, scanned: 0 };
       let embeddings: number[][] | null = null;
       try { embeddings = await (this.embedder as any).embed(rows.map((r: any) => r.text)); }
