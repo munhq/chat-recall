@@ -42,7 +42,9 @@ one to look for in the schema when a chunk with a vector appears queued.
 Each chunk also carries `trivial`, a flag the writer sets when its session is
 too short to embed (few turns and little output). The pending-vector count and
 the embed worker skip a chunk with `trivial = true`, so a short session never
-adds work to the queue.
+adds work to the queue. The count stops at `PENDING_VECTORS_CAP` entries per
+tenant, so checking the backlog stays fast however large the queue gets; the
+number is exact below that ceiling.
 
 ## What a search covers
 

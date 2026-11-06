@@ -94,6 +94,7 @@ behavior; consult the server source before setting them.
 | `METRICS_TOKEN` | unset | Bearer token for `GET /metrics` (and `/metrics/rl-cost`). Unset exposes the endpoint to anyone who can reach the port; set it in any deployment a stranger can reach. |
 | `DASHBOARD_REFRESH_MS` | `60000` | How often the background refresher recomputes the per-tenant capacity counts (sessions, chunks, raw sessions, secret findings) and fleet health. A scrape serves the last snapshot and runs no COUNT, so this is the ONLY place those counts run — lower it and every API pod runs one count pass per tenant at that rate, over the read pool. Minimum 5000. |
 | `BACKLOG_REFRESH_MS` | `120000` | How often the pending-vector and pending-summary backlog counts are recomputed for the scraper. A scrape serves the last value. Minimum 5000. |
+| `PENDING_VECTORS_CAP` | `20000` | Per-tenant ceiling on the pending-vector count. The count stops at this many index entries, so the backlog check stays timed and bounded however large the queue grows; the gauge is exact below the ceiling and the `chatrecall_pending_vectors_capped` gauge reads 1 when it hit it. Minimum 100. |
 
 ## Billing (Stripe)
 

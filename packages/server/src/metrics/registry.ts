@@ -138,7 +138,8 @@ export const gPoolWaiting = new Gauge({ name: 'chatrecall_pg_pool_waiting', help
 
 // Work backlog (also served as JSON to KEDA at /metrics/backlog) — exposing it
 // to Prometheus too lets us alert/graph drain rate, not just scale on it.
-export const gPendingVectors = new Gauge({ name: 'chatrecall_pending_vectors', help: 'Chunks awaiting embedding across all tenants', registers: [registry] });
+export const gPendingVectors = new Gauge({ name: 'chatrecall_pending_vectors', help: 'Chunks awaiting embedding across all tenants (exact below PENDING_VECTORS_CAP per tenant, else that ceiling)', registers: [registry] });
+export const gPendingVectorsCapped = new Gauge({ name: 'chatrecall_pending_vectors_capped', help: '1 when chatrecall_pending_vectors hit its per-tenant ceiling — the true backlog is larger', registers: [registry] });
 export const gPendingSummaries = new Gauge({ name: 'chatrecall_pending_summaries', help: 'Sessions awaiting a summary across all tenants', registers: [registry] });
 export const gPendingRealSummaries = new Gauge({ name: 'chatrecall_pending_real_summaries', help: 'Non-trivial sessions awaiting an LLM summary — the OVMS scale signal', registers: [registry] });
 
