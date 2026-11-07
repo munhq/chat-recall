@@ -46,9 +46,9 @@
     "@types/nodemailer": "^8.0.1"
   },
   "optionalDependencies": {
-    "@munhq/auth": "^0.3.3",
+    "@munhq/auth": "^0.4.0",
     "@munhq/mailkit": "^0.2.0",
-    "@munhq/mcp-kit": "^0.16.0",
+    "@munhq/mcp-kit": "^0.20.1",
     "@munhq/product-kit": "^0.4.6"
   }
 }
