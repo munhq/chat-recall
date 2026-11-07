@@ -28,6 +28,7 @@ declare module '@munhq/mcp-kit' {
   export const MCP_REDIRECT_URIS: readonly string[];
   export function redirectAllowed(uri: string, allowed?: readonly string[]): boolean;
   export function mcpRedirectGuard(o?: { allow?: readonly string[] }): import('better-auth').BetterAuthPlugin;
+  export function mcpRefreshGuard(o?: { log?: (event: unknown) => void }): import('better-auth').BetterAuthPlugin;
 
   export interface AuthHandlerLike {
     handler: (request: Request) => Promise<Response>;

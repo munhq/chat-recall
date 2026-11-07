@@ -285,6 +285,9 @@ export function authOptions(database: pg.Pool) {
       cimd(m ? m.fleetCimd() : localCimd()),
       // Registration is open, so only the callbacks of the known MCP clients and loopback are accepted.
       m ? m.mcpRedirectGuard() : localRedirectGuard(),
+      // A stale refresh token revokes only its own grant, and a rotation cut by a database error works again
+      // (munhq/axon#480). The self-host build gets it when it carries the kit (launchkit#18).
+      ...(m ? [m.mcpRefreshGuard()] : []),
     ],
   } satisfies BetterAuthOptions;
 }
