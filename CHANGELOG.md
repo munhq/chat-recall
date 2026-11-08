@@ -2,6 +2,14 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.33] — 2026-11-08
+
+### Changed
+- **The device token goes to the OS keyring, else to a file only you can read.** The message hook runs at every turn and the daemon at every start, and `sealkeep run` takes about a second, so sealkeep is an opt-in: `CHAT_RECALL_SECRET_STORE=sealkeep`. A token that 0.7.32 put in sealkeep keeps working.
+
+### Fixed
+- **`chat-recall login` on a machine that is already connected finishes the setup.** It moves a token from `credentials.json` to the store once, and registers `chat-recall-mcp` in the installed AI tools.
+
 ## [0.7.32] — 2026-11-08
 
 ### Added

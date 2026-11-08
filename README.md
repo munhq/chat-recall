@@ -401,7 +401,7 @@ The **CLI** keeps almost nothing locally — just what it needs to reach the ser
 
 | Path | What |
 |------|------|
-| `~/.chat-recall/credentials.json` | Server target(s) (mode 0600). The device token is in sealkeep, the OS keyring, or `~/.chat-recall/tokens/` (mode 0600); the file keeps a pointer. A `--token` self-host target keeps its token here |
+| `~/.chat-recall/credentials.json` | Server target(s) (mode 0600). The device token is in the OS keyring or in `~/.chat-recall/tokens/` (mode 0600), or in sealkeep with `CHAT_RECALL_SECRET_STORE=sealkeep`; the file keeps a pointer. A `--token` self-host target keeps its token here too |
 | `~/.chat-recall/sync-ledger.json` | Per-server sync watermark (what's already shipped) |
 | `~/.chat-recall/hooks/` | Installed hooks (after `install-hooks`) |
 | `~/.chat-recall/index/diary/` | Agent diaries written by `recall_diary_write` |
