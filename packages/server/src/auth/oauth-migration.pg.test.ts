@@ -75,8 +75,8 @@ describe.skipIf(!url)('the 1.6 MCP grants move to the 1.7 tables', () => {
     process.env.BETTER_AUTH_SECRET = 'oauth-migration-test-secret-0123456789abcdef';
     process.env.BETTER_AUTH_URL = BASE;
     pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
-    // The self-host build: no kits. The settings are the server's own.
-    __setAuthKits(null, null);
+    // Every image carries the kits, so the test runs with them.
+    __setAuthKits(await import('@munhq/auth'), await import('@munhq/mcp-kit'));
     await __resetAuth();
     await create16();
   });

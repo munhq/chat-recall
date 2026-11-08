@@ -25,21 +25,17 @@
  *
  * ── Statelessness ─────────────────────────────────────────────────────────
  *
- * A fresh transport and Server per request (`sessionIdGenerator: undefined`).
- * The alternative keeps a sessionId→transport map in process memory, which
- * breaks the moment there is more than one replica — a client's second request
- * lands on a pod that never saw its first — and leaks a transport for every
- * client that disconnects without saying goodbye. The recall tools are all
- * request/response, so there is nothing a long-lived session would buy.
+ * The kit serves each request with a fresh transport and server
+ * (`sessionIdGenerator: undefined`). A client's second request can land on
+ * another replica, and the recall tools are all request/response.
  */
 import { Router, type Request, type Response } from 'express';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   createMcpServer, setServerVersion, setMultiTenantMode, withCredentials,
 } from '@chat-recall/engine/mcp/tools.js';
 import { currentCredentials } from '@chat-recall/engine/mcp/credential-context.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { verifyMcpBearer, mcpAuthInstance, mcpResourceUrl, authIssuer } from '../auth/better-auth.js';
+import { mcpAuthInstance, mcpResourceUrl, authIssuer } from '../auth/better-auth.js';
 import { mcpKit } from '../util/auth-kit.js';
 
 const log = createLogger('mcp-remote');
@@ -68,60 +64,18 @@ function selfBase(): string {
   return `http://127.0.0.1:${process.env.PORT || 5000}`;
 }
 
-/**
- * Reject a cross-origin browser request.
- *
- * A page on any site can POST to this endpoint from a victim's browser; without
- * this check a logged-in cookie would be enough to drive their tools (DNS
- * rebinding, in the MCP spec's words). A NON-browser client — every real MCP
- * client — sends no Origin at all, so absence is allowed and only a PRESENT,
- * unrecognised Origin is refused.
- */
-function originAllowed(req: Request): boolean {
-  const origin = req.get('origin');
-  if (!origin) return true;
-  const allowed = (process.env.TRUSTED_ORIGINS || '')
-    .split(',')
-    .map((s) => s.trim().replace(/\/+$/, ''))
-    .filter(Boolean);
-  return allowed.includes(origin.replace(/\/+$/, ''));
-}
-
-/**
- * The 401 that STARTS the OAuth flow.
- *
- * `WWW-Authenticate` carrying `resource_metadata` is not decoration: it is how a
- * client discovers where to authenticate (RFC 9728 §5.1). Without it a client
- * receiving 401 has nowhere to go, and the connector simply fails to connect
- * with no way to diagnose it.
- */
-function unauthorized(req: Request, res: Response): void {
-  const base = (process.env.BETTER_AUTH_URL || `http://${req.get('host') ?? 'localhost'}`).replace(/\/+$/, '');
-  res.setHeader(
-    'WWW-Authenticate',
-    `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"`,
-  );
-  res.status(401).json({
-    jsonrpc: '2.0',
-    error: { code: -32001, message: 'Unauthorized: connect this account with OAuth to use chat-recall.' },
-    id: null,
-  });
-}
-
 type FetchHandler = (request: globalThis.Request) => Promise<globalThis.Response>;
 let kitServe: FetchHandler | null = null;
 
 /**
- * `mcpHandler` of `@munhq/mcp-kit`, when the hosted image carries the kit.
- * It checks the origin and the access token, and writes the 401 with
- * `resource_metadata` and the 405s. The self-host image has no kit and uses
- * the route below it.
+ * `mcpHandler` of `@munhq/mcp-kit`. It checks the origin (a page on another site
+ * cannot drive the tools from a signed-in browser) and the access token, and
+ * writes the 401 with `resource_metadata` and the 405s. A fresh transport and
+ * server serve each request, so any replica can serve any request.
  */
-function kitHandler(): FetchHandler | null {
+function kitHandler(): FetchHandler {
   if (kitServe) return kitServe;
-  const kit = mcpKit();
-  if (!kit) return null;
-  kitServe = kit.mcpHandler({
+  kitServe = mcpKit().mcpHandler({
     auth: mcpAuthInstance(),
     resource: mcpResourceUrl(),
     issuer: authIssuer(),
@@ -174,63 +128,7 @@ async function serveWithKit(handler: FetchHandler, req: Request, res: Response):
 }
 
 router.post('/', async (req: Request, res: Response) => {
-  const kit = kitHandler();
-  if (kit) {
-    await serveWithKit(kit, req, res);
-    return;
-  }
-
-  if (!originAllowed(req)) {
-    res.status(403).json({ error: 'origin not allowed' });
-    return;
-  }
-
-  const session = await verifyMcpBearer(req.headers).catch(() => null);
-  if (!session) {
-    // The kind of credential and the client name, never the token: a client
-    // that repeats this 401 without a refresh is otherwise anonymous in the log.
-    const auth = req.get('authorization') || '';
-    const credential = !auth ? 'none'
-      : !/^Bearer\s+\S/i.test(auth) ? 'other'
-      : auth.trim().split(/\s+/)[1]!.split('.').length === 3 ? 'jwt' : 'opaque';
-    log.warn({ credential, userAgent: (req.get('user-agent') || '').slice(0, 120) }, 'mcp bearer refused');
-    unauthorized(req, res);
-    return;
-  }
-
-  // The caller's own token, for the caller's own request only. withCredentials
-  // scopes it to this async subtree, so two requests in flight on this process
-  // cannot see each other's — the property asserted in credential-context.test.ts
-  // and the reason a process-wide credential was never an option here.
-  const creds = { base: selfBase(), token: session.token };
-
-  // Everything from here is inside the try, and the cleanup is registered before
-  // anything can throw. Constructing outside it left a window where a throw
-  // between `new Transport` and `res.on('close')` leaked the transport — and
-  // express 4 does not catch a rejected async handler, so the rejection went
-  // unhandled rather than to the 500 below.
-  let transport: StreamableHTTPServerTransport | null = null;
-  let server: ReturnType<typeof createMcpServer> | null = null;
-  res.on('close', () => {
-    void transport?.close().catch(() => {});
-    void server?.close().catch(() => {});
-  });
-
-  try {
-    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    server = createMcpServer();
-    await server.connect(transport);
-    await withCredentials(creds, () => transport!.handleRequest(req, res, req.body));
-  } catch (err) {
-    log.error({ err, userId: session.userId }, 'mcp request failed');
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: '2.0',
-        error: { code: -32603, message: 'Internal server error' },
-        id: null,
-      });
-    }
-  }
+  await serveWithKit(kitHandler(), req, res);
 });
 
 /**

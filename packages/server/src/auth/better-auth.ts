@@ -13,10 +13,8 @@
  * /api/auth/device/code → user approves at /device in the web app → POST
  * /api/auth/device/token), then trades it for a long-lived ct_ device token.
  *
- * The fleet settings come from `@munhq/auth` and `@munhq/mcp-kit` (util/auth-kit.ts),
- * and the two guards of the MCP authorization server always come from the kit.
- * `localCore`, `localDevice`, `localMcp` and `localCimd` build the same settings
- * when a test builds the options with no kit loaded.
+ * The settings come from `@munhq/auth` and `@munhq/mcp-kit` (util/auth-kit.ts), with
+ * the two guards of the MCP authorization server, in every image.
  *
  * Remote MCP: better-auth 1.7 is the OAuth 2.1 authorization server
  * (`@better-auth/mcp` on `@better-auth/oauth-provider`). Access tokens are JWTs
@@ -41,7 +39,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
 import { funnelKit } from '../util/product-kit.js';
-import { authKit, mcpKit, requireMcpKit } from '../util/auth-kit.js';
+import { authKit, mcpKit } from '../util/auth-kit.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -99,11 +97,7 @@ export const RESET_CALLBACK_PATH = '/app?view=reset';
  * function, which its `resetCallbackPath` uses on a kit build.
  */
 export function resetLinkFor(url: string): string {
-  const kit = authKit();
-  if (kit) return kit.resetLinkFor(url, RESET_CALLBACK_PATH);
-  const u = new URL(url);
-  u.searchParams.set('callbackURL', RESET_CALLBACK_PATH);
-  return u.toString();
+  return authKit().resetLinkFor(url, RESET_CALLBACK_PATH);
 }
 
 /** Client id the CLI presents on the device flow. Not a secret (a public
@@ -138,121 +132,11 @@ function trustedOrigins(): string[] {
   return [...new Set([baseURL(), ...extra])];
 }
 
-/**
- * The core settings of a self-host build: what `fleetAuth` of `@munhq/auth`
- * gives a kit build, with this server's own mails.
- *
- * - The confirmation mail is sent, and an UNCONFIRMED user can still sign in.
- *   The gate is the trial grant (util/trial.ts ensureTrial): one failed SMTP
- *   send locked a new invisiprompt user out of the account they had just made.
- * - The confirmation is a 6-digit CODE (the emailOTP plugin below). Corporate
- *   mail scanners GET every link and spend the token before the human clicks,
- *   and a link opened on a phone lands in a different session.
- * - Sessions last 7 days, rolling: `updateAge` refreshes a session older than a
- *   day, so anyone who uses the product in a week is never signed out.
- * - The cookie is httpOnly, SameSite=Lax (the CLI device flow opens /device
- *   from a terminal, a top-level cross-site navigation that Strict signs out),
- *   and Secure exactly when the base URL is https.
- * - A social sign-in links to the existing account with the same VERIFIED
- *   email (both providers return a primary verified address), never across
- *   different emails: the identity contract keys every owned row on user.id,
- *   and a second account would split ownership of synced data.
- */
-function localCore(database: pg.Pool): BetterAuthOptions {
-  return {
-    appName: 'chat-recall',
-    baseURL: baseURL(),
-    basePath: '/api/auth',
-    secret: process.env.BETTER_AUTH_SECRET,
-    database,
-    trustedOrigins: trustedOrigins(),
-    emailVerification: {
-      sendOnSignUp: true,
-      autoSignInAfterVerification: true,
-    },
-    emailAndPassword: {
-      enabled: true,
-      // The length `@munhq/auth` sets, so the sign-up form states one rule for both builds.
-      minPasswordLength: 12,
-      requireEmailVerification: false,
-      resetPasswordTokenExpiresIn: RESET_TOKEN_TTL_SECONDS,
-      // Without this, /forget-password answers 400 and a forgotten password is
-      // unrecoverable: there is no other credential path.
-      sendResetPassword: async ({ user, url }) => {
-        await sendMail(resetPasswordMail(user.email, resetLinkFor(url), RESET_TOKEN_TTL_SECONDS / 60));
-      },
-    },
-    socialProviders: socialProviders(),
-    account: {
-      accountLinking: {
-        enabled: true,
-        trustedProviders: ['google', 'github'],
-        allowDifferentEmails: false,
-      },
-    },
-    session: {
-      expiresIn: 60 * 60 * 24 * 7,
-      updateAge: 60 * 60 * 24,
-    },
-    advanced: {
-      useSecureCookies: baseURL().startsWith('https://'),
-      defaultCookieAttributes: { httpOnly: true, sameSite: 'lax', path: '/' },
-      ipAddress: { ipAddressHeaders: ['cf-connecting-ip', 'x-forwarded-for', 'x-real-ip'] },
-    },
-  };
-}
-
-/** The 6-digit code, stored hashed, for 15 minutes: a sign-up on a laptop read on a phone is routinely slower than the 5-minute default. */
-function localEmailOTP() {
-  return emailOTP({
-    sendVerificationOnSignUp: true,
-    expiresIn: 900,
-    storeOTP: 'hashed',
-    sendVerificationOTP: async ({ email, otp, type }) => {
-      await sendMail(verifyOtpMail(email, otp, type));
-    },
-  });
-}
-
-/** The CLI device login (RFC 8628), with the client id pinned. */
-function localDevice() {
-  return {
-    expiresIn: '10m' as const,
-    interval: '5s' as const,
-    verificationUri: '/device',
-    validateClient: (clientId: string) => clientId === CLI_CLIENT_ID,
-  };
-}
-
-/**
- * The MCP authorization server. A connector registers before anybody signs in
- * (claude.ai and ChatGPT do), so open dynamic registration needs both flags.
- * The login page is the SPA's /app, which replays the authorize request once a
- * session exists (client/src/utils/oauth-resume.ts). 1.7 builds the redirect as
- * `<page>?<signed query>`, so each page is a path with no query of its own.
- */
-function localMcp(): McpOptions {
-  return {
-    resource: mcpResourceUrl(),
-    loginPage: '/app',
-    consentPage: '/consent',
-    scopes: MCP_SCOPES,
-    allowDynamicClientRegistration: true,
-    allowUnauthenticatedClientRegistration: true,
-  };
-}
-
-/** A client_id that is an https URL is fetched, checked and stored (Smithery connects this way). */
-function localCimd(): CimdOptions {
-  return { fetchClientMetadataResource, metadataProfile: 'mcp-2026-07-28' };
-}
-
-/** The options of the instance: the kits when the build carries them, else the local settings. */
+/** The options of the instance, from `@munhq/auth` and `@munhq/mcp-kit`. */
 export function authOptions(database: pg.Pool) {
   const a = authKit();
   const m = mcpKit();
-  const core: BetterAuthOptions = a
-    ? a.fleetAuth({
+  const core: BetterAuthOptions = a.fleetAuth({
       appName: 'chat-recall',
       database,
       baseURL: baseURL(),
@@ -260,32 +144,29 @@ export function authOptions(database: pg.Pool) {
       brand: { name: 'chat-recall' },
       resetCallbackPath: RESET_CALLBACK_PATH,
       extend: { socialProviders: socialProviders() },
-    })
-    : localCore(database);
-  const mcpOptions = m
-    ? m.fleetMcp({ baseURL: baseURL(), resourcePath: MCP_PATH, loginPage: '/app', consentPage: '/consent', scopes: MCP_SCOPES })
-    : localMcp();
+    });
+  const mcpOptions = m.fleetMcp({ baseURL: baseURL(), resourcePath: MCP_PATH, loginPage: '/app', consentPage: '/consent', scopes: MCP_SCOPES });
   return {
     ...core,
     // Counted in the database, so the replicas share one limit.
-    ...(a && { rateLimit: a.fleetRateLimit('database') }),
+    rateLimit: a.fleetRateLimit('database'),
     plugins: [
       bearer(),
       // Every auth step as a funnel event (@munhq/product-kit). Absent on a build without the kit.
       ...funnelPlugins(),
-      a ? a.fleetEmailOTP() : localEmailOTP(),
+      a.fleetEmailOTP(),
       // TOTP only, no SMS: an authenticator app costs nothing to run, and SIM swap defeats SMS.
-      twoFactor(a ? a.fleetTwoFactor('chat-recall') : { issuer: 'chat-recall' }),
-      deviceAuthorization(a ? a.fleetDevice(CLI_CLIENT_ID) : localDevice()),
+      twoFactor(a.fleetTwoFactor('chat-recall')),
+      deviceAuthorization(a.fleetDevice(CLI_CLIENT_ID)),
       // Signs the MCP access tokens; /api/auth/jwks serves the key set.
       jwt(),
       mcp(mcpOptions),
-      cimd(m ? m.fleetCimd() : localCimd()),
+      cimd(m.fleetCimd()),
       // Registration is open, so only the callbacks of the known MCP clients and loopback are accepted.
-      requireMcpKit().mcpRedirectGuard(),
+      m.mcpRedirectGuard(),
       // A stale refresh token revokes only its own grant, and a rotation cut by a database error works again
       // (munhq/axon#480).
-      requireMcpKit().mcpRefreshGuard(),
+      m.mcpRefreshGuard(),
     ],
   } satisfies BetterAuthOptions;
 }
@@ -350,41 +231,10 @@ export const LEGACY_MCP_PATHS: Record<string, string> = {
   '/api/auth/mcp/jwks': '/api/auth/jwks',
 };
 
-/**
- * The OAuth discovery documents at the origin root (RFC 9728, RFC 8414, OIDC).
- *
- * A client gets one URL, https://<host>/mcp, and finds the rest at fixed
- * well-known paths on that origin. better-auth serves each document under
- * /api/auth; this maps every root alias to it, so each document has one source.
- * `wellKnownRoutes` of `@munhq/mcp-kit` holds the same map.
- */
-export const WELL_KNOWN_ROUTES: Record<string, string> = {
-  '/.well-known/oauth-authorization-server': '/.well-known/oauth-authorization-server/api/auth',
-  '/.well-known/oauth-authorization-server/api/auth': '/.well-known/oauth-authorization-server/api/auth',
-  '/.well-known/openid-configuration': '/api/auth/.well-known/openid-configuration',
-  '/.well-known/openid-configuration/api/auth': '/api/auth/.well-known/openid-configuration',
-  '/api/auth/.well-known/openid-configuration': '/api/auth/.well-known/openid-configuration',
-  '/.well-known/oauth-protected-resource': '/.well-known/oauth-protected-resource',
-  '/.well-known/oauth-protected-resource/mcp': '/.well-known/oauth-protected-resource/mcp',
-};
-
 /** A Node handler for the discovery documents; it answers 404 for a path it does not know. */
 export function wellKnownNodeHandler(): NodeHandler {
   const auth = getAuth();
-  const m = mcpKit();
-  const handler = m
-    ? m.wellKnownHandler({ handler: auth.handler, options: { basePath: '/api/auth' } }, { resourcePath: MCP_PATH })
-    : async (request: Request): Promise<Response> => {
-      const url = new URL(request.url);
-      const target = WELL_KNOWN_ROUTES[url.pathname.replace(/\/+$/, '')];
-      if (!target) return new Response('Not Found', { status: 404 });
-      if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
-      const res = await auth.handler(new Request(new URL(target, url), { method: request.method, headers: request.headers }));
-      // A browser-based client (the MCP inspector, a web IDE) reads these cross-origin. They are public.
-      const headers = new Headers(res.headers);
-      headers.set('Access-Control-Allow-Origin', '*');
-      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
-    };
+  const handler = mcpKit().wellKnownHandler({ handler: auth.handler, options: { basePath: '/api/auth' } }, { resourcePath: MCP_PATH });
   return toNodeHandler(handler) as NodeHandler;
 }
 
@@ -442,10 +292,7 @@ function authPool(): pg.Pool {
 
 /** Operators: the addresses in ADMIN_EMAILS, case ignored. `@munhq/auth` has the same check. */
 function rolesFor(email: string | null): string[] {
-  const kit = authKit();
-  if (kit) return kit.isAdminEmail(email) ? [OPERATOR_ROLE] : [];
-  const admins = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  return email && admins.includes(email.trim().toLowerCase()) ? [OPERATOR_ROLE] : [];
+  return authKit().isAdminEmail(email) ? [OPERATOR_ROLE] : [];
 }
 
 /**

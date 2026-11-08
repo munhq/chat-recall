@@ -42,7 +42,8 @@ describe('the plugin is registered, on the server', () => {
   });
 
   test('the issuer is set, so the authenticator app names the account', () => {
-    expect(authSrc).toMatch(/issuer:\s*'chat-recall'/);
+    // fleetTwoFactor of @munhq/auth sets the issuer it is given.
+    expect(authSrc).toMatch(/fleetTwoFactor\('chat-recall'\)/);
   });
 
   test('skipVerificationOnEnable is NOT turned on', () => {

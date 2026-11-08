@@ -12,10 +12,13 @@
  * The duplicate case below is the regression guard. The rest pin the properties
  * a reset link must have for the flow to work at all.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resetLinkFor, RESET_CALLBACK_PATH } from './better-auth.js';
+import { loadAuthKit } from '../util/auth-kit.js';
+
+beforeAll(() => loadAuthKit());
 
 const BASE = 'https://chatrecall.dev/api/auth/reset-password/TOK123';
 

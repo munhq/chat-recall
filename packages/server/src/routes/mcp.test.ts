@@ -38,10 +38,38 @@ const authState = vi.hoisted(() => ({
   session: null as { userId: string; token: string } | null,
 }));
 
-// The auth resolution needs Postgres; the route's decisions do not.
-vi.mock('../auth/better-auth.js', () => ({
-  verifyMcpBearer: async () => authState.session,
-}));
+// The route runs on `mcpHandler` of the real `@munhq/mcp-kit`, over a real better-auth instance with
+// `jwt()` and `mcp()` on the memory adapter, as the kit's own connector test builds it. No test here
+// signs in, so no table is read.
+vi.mock('../auth/better-auth.js', async () => {
+  const { betterAuth } = await import('better-auth');
+  const { jwt } = await import('better-auth/plugins');
+  const { memoryAdapter } = await import('better-auth/adapters/memory');
+  const { getAuthTables } = await import('@better-auth/core/db');
+  const { mcp } = await import('@better-auth/mcp');
+  const { fleetMcp } = await import('@munhq/mcp-kit');
+  const base = 'https://chatrecall.dev';
+  const plugins = [jwt(), mcp(fleetMcp({ baseURL: base, resourcePath: '/mcp', loginPage: '/app', consentPage: '/consent' }))];
+  const db: Record<string, unknown[]> = {};
+  for (const t of Object.values(getAuthTables({ plugins } as never))) db[t.modelName] = [];
+  const auth = betterAuth({
+    baseURL: base,
+    basePath: '/api/auth',
+    secret: 'mcp-route-test-secret-0123456789abcdef',
+    database: memoryAdapter(db),
+    plugins,
+    logger: { disabled: true },
+  });
+  return {
+    mcpAuthInstance: () => auth,
+    mcpResourceUrl: () => `${base}/mcp`,
+    authIssuer: () => `${base}/api/auth`,
+  };
+});
+vi.mock('../util/auth-kit.js', async () => {
+  const kit = await import('@munhq/mcp-kit');
+  return { mcpKit: () => kit };
+});
 
 // The engine's tool surface spins up an MCP server; none of these tests get far
 // enough to need one, and importing it for real would pull in the whole engine.
@@ -76,7 +104,7 @@ describe('POST /mcp — authentication', () => {
     // RFC 9728 §5.1. Without this a client that gets a 401 has nowhere to go,
     // and the connector fails to connect with nothing to diagnose.
     expect(res.headers['www-authenticate'])
-      .toContain('resource_metadata="https://chatrecall.dev/.well-known/oauth-protected-resource"');
+      .toContain('resource_metadata="https://chatrecall.dev/.well-known/oauth-protected-resource/mcp"');
     // A JSON-RPC error envelope, not an HTML error page — the client parses it.
     expect(res.body.jsonrpc).toBe('2.0');
     expect(res.body.error.code).toBe(-32001);
