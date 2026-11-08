@@ -19,6 +19,7 @@ import { resolveProjectId, resolveWorkspaceId } from '@chat-recall/engine/core/p
 import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
+import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { describeUnreachable } from './server-probe.js';
 import { openBrowser } from './open-browser.js';
@@ -3583,6 +3584,15 @@ async function runLogin(
   const existing = loadAllCredentials().find((t) => t.serverUrl.replace(/\/+$/, '') === base);
   if (existing && (await verifyToken(existing.token)).ok) {
     console.log(chalk.green('✓ Already connected.') + chalk.dim(`  server: ${serverUrl} (existing token verified)`));
+    // A token that an earlier version wrote to `credentials.json` moves to the kit store once, and the relay goes
+    // into the AI tools, so one `login` on a machine that is already connected still finishes the setup.
+    if (existing.token && !existing.secret && !envCredentials()) {
+      const kit = await import('./kit-store.js');
+      const secret = kit.keepDeviceToken(serverUrl, existing.token, { defaultServer: DEFAULT_SERVER });
+      saveCredentials({ serverUrl: existing.serverUrl, token: existing.token, secret });
+      console.log(chalk.dim(`  token moved to ${kit.describeWhere(secret)}`));
+    }
+    await registerRelayAfterLogin(base, opts);
     return;
   }
   // Local self-host (AUTH_PROVIDER=none) needs NO token: a tenant-scoped request

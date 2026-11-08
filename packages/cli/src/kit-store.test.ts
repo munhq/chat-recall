@@ -40,9 +40,19 @@ describe('tokenName', () => {
 });
 
 describe('keepDeviceToken', () => {
-  test('sealkeep takes the token when it is installed', () => {
+  test('by default the OS keyring takes the token and sealkeep is never asked', () => {
     const { host, calls } = fakeHost();
-    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir });
+    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir, env: {} });
+    expect(where).toMatchObject({ kind: 'keyring', account: 'personal/chat-recall/prod/DEVICE_TOKEN' });
+    expect(calls.filter((c) => c.bin === 'sealkeep')).toEqual([]);
+    expect(calls.some((c) => c.bin === 'secret-tool' && c.input === 'ct_secret')).toBe(true);
+    expect(calls.flatMap((c) => c.args)).not.toContain('ct_secret');
+    expect(describeWhere(where)).toContain('keyring');
+  });
+
+  test('CHAT_RECALL_SECRET_STORE=sealkeep gives the token to sealkeep first', () => {
+    const { host, calls } = fakeHost();
+    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir, env: { CHAT_RECALL_SECRET_STORE: 'sealkeep' } });
     expect(where).toEqual({ kind: 'sealkeep', name: 'personal/chat-recall/prod/DEVICE_TOKEN' });
     expect(calls[0].bin).toBe('sealkeep');
     expect(calls[0].input).toBe('ct_secret');
@@ -50,11 +60,19 @@ describe('keepDeviceToken', () => {
     expect(describeWhere(where)).toContain('sealkeep');
   });
 
-  test('without sealkeep and without a keyring, a file that only the owner reads takes it', () => {
+  test('with no keyring, a file that only the owner reads takes it', () => {
     const { host, files } = fakeHost(() => 1);
-    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir });
+    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir, env: {} });
     expect(where).toEqual({ kind: 'file', path: join(dir, 'tokens', 'prod') });
     expect(files.get(join(dir, 'tokens', 'prod'))).toEqual({ text: 'ct_secret\n', mode: 0o600 });
+  });
+
+  test('CHAT_RECALL_SECRET_STORE=file skips the keyring too', () => {
+    const { host, calls, files } = fakeHost();
+    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir, env: { CHAT_RECALL_SECRET_STORE: 'file' } });
+    expect(where.kind).toBe('file');
+    expect(calls).toEqual([]);
+    expect(files.size).toBe(1);
   });
 });
 

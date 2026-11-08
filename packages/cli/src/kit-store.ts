@@ -40,10 +40,27 @@ export function cliHost(env: NodeJS.ProcessEnv = process.env): Host {
 }
 
 /**
- * `CHAT_RECALL_SECRET_STORE=file` keeps the token in the file only: for a container, a CI job and a test, where
- * sealkeep and the keyring of the OS are not the ones of a person.
+ * `CHAT_RECALL_SECRET_STORE` says where `login` keeps the device token:
+ *   - unset or `auto`: the OS keyring, else a file that only the owner can read. The message hook runs at every turn
+ *     and the daemon at every start, and each reads the token; `sealkeep run` takes about a second (its store is
+ *     Vault), so a token in sealkeep would cost that second at each of them.
+ *   - `sealkeep`: sealkeep when it is installed, then the keyring, then the file (the order of the kit). A process that
+ *     needs the token starts itself again under `sealkeep run` (`adoptSealkeepSecrets` of the engine).
+ *   - `file`: the file only: for a container, a CI job and a test, where the keyring is not a person's.
  */
-const fileOnly = (env: NodeJS.ProcessEnv) => env.CHAT_RECALL_SECRET_STORE?.trim().toLowerCase() === 'file';
+type SecretStore = 'auto' | 'sealkeep' | 'file';
+const secretStoreOf = (env: NodeJS.ProcessEnv): SecretStore => {
+  const v = env.CHAT_RECALL_SECRET_STORE?.trim().toLowerCase();
+  return v === 'sealkeep' || v === 'file' ? v : 'auto';
+};
+
+/** A machine on which the program `sealkeep` is not there, so `saveSecret` goes on to the keyring. */
+function withoutSealkeep(host: Host): Host {
+  return {
+    ...host,
+    run: (bin, args, opts) => (bin === 'sealkeep' ? { code: 127, stdout: '', stderr: 'sealkeep does not keep this token' } : host.run(bin, args, opts)),
+  };
+}
 
 /** The part of a sealkeep name that tells the servers apart: `prod` for the default one, else the host. */
 function envOf(serverUrl: string, defaultServer: string): string {
@@ -66,12 +83,14 @@ export function keepDeviceToken(
   o: { defaultServer: string; host?: Host; dataDir?: string; env?: NodeJS.ProcessEnv },
 ): SecretWhere {
   const name = tokenName(serverUrl, o.defaultServer);
+  const store = secretStoreOf(o.env ?? process.env);
+  const base = o.host ?? cliHost();
   return saveSecret(token, {
     name,
     file: join(o.dataDir ?? getDataDir(), 'tokens', name.split('/')[2]),
     description: `The chat-recall device token of ${serverUrl}`,
-    host: o.host ?? cliHost(),
-    forceFile: fileOnly(o.env ?? process.env),
+    host: store === 'auto' ? withoutSealkeep(base) : base,
+    forceFile: store === 'file',
   });
 }
 
