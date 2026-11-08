@@ -383,16 +383,21 @@ export function getMcpClient(id: McpClientId): McpClientTarget {
 /**
  * Register the server in every client this machine appears to use.
  *
+ * `skipIds` leaves a client out: `init` skips Claude Code when the kit registered it at user scope, because a second
+ * entry in `~/.mcp.json` makes Claude Code warn that the server is defined in two scopes.
+ *
  * `extraIds` forces a client that has no config directory yet — `init` detects
  * binaries on PATH, and a tool installed but never run still deserves the entry.
  */
 export function registerMcpEverywhere(
   spec: McpLaunchSpec,
-  opts: { home?: string; extraIds?: readonly McpClientId[] } = {},
+  opts: { home?: string; extraIds?: readonly McpClientId[]; skipIds?: readonly McpClientId[] } = {},
 ): McpRegisterResult[] {
   const home = opts.home ?? homedir();
   const forced = new Set(opts.extraIds ?? []);
+  const skipped = new Set(opts.skipIds ?? []);
   return MCP_CLIENTS
+    .filter((c) => !skipped.has(c.id))
     .filter((c) => c.isPresent(home) || forced.has(c.id))
     .map((c) => c.register(spec, home));
 }

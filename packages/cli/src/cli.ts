@@ -571,17 +571,19 @@ program
         // The kit writes the relay into each tool that it knows (Claude Code at user scope, Codex, OpenCode, Pi, Hermes,
         // Gemini CLI, Cursor). The writer below stays for Antigravity, and for the `alwaysAllow` list of the tools
         // that read one: it merges into the entry that the kit made.
+        const kitDone = new Set<string>();
         try {
           const { registerRelay } = await import('./kit-store.js');
           for (const o of registerRelay(options.server ?? target?.base ?? DEFAULT_SERVER, import.meta.dirname)) {
-            if (!o.ok) rep.warn(chalk.yellow(o.message));
+            if (o.ok) kitDone.add(o.client);
+            else rep.warn(chalk.yellow(o.message));
           }
         } catch (e) {
           rep.warn(chalk.yellow(`could not register chat-recall-mcp with the kit: ${e instanceof Error ? e.message : e}`));
         }
         const results = registerMcpEverywhere(
           { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
-          { extraIds: detectedClients },
+          { extraIds: detectedClients, skipIds: kitDone.has('claude') ? ['claude'] : [] },
         );
         // ONE LINE for the ones that worked, a LINE EACH for the ones that did
         // not. Five identical "already configured → <path>" lines are five lines

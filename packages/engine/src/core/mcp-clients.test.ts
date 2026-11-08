@@ -322,3 +322,17 @@ describe('the Pi client path', () => {
     }
   });
 });
+
+describe('registerMcpEverywhere skipIds', () => {
+  test('leaves a skipped client out and registers the others', () => {
+    const home = mkdtempSync(join(tmpdir(), 'mcp-skip-'));
+    try {
+      const results = registerMcpEverywhere({ command: 'chat-recall-mcp' }, { home, extraIds: ['claude', 'cursor'], skipIds: ['claude'] });
+      expect(results.map((r) => r.id)).toContain('cursor');
+      expect(results.map((r) => r.id)).not.toContain('claude');
+      expect(existsSync(join(home, '.mcp.json'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
