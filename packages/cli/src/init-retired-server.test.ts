@@ -79,6 +79,10 @@ function runInit(extra: string[] = []): Promise<Run> {
   const env = {
     ...process.env,
     CHAT_RECALL_DATA_DIR: dataDir,
+    // The test machine has no sealkeep or keyring of its own: the token goes to a file in the sandbox.
+    CHAT_RECALL_SECRET_STORE: 'file',
+    // The AI tools of the machine running the test must not run `mcp add` for it.
+    CHAT_RECALL_MCP_REGISTRATION: 'own',
     CHAT_RECALL_CLAUDE_HOME: join(home, 'claude'),
     CHAT_RECALL_GEMINI_HOME: join(home, 'gemini'),
     CHAT_RECALL_CODEX_HOME: join(home, 'codex'),
@@ -183,6 +187,10 @@ describe('"nothing on your account" is a claim, and needs an answer behind it', 
     const env = {
       ...process.env,
       CHAT_RECALL_DATA_DIR: dataDir,
+      // The test machine has no sealkeep or keyring of its own: the token goes to a file in the sandbox.
+      CHAT_RECALL_SECRET_STORE: 'file',
+      // The AI tools of the machine running the test must not run `mcp add` for it.
+      CHAT_RECALL_MCP_REGISTRATION: 'own',
       CHAT_RECALL_CLAUDE_HOME: join(home, 'claude'),
       CHAT_RECALL_GEMINI_HOME: join(home, 'gemini'),
       CHAT_RECALL_CODEX_HOME: join(home, 'codex'),

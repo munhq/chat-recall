@@ -157,7 +157,7 @@ Everything on your own machine, no account, nothing sent anywhere:
 git clone https://github.com/munhq/chat-recall && cd chat-recall
 echo "ADMIN_KEY=$(openssl rand -hex 24)"         >> .env
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
-docker compose up -d --build          # FIRST RUN BUILDS FROM SOURCE (minutes)
+docker compose up -d                  # pulls the published image
 ```
 
 Then mint a device token and connect a machine — the full sequence, with
@@ -401,7 +401,7 @@ The **CLI** keeps almost nothing locally — just what it needs to reach the ser
 
 | Path | What |
 |------|------|
-| `~/.chat-recall/credentials.json` | Server target(s) + device token (mode 0600) |
+| `~/.chat-recall/credentials.json` | Server target(s) (mode 0600). The device token is in sealkeep, the OS keyring, or `~/.chat-recall/tokens/` (mode 0600); the file keeps a pointer. A `--token` self-host target keeps its token here |
 | `~/.chat-recall/sync-ledger.json` | Per-server sync watermark (what's already shipped) |
 | `~/.chat-recall/hooks/` | Installed hooks (after `install-hooks`) |
 | `~/.chat-recall/index/diary/` | Agent diaries written by `recall_diary_write` |

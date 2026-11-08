@@ -21,6 +21,8 @@ at time of writing).
 | `CHAT_RECALL_AUTO_UPDATE` | on (self-host) | Controls the daemon's checksum-pinned same-origin self-update. |
 | `CHAT_RECALL_WATCH_WINDOW_DAYS` | `14` | How recently a transcript must have been written for the daemon to put a file watcher on it. chokidar takes one watch descriptor per matched file, and a finished transcript never changes, so watching every session ever written cost 14,000 descriptors and 900 MB of heap on a machine with 13,929 of them. Sessions older than the window still sync — the 15-minute heartbeat does a full ledger walk — they just are not detected the instant they change. |
 | `CHAT_RECALL_OIDC_ISSUER` | — | Fallback OIDC issuer for `chat-recall login` SSO when the server doesn't advertise one and `--issuer` isn't passed. |
+| `CHAT_RECALL_SECRET_STORE` | auto | Set `file` to keep the device token of `chat-recall login` in a file (`~/.chat-recall/tokens/`, mode 0600) and never in sealkeep or the OS keyring: for a container, a CI job or a test. |
+| `CHAT_RECALL_MCP_REGISTRATION` | auto | Set `own` to stop `chat-recall login` and `init` from running the AI tools' own programs (`claude mcp add` and the like). `init` still writes its own entries. |
 
 ### Auto code-intelligence (collector)
 

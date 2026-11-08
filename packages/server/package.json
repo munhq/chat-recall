@@ -18,6 +18,10 @@
     "@chat-recall/engine": "*",
     "@lancedb/lancedb": "^0.13.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@munhq/auth": "^0.4.0",
+    "@munhq/mailkit": "^0.2.0",
+    "@munhq/mcp-kit": "^0.20.1",
+    "@munhq/product-kit": "^0.4.6",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
     "@opentelemetry/instrumentation-express": "^0.70.0",
     "@opentelemetry/instrumentation-http": "^0.222.0",
@@ -44,11 +48,5 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/nodemailer": "^8.0.1"
-  },
-  "optionalDependencies": {
-    "@munhq/auth": "^0.4.0",
-    "@munhq/mailkit": "^0.2.0",
-    "@munhq/mcp-kit": "^0.20.1",
-    "@munhq/product-kit": "^0.4.6"
   }
 }

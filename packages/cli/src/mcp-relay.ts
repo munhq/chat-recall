@@ -94,7 +94,11 @@ function startDaemon(dir: string, sock: string): ChildProcess | null {
     const child = spawn(process.execPath, [SERVER_PATH, '--daemon', SOCKET_FLAG, sock], {
       detached: true,
       stdio: ['ignore', 'ignore', err],
-      env: process.env,
+      // The relay no longer gets the heap cap from the tool's configuration (the kit writes the entry with no
+      // environment), so the cap is set here, on the process that holds the engine.
+      env: process.env.NODE_OPTIONS?.includes('--max-old-space-size')
+        ? process.env
+        : { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=1024`.trim() },
     });
     child.unref();
     return child;

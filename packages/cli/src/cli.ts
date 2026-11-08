@@ -567,6 +567,17 @@ program
           .filter((c) => c.available)
           .map((c) => MCP_CLIENT_FOR_BIN[c.cmd])
           .filter((c): c is McpClientId => c !== undefined);
+        // The kit writes the relay into each tool that it knows (Claude Code at user scope, Codex, OpenCode, Pi, Hermes,
+        // Gemini CLI, Cursor). The writer below stays for Antigravity, and for the `alwaysAllow` list of the tools
+        // that read one: it merges into the entry that the kit made.
+        try {
+          const { registerRelay } = await import('./kit-store.js');
+          for (const o of registerRelay(options.server ?? target?.base ?? DEFAULT_SERVER, import.meta.dirname)) {
+            if (!o.ok) rep.warn(chalk.yellow(o.message));
+          }
+        } catch (e) {
+          rep.warn(chalk.yellow(`could not register chat-recall-mcp with the kit: ${e instanceof Error ? e.message : e}`));
+        }
         const results = registerMcpEverywhere(
           { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
           { extraIds: detectedClients },
@@ -3456,6 +3467,25 @@ program
   });
 
 /**
+ * After a standalone `login`: the relay goes into every AI tool of the machine, so the person types one command and
+ * each tool lists the recall tools. `init` registers the relay itself, in its own step.
+ */
+async function registerRelayAfterLogin(base: string, opts: { fromInit?: boolean; skipMcp?: boolean }): Promise<void> {
+  if (opts.fromInit || opts.skipMcp) return;
+  try {
+    const { registerRelay } = await import('./kit-store.js');
+    const outcomes = registerRelay(base, import.meta.dirname);
+    for (const o of outcomes) {
+      if (!o.ok) console.error(chalk.yellow(o.message));
+    }
+    const done = outcomes.filter((o) => o.ok).length;
+    if (done > 0) console.log(chalk.dim(`  chat-recall-mcp registered in ${done} AI tool${done === 1 ? '' : 's'}`));
+  } catch (err) {
+    console.error(chalk.yellow(`could not register chat-recall-mcp: ${err instanceof Error ? err.message : err}`));
+  }
+}
+
+/**
  * Shared login flow used by both `chat-recall login` and `chat-recall init`.
  * Either saves a self-host device token directly (--token) or runs the OIDC
  * device flow, picks a team, mints a per-device sync token and saves it.
@@ -3465,6 +3495,8 @@ async function runLogin(
   serverUrl: string,
   opts: {
     token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string; check?: boolean;
+    /** `login` only: leave the AI tools alone (`--skip-mcp`). */
+    skipMcp?: boolean;
     /** Emit the device prompt as JSON on stdout instead of prose, so a parent
      *  process (the MCP) can relay the link and code to the user. */
     promptJson?: boolean;
@@ -3538,8 +3570,10 @@ async function runLogin(
       }
       return failLogin(opts, `could not verify the token against ${base}: ${check.error || `HTTP ${check.status}`}`);
     }
-    saveCredentials({ serverUrl, token });
+    const secret = (await import('./kit-store.js')).keepDeviceToken(serverUrl, token, { defaultServer: DEFAULT_SERVER });
+    saveCredentials({ serverUrl, token, secret });
     console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl} (token verified)`));
+    await registerRelayAfterLogin(base, opts);
     return;
   }
 
@@ -3591,7 +3625,8 @@ async function runLogin(
   }
 
   try {
-    const { deviceLogin, betterAuthDeviceLogin } = await import('./device-auth.js');
+    const { deviceLogin } = await import('./device-auth.js');
+    const kit = await import('./kit-store.js');
     // Learn HOW to log in from the target server: `authProvider` picks the
     // flow (better-auth → the server's own device endpoints; keycloak → the
     // realm device flow at `oidcIssuer`). No hardcoded default anywhere. A
@@ -3718,8 +3753,10 @@ async function runLogin(
       console.log(chalk.dim(`  If the page asks for a code: ${chalk.bold(p.userCode)}`));
       console.log(chalk.dim('Then come back here — this finishes on its own. Waiting…'));
     };
+    // The sign-in of the server's own provider is the code of the kit, the same one that every product of the fleet
+    // runs. The Keycloak flavor keeps its own flow.
     const tokens = authProvider === 'better-auth'
-      ? await betterAuthDeviceLogin(base, onPrompt)
+      ? { accessToken: await kit.signIn(base, onPrompt), expiresIn: 0 }
       : await deviceLogin({ issuer, clientId: opts.clientId }, onPrompt);
 
     const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
@@ -3761,8 +3798,13 @@ async function runLogin(
     if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} ${await mint.text().catch(() => '')}`);
     const { token } = await readJsonBody<{ token: string }>(mint, base, 'POST /api/teams/:slug/tokens');
 
-    saveCredentials({ serverUrl, token });
+    // The token goes to the kit store: sealkeep when it is installed, else the keyring of the OS, else a file that only
+    // you can read. `credentials.json` keeps the server and the pointer.
+    const secret = kit.keepDeviceToken(serverUrl, token, { defaultServer: DEFAULT_SERVER });
+    saveCredentials({ serverUrl, token, secret });
     console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
+    console.log(chalk.dim(`  token kept in ${kit.describeWhere(secret)}`));
+    await registerRelayAfterLogin(base, opts);
     if (!opts.fromInit) {
       console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
     }
@@ -4086,7 +4128,7 @@ exclude
 
 program
   .command('login [server-url]')
-  .description(`Log in (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600). Defaults to ${DEFAULT_SERVER}.`)
+  .description(`Log in (device flow), mint a sync device token, keep it in sealkeep, the OS keyring or a file only you can read, and register chat-recall-mcp in your AI tools. Defaults to ${DEFAULT_SERVER}.`)
   .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
   .option('--check', 'Report-only: exit 0 if a working credential for this server exists, 1 otherwise (never interactive)')
   .option('--issuer <url>', 'OIDC issuer URL (default: learned from the server via /api/capabilities)')
@@ -4097,7 +4139,8 @@ program
   // spawns this and relays the link into the conversation, which is the only
   // channel a user of an npx-installed MCP actually sees.
   .option('--prompt-json', 'Print the device prompt as one JSON line on stdout, then wait for approval', false)
-  .action((serverUrl: string | undefined, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string; promptJson?: boolean }) =>
+  .option('--skip-mcp', 'Do not register chat-recall-mcp in the AI tools of this machine')
+  .action((serverUrl: string | undefined, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string; promptJson?: boolean; skipMcp?: boolean }) =>
     runLogin(serverUrl || DEFAULT_SERVER, opts));
 
 program
@@ -4463,5 +4506,12 @@ program
 // can't (client too old to self-update, or `npm i -g` failing every retry) —
 // otherwise a stale machine is invisible until someone audits it by hand.
 program.hook('preAction', () => { printUpdateNotice(); });
+
+// A login that the kit keeps in sealkeep is readable only in a process that `sealkeep run` starts. A command that
+// reads no token does not start again.
+const NEEDS_NO_TOKEN = new Set(['--version', '-V', '--help', '-h', 'help', 'logout', 'completion']);
+if (!NEEDS_NO_TOKEN.has(process.argv[2] ?? '')) {
+  await (await import('@chat-recall/engine/core/stored-token.js')).adoptSealkeepSecrets();
+}
 
 program.parse();

@@ -1,10 +1,16 @@
-# The chat-recall SERVER image (BSL) — one image, two deployments:
-#   self-host:  docker compose up      (MODE=server, sqlite in a volume)
-#   SaaS:       k8s via GitOps         (MODE=server, postgres + RLS, keycloak)
+# The chat-recall SERVER image (Elastic-2.0) — one image, two deployments:
+#   self-host:  docker compose up      (MODE=server, Postgres in a volume)
+#   SaaS:       k8s via GitOps         (MODE=server, postgres + RLS, AUTH_PROVIDER=better-auth)
 #
 # Server mode means store-only: data arrives exclusively through /api/sync
 # from the chat-recall local binary. No host AI-tool mounts, no in-container
 # indexer — that was the retired docker-as-local design.
+#
+# The @munhq kits (auth, mcp-kit, mailkit, product-kit) are normal dependencies
+# and private. The landing builds this image (.desk/config.json, images `selfhost`
+# and `cloud`) with the npm token as the BuildKit secret `npmtoken`, so the token
+# is never a layer and no user builds against the private packages: a self-host
+# user pulls the published image.
 
 # ── Stage 0: compile the engine's shared modules ──────────────────────────────
 # The client imports the shared secret classifier from @chat-recall/engine
@@ -19,7 +25,8 @@ COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
 COPY .npmrc ./
-RUN npm ci --omit=optional
+RUN --mount=type=secret,id=npmtoken \
+    NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" npm ci
 COPY packages/engine/ ./packages/engine/
 RUN npx tsc -b packages/engine
 
@@ -56,39 +63,21 @@ RUN --mount=type=secret,id=glitchtipdsn,required=false \
 FROM node:24-bookworm-slim AS build
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-# MAIL IS A HOSTED-SERVICE FEATURE, and its package is private.
-#
-# `@munhq/mailkit` carries the renderer and, through the pack it loads, every
-# word this server mails. It is an optionalDependency, and this image omits it:
-# a self-host build must succeed on a machine with no access to a private
-# repository. The server loads it with a dynamic import and, when it is absent,
-# logs "mailkit is not installed — this deployment sends no mail" and carries on.
-#
-# The cloud image installs it by building with MAILKIT=1 and an npm token,
-# passed as a BuildKit secret so it never becomes a layer.
-ARG MAILKIT=0
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
 COPY .npmrc ./
 # The token is a BuildKit secret, so it is never a layer and never in the image.
-# Without MAILKIT=1 the secret is not even required: --omit=optional skips the
-# @munhq packages, and .npmrc redirects nothing else.
-# npm skips an optional dependency it cannot fetch, so a missing token or a
-# package this repository may not read would build an image that sends no mail
-# and records nothing. With MAILKIT=1 every @munhq package must be present, or
-# the build stops here.
+# Every @munhq package must be present, or the build stops here: npm would
+# otherwise skip one that it cannot fetch, and the image would run with no
+# redirect guard or no mail.
 RUN --mount=type=secret,id=npmtoken \
-    if [ "$MAILKIT" = "1" ]; then \
-      NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken 2>/dev/null || true)" npm ci && \
-      for p in @munhq/mailkit @munhq/product-kit @munhq/auth @munhq/mcp-kit; do \
-        { [ -f "packages/server/node_modules/$p/package.json" ] || [ -f "node_modules/$p/package.json" ]; } \
-          || { echo "MAILKIT=1 and $p is not installed: check the npm token and the package's access"; exit 1; }; \
-      done; \
-    else \
-      npm ci --omit=optional; \
-    fi
+    NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" npm ci && \
+    for p in @munhq/mailkit @munhq/product-kit @munhq/auth @munhq/mcp-kit; do \
+      { [ -f "packages/server/node_modules/$p/package.json" ] || [ -f "node_modules/$p/package.json" ]; } \
+        || { echo "$p is not installed: check the npm token and the package's access"; exit 1; }; \
+    done
 COPY packages/engine/ ./packages/engine/
 COPY packages/server/ ./packages/server/
 COPY packages/cli/ ./packages/cli/

@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { envCredentials } from './credentials-env.js';
 import { getDataDir } from './data-dir.js';
+import { targetToken, type SecretWhere } from './stored-token.js';
 
 export function recallTarget(): { base: string; token: string } | null {
   // A container has no credentials file and cannot run a login, so an explicit
@@ -20,7 +21,7 @@ export function recallTarget(): { base: string; token: string } | null {
   try {
     const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
     const parsed = JSON.parse(raw) as {
-      targets?: Array<{ serverUrl?: string; token?: string }>;
+      targets?: Array<{ serverUrl?: string; token?: string; secret?: SecretWhere }>;
       primary?: string;
       serverUrl?: string; token?: string;
     };
@@ -44,7 +45,7 @@ export function recallTarget(): { base: string; token: string } | null {
         byUrl(parsed.primary) ??
         remotes[0] ??
         valid[0];
-      return pick?.serverUrl ? { base: norm(pick.serverUrl), token: pick.token || '' } : null;
+      return pick?.serverUrl ? { base: norm(pick.serverUrl), token: targetToken(pick) } : null;
     }
     // Legacy single-target format. Empty token is valid (tokenless self-host).
     if (parsed.serverUrl) return { base: parsed.serverUrl.replace(/\/+$/, ''), token: parsed.token || '' };

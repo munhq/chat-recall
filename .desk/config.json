@@ -21,6 +21,21 @@
   ],
   "images": [
     {
+      "name": "selfhost",
+      "image": "ghcr.io/munhq/chat-recall",
+      "dockerfile": "docker/Dockerfile.server",
+      "context": ".",
+      "changeArg": "GIT_SHA",
+      "secrets": [
+        "npmtoken"
+      ],
+      "tags": [
+        "latest",
+        "main"
+      ],
+      "timeoutMinutes": 45
+    },
+    {
       "name": "cloud",
       "image": "ghcr.io/munhq/chat-recall-cloud",
       "dockerfile": "docker/Dockerfile.server",
@@ -28,7 +43,6 @@
       "target": "cloud",
       "args": {
         "VITE_CLOUD": "1",
-        "MAILKIT": "1",
         "OPENAI_APPS_CHALLENGE": "hC6GpWiSrnfYr34L0vC8otCzbMzCJXoX7ZgXHlEbbbw"
       },
       "changeArg": "GIT_SHA",
@@ -41,6 +55,25 @@
         "main"
       ],
       "timeoutMinutes": 45
+    }
+  ],
+  "validation": [
+    {
+      "name": "modules",
+      "setup": "npm ci --no-audit --no-fund",
+      "command": "npx marketing-kit modules .",
+      "paths": [
+        "package.json",
+        "package-lock.json",
+        "packages/*/package.json",
+        "packages/server/src/auth/**",
+        "packages/server/src/routes/mcp.ts",
+        "packages/server/src/util/auth-kit.ts"
+      ],
+      "secrets": {
+        "NODE_AUTH_TOKEN": "npmtoken"
+      },
+      "timeoutMinutes": 15
     }
   ]
 }

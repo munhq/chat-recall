@@ -33,6 +33,7 @@
 import { join, dirname, basename } from 'node:path';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
+import { targetToken, type SecretWhere } from '@chat-recall/engine/core/stored-token.js';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -202,7 +203,15 @@ import '@chat-recall/engine/core/backends/index.js'; // register the tool backen
 // same way it isolates the index (tests, multi-profile setups).
 const credPath = () => join(getDataDir(), 'credentials.json');
 
-export interface Credentials { serverUrl: string; token: string; }
+/**
+ * A sync target. `token` is the token itself. `secret` points to the place of the kit store that holds it
+ * (sealkeep, the keyring of the OS or a file); `loadAllCredentials` fills `token` from it, and the file keeps
+ * the pointer and no token.
+ */
+export interface Credentials { serverUrl: string; token: string; secret?: SecretWhere; }
+
+/** The form of a target in `credentials.json`: a target with a pointer holds no token. */
+const fileTarget = (c: Credentials) => (c.secret ? { serverUrl: c.serverUrl, token: '', secret: c.secret } : { serverUrl: c.serverUrl, token: c.token });
 
 /**
  * Multi-target: logging in ADDS a server (or updates its token). Every
@@ -222,7 +231,7 @@ export function saveCredentials(c: Credentials): void {
   // Appending here once meant a fresh SaaS login silently kept syncing to a
   // stale localhost self-host target that happened to sit at position 0.
   targets.unshift(c);
-  writeFileSync(credPath(), JSON.stringify({ targets }, null, 2));
+  writeFileSync(credPath(), JSON.stringify({ targets: targets.map(fileTarget) }, null, 2));
   try { chmodSync(credPath(), 0o600); } catch { /* windows */ }
   try {
     const s = loadSettings();
@@ -243,7 +252,12 @@ export function loadAllCredentials(): Credentials[] {
     const parsed = JSON.parse(readFileSync(credPath(), 'utf-8'));
     // token may be '' for a no-auth local self-host server (AUTH_PROVIDER=none) —
     // such a target is valid and pushes without an Authorization header.
-    if (Array.isArray(parsed?.targets)) return parsed.targets.filter((t: any) => t?.serverUrl).map((t: any) => ({ serverUrl: t.serverUrl, token: t.token || '' }));
+    if (Array.isArray(parsed?.targets)) {
+      return parsed.targets.filter((t: any) => t?.serverUrl).map((t: any) => {
+        const secret = t.secret as SecretWhere | undefined;
+        return { serverUrl: t.serverUrl, token: targetToken({ token: t.token, secret }), ...(secret ? { secret } : {}) };
+      });
+    }
     if (parsed?.serverUrl) return [{ serverUrl: parsed.serverUrl, token: parsed.token || '' }]; // legacy single
   } catch { /* none */ }
   return [];
@@ -543,7 +557,7 @@ export function removeCredentials(serverUrl: string): boolean {
   const targets = loadAllCredentials();
   const kept = targets.filter((t) => t.serverUrl !== serverUrl);
   if (kept.length === targets.length) return false;
-  writeFileSync(credPath(), JSON.stringify({ targets: kept }, null, 2));
+  writeFileSync(credPath(), JSON.stringify({ targets: kept.map(fileTarget) }, null, 2));
   return true;
 }
 

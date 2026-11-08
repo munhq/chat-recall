@@ -13,11 +13,10 @@
  * /api/auth/device/code → user approves at /device in the web app → POST
  * /api/auth/device/token), then trades it for a long-lived ct_ device token.
  *
- * The fleet settings come from `@munhq/auth` and `@munhq/mcp-kit` when the
- * build carries them (util/auth-kit.ts). A self-host build carries neither,
- * and `localCore`, `localDevice`, `localMcp`, `localCimd` and the guard of
- * auth/mcp-redirects.ts give it the same settings. The kits were written from
- * this file, so the two agree.
+ * The fleet settings come from `@munhq/auth` and `@munhq/mcp-kit` (util/auth-kit.ts),
+ * and the two guards of the MCP authorization server always come from the kit.
+ * `localCore`, `localDevice`, `localMcp` and `localCimd` build the same settings
+ * when a test builds the options with no kit loaded.
  *
  * Remote MCP: better-auth 1.7 is the OAuth 2.1 authorization server
  * (`@better-auth/mcp` on `@better-auth/oauth-provider`). Access tokens are JWTs
@@ -37,13 +36,12 @@ import { verifyJwsAccessToken } from 'better-auth/oauth2';
 import { mcp, type McpOptions } from '@better-auth/mcp';
 import { cimd, type CimdOptions } from '@better-auth/cimd';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
-import { mcpRedirectGuard as localRedirectGuard } from './mcp-redirects.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
 import { funnelKit } from '../util/product-kit.js';
-import { authKit, mcpKit } from '../util/auth-kit.js';
+import { authKit, mcpKit, requireMcpKit } from '../util/auth-kit.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -284,10 +282,10 @@ export function authOptions(database: pg.Pool) {
       mcp(mcpOptions),
       cimd(m ? m.fleetCimd() : localCimd()),
       // Registration is open, so only the callbacks of the known MCP clients and loopback are accepted.
-      m ? m.mcpRedirectGuard() : localRedirectGuard(),
+      requireMcpKit().mcpRedirectGuard(),
       // A stale refresh token revokes only its own grant, and a rotation cut by a database error works again
-      // (munhq/axon#480). The self-host build gets it when it carries the kit (launchkit#18).
-      ...(m ? [m.mcpRefreshGuard()] : []),
+      // (munhq/axon#480).
+      requireMcpKit().mcpRefreshGuard(),
     ],
   } satisfies BetterAuthOptions;
 }

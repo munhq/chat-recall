@@ -63,8 +63,8 @@
  *
  * ── A build without the kit ────────────────────────────────────────────────
  *
- * The kit and `@munhq/mailkit` are optional dependencies, installed together
- * (MAILKIT=1 in docker/Dockerfile.server). A build without them has no copy
+ * The kit and `@munhq/mailkit` are normal dependencies of the server, so every
+ * image carries them. A test or a checkout that lacks them has no copy of the
  * pack, so no reminder can have words. `startTrialReminders()` then logs one
  * line and schedules nothing.
  */
