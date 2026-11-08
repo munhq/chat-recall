@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.34] — 2026-11-08
+
+### Fixed
+- `chat-recall init` leaves Claude Code out of its own writer when the kit registered `chat-recall-mcp` at user scope. Before this, `~/.mcp.json` held a second entry and `claude mcp list` warned that the server is defined in two scopes.
+
 ## [0.7.33] — 2026-11-08
 
 ### Changed
