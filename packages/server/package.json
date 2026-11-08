@@ -19,6 +19,7 @@
     "@lancedb/lancedb": "^0.13.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@munhq/auth": "^0.4.0",
+    "@munhq/data-kit": "^0.2.0",
     "@munhq/mailkit": "^0.2.0",
     "@munhq/mcp-kit": "^0.20.1",
     "@munhq/product-kit": "^0.4.6",
