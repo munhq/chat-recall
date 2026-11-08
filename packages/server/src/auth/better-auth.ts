@@ -37,6 +37,7 @@ import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { connectPool } from '@munhq/data-kit/pg';
 import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
 import { funnelKit } from '../util/product-kit.js';
 import { authKit, mcpKit } from '../util/auth-kit.js';
@@ -178,11 +179,14 @@ function createAuth() {
     throw new Error('BETTER_AUTH_SECRET must be set when AUTH_PROVIDER=better-auth');
   }
   // Own small pool, separate from the engine's pg-pool: the auth surface must
-  // never compete with the data plane for the engine pool's connections.
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL,
-    max: Number(process.env.AUTH_PG_POOL_MAX) || 5,
-  });
+  // never compete with the data plane for the engine pool's connections. It
+  // comes from the fleet kit like every other pool; 0 = no statement timeout,
+  // which is what this pool had (the database sets 30s itself).
+  const pool = connectPool(
+    process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL || '',
+    Number(process.env.AUTH_PG_POOL_MAX) || 5,
+    0,
+  );
   return betterAuth(authOptions(pool));
 }
 
