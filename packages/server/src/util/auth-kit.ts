@@ -26,35 +26,27 @@ let loading: Promise<void> | null = null;
 export function loadAuthKit(): Promise<void> {
   if (!loading) {
     loading = (async () => {
-      try {
-        auth = await import('@munhq/auth');
-      } catch {
-        auth = null;
-      }
-      try {
-        mcp = await import('@munhq/mcp-kit');
-      } catch {
-        mcp = null;
-      }
-      log.info({ auth: auth !== null, mcp: mcp !== null }, auth || mcp ? 'auth kits loaded' : 'auth kits are not installed: the server builds the auth settings itself');
+      auth = await import('@munhq/auth');
+      mcp = await import('@munhq/mcp-kit');
+      log.info('auth kits loaded');
     })();
   }
   return loading;
 }
 
-/** `@munhq/auth`, or null before `loadAuthKit` ran. */
-export function authKit(): AuthKit | null { return auth; }
+/** `@munhq/auth`. Throws before `loadAuthKit` ran. */
+export function authKit(): AuthKit {
+  if (!auth) throw new Error('@munhq/auth is not loaded: call loadAuthKit() before the auth options are built');
+  return auth;
+}
 
-/** `@munhq/mcp-kit`, or null before `loadAuthKit` ran (a test that builds the options with no kit). */
-export function mcpKit(): McpKit | null { return mcp; }
-
-/** `@munhq/mcp-kit` for the guards that must never be left out. Throws before `loadAuthKit` ran. */
-export function requireMcpKit(): McpKit {
+/** `@munhq/mcp-kit`. Throws before `loadAuthKit` ran, so the guards are never left out. */
+export function mcpKit(): McpKit {
   if (!mcp) throw new Error('@munhq/mcp-kit is not loaded: call loadAuthKit() before the auth options are built');
   return mcp;
 }
 
-/** TESTS ONLY: install the kits directly, or put back "not installed" with null. */
+/** TESTS ONLY: install the kits directly, or put back "not loaded" with null. */
 export function __setAuthKits(a: AuthKit | null, m: McpKit | null = null): void {
   auth = a;
   mcp = m;
