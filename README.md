@@ -65,12 +65,15 @@ npx chat-recall init
 
 That indexes the transcripts already on your disk, detects which AI tools you have, and registers the MCP server **in each of their configs**:
 
-| Tool | File it writes |
+| Tool | Where the entry goes |
 |---|---|
-| Claude Code | `~/.mcp.json` |
+| Claude Code | user scope (`claude mcp add --scope user`) |
 | Codex | `~/.codex/config.toml` |
 | OpenCode | `~/.config/opencode/opencode.json` |
+| Pi, Hermes, Gemini CLI | their own `mcp add` or `config set` commands |
 | Cursor | `~/.cursor/mcp.json` |
+
+`chat-recall login` does the same step on its own: one sign-in, and `chat-recall-mcp` is in every tool that is installed, with no sign-in in the tool itself. Run it again on a machine that is already connected to finish a setup that an older version started; `--skip-mcp` leaves the tools alone. The device token goes to the OS keyring, or to a file that only you can read (`CHAT_RECALL_SECRET_STORE=sealkeep` keeps it in sealkeep).
 
 It only touches a config whose tool is on this machine, it never overwrites an entry you curated by hand, and `chat-recall doctor` prints one line per tool so a missing registration is visible. Inside Claude Code you can install the skills and the MCP server together instead:
 
