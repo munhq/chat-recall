@@ -1,0 +1,133 @@
+/**
+ * The login of `chat-recall` on the kit of the fleet (`@munhq/mcp-kit/cli`, bundled into the CLI at build time).
+ *
+ * Three jobs, each one call of the kit:
+ *   1. `deviceLogin`: the RFC 8628 sign-in of the person, the same code as every other product of the fleet.
+ *   2. `saveSecret`: keeps the device token in sealkeep when it is installed, else in the keyring of the OS, else in a
+ *      file that only the owner can read. `credentials.json` keeps the pointer (`SecretWhere`), not the token.
+ *   3. `addMcpServer`: puts the relay `chat-recall-mcp` into every AI tool of the machine.
+ */
+import { join } from 'node:path';
+import {
+  LoginError,
+  addMcpServer,
+  deviceLogin,
+  installedClients,
+  saveSecret,
+  systemHost,
+  type Host,
+  type Outcome,
+  type SecretWhere,
+} from '@munhq/mcp-kit/cli';
+import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
+import { resolveOnPath } from '@chat-recall/engine/core/which.js';
+
+export { LoginError };
+
+/** The name of the MCP server in each AI tool. */
+export const MCP_NAME = 'chat-recall';
+
+/** The client id that the server pins for the CLI (`validateClient` of the better-auth device plugin). */
+export const CLI_CLIENT_ID = 'chat-recall-cli';
+
+/** The longest that a program of the kit (sealkeep, secret-tool, an AI tool's `mcp add`) may take. A locked keyring waits for a prompt that no one answers. */
+const RUN_TIMEOUT_MS = 30_000;
+
+/** The machine for the kit: the real one, with a time limit on each program that the kit runs. */
+export function cliHost(env: NodeJS.ProcessEnv = process.env): Host {
+  const base = systemHost(env);
+  return { ...base, run: (bin, args, opts) => base.run(bin, args, { timeoutMs: RUN_TIMEOUT_MS, ...opts }) };
+}
+
+/**
+ * `CHAT_RECALL_SECRET_STORE=file` keeps the token in the file only: for a container, a CI job and a test, where
+ * sealkeep and the keyring of the OS are not the ones of a person.
+ */
+const fileOnly = (env: NodeJS.ProcessEnv) => env.CHAT_RECALL_SECRET_STORE?.trim().toLowerCase() === 'file';
+
+/** The part of a sealkeep name that tells the servers apart: `prod` for the default one, else the host. */
+function envOf(serverUrl: string, defaultServer: string): string {
+  const origin = (u: string) => { try { return new URL(u).origin; } catch { return u.replace(/\/+$/, ''); } };
+  if (origin(serverUrl) === origin(defaultServer)) return 'prod';
+  let host = serverUrl;
+  try { host = new URL(serverUrl).host; } catch { /* not a URL: the text itself */ }
+  return host.toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+}
+
+/** `personal/chat-recall/<prod or host>/DEVICE_TOKEN`: the name of the device token in sealkeep. */
+export function tokenName(serverUrl: string, defaultServer: string): string {
+  return `personal/${MCP_NAME}/${envOf(serverUrl, defaultServer)}/DEVICE_TOKEN`;
+}
+
+/** Keeps the device token of `serverUrl` and answers where it went. The token goes to no other place. */
+export function keepDeviceToken(
+  serverUrl: string,
+  token: string,
+  o: { defaultServer: string; host?: Host; dataDir?: string; env?: NodeJS.ProcessEnv },
+): SecretWhere {
+  const name = tokenName(serverUrl, o.defaultServer);
+  return saveSecret(token, {
+    name,
+    file: join(o.dataDir ?? getDataDir(), 'tokens', name.split('/')[2]),
+    description: `The chat-recall device token of ${serverUrl}`,
+    host: o.host ?? cliHost(),
+    forceFile: fileOnly(o.env ?? process.env),
+  });
+}
+
+/** What the person reads after a login, for the place that holds the token. */
+export function describeWhere(where: SecretWhere): string {
+  if (where.kind === 'sealkeep') return `sealkeep (${where.name})`;
+  if (where.kind === 'keyring') return `the OS keyring (${where.backend})`;
+  return `a file that only you can read (${where.path})`;
+}
+
+export interface DeviceLoginPrompt { url: string; userCode: string; verificationUri: string }
+
+/**
+ * The device sign-in on the server's own better-auth provider. Answers the session token of the person who approved
+ * the code. The kit prints nothing and opens no browser: `onPrompt` gets the link and the code the moment the server
+ * issues them, so the caller shows them as it shows every sign-in (`--prompt-json` for the MCP tool that relays them).
+ */
+export async function signIn(
+  server: string,
+  onPrompt: (p: DeviceLoginPrompt) => void,
+  o: { fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<string> {
+  const f = o.fetch ?? fetch;
+  const watching: typeof fetch = async (input, init) => {
+    const res = await f(input, init);
+    if (String(input).endsWith('/api/auth/device/code') && res.ok) {
+      try {
+        const j = await res.clone().json() as { user_code?: string; verification_uri?: string; verification_uri_complete?: string };
+        if (j.user_code && j.verification_uri) {
+          onPrompt({ url: j.verification_uri_complete ?? j.verification_uri, userCode: j.user_code, verificationUri: j.verification_uri });
+        }
+      } catch { /* the kit reports a response that is not a device code */ }
+    }
+    return res;
+  };
+  return deviceLogin({ server, clientId: CLI_CLIENT_ID, fetch: watching, noBrowser: true, write: () => undefined, sleep: o.sleep });
+}
+
+/** The command that an AI tool runs for the relay: `chat-recall-mcp` on the PATH, else the bundle beside this file. */
+export function relayCommand(bundleDir: string): string[] {
+  const bin = resolveOnPath('chat-recall-mcp');
+  return bin ? [bin] : [process.execPath, join(bundleDir, 'mcp-relay.js')];
+}
+
+/**
+ * Puts the relay into every AI tool of the machine that the kit knows. The other tools keep the writer of `init`.
+ * `CHAT_RECALL_MCP_REGISTRATION=own` leaves the AI tools' own programs alone (`claude mcp add` and the like), for a
+ * test or an image that must not run them; the writer of `init` still runs.
+ */
+export function registerRelay(server: string, bundleDir: string, host: Host = cliHost(), env: NodeJS.ProcessEnv = process.env): Outcome[] {
+  if (env.CHAT_RECALL_MCP_REGISTRATION?.trim().toLowerCase() === 'own') return [];
+  const clients = installedClients(host);
+  if (clients.length === 0) return [];
+  return addMcpServer(host, clients, {
+    name: MCP_NAME,
+    url: `${server.replace(/\/+$/, '')}/mcp`,
+    command: relayCommand(bundleDir),
+  }).outcomes;
+}

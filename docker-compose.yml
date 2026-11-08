@@ -11,14 +11,13 @@
 # single `docker compose up` with no external database to provision.
 #
 # STARTS IN SECONDS: `server` pulls ghcr.io/munhq/chat-recall, a PUBLIC image
-# built from this repository by its own CI, containing the dashboard, the API and
-# the packed CLI — and no marketing pages, prices or legal text, so your server
-# advertises nothing but itself.
+# built from this repository by the desk server (.desk/config.json, image
+# `selfhost`), containing the dashboard, the API and the packed CLI — and no
+# marketing pages, prices or legal text, so your server advertises nothing but
+# itself.
 #
-# It also keeps `build:`, so `docker compose up -d --build` compiles from source
-# instead. Use that to run local changes, or on an architecture the published
-# image does not cover. A source build takes several minutes on the first run —
-# it looks stalled and is not.
+# There is no `build:` here. The server depends on the private @munhq kits, and
+# the landing builds the image with the access to them, so a user pulls it.
 #
 # (The separate ghcr.io/munhq/chat-recall-cloud is the hosted service's private
 # artifact: this same image with chatrecall.dev's storefront layered on. It is
@@ -63,15 +62,9 @@ services:
     restart: unless-stopped
 
   server:
-    # Both on purpose. `docker compose up -d` pulls the published image; adding
-    # --build compiles this checkout instead and tags the result the same, so the
-    # fast path and the from-source path stay one service rather than two files.
-    # CHAT_RECALL_IMAGE pins a version: :latest tracks releases, :main tracks the
-    # development branch, :vX.Y.Z pins exactly.
+    # CHAT_RECALL_IMAGE pins a version: :latest and :main track the landing of
+    # the main branch, :vX.Y.Z pins exactly.
     image: ${CHAT_RECALL_IMAGE:-ghcr.io/munhq/chat-recall:latest}
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.server
     depends_on:
       db:
         condition: service_healthy

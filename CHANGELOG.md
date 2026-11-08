@@ -2,6 +2,21 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.32] — 2026-11-08
+
+### Added
+- **One command connects every AI tool.** `chat-recall login` signs you in with the device login of `@munhq/mcp-kit`, keeps the device token, and registers `chat-recall-mcp` in each installed AI tool (Claude Code, Codex, OpenCode, Pi, Hermes, Gemini CLI, Cursor) with the `addMcpServer` function of the kit. `chat-recall init` registers it the same way, and keeps its own writer for Antigravity and for the `alwaysAllow` list. `login --skip-mcp` leaves the AI tools alone.
+- **The device token has a safe place.** The kit keeps it in sealkeep when sealkeep is installed, else in the OS keyring, else in `~/.chat-recall/tokens/` (mode 0600). `credentials.json` holds the server and a pointer, and no token. A process that needs a token in sealkeep starts itself again once under `sealkeep run`: the CLI, the MCP server, the watch daemon and the message hook. If sealkeep does not give the token, the process runs with no token and names the reason.
+- `CHAT_RECALL_SECRET_STORE=file` keeps the token in the file only. `CHAT_RECALL_MCP_REGISTRATION=own` stops the login and `init` from running the programs of the AI tools.
+
+### Changed
+- The kit is bundled into the CLI at build time. The npm package has no new dependency.
+- The server image builds from the private `@munhq` packages as normal dependencies. The landing builds and publishes `ghcr.io/munhq/chat-recall`, and `docker-compose.yml` has no `build:` section. The server stops at boot when `@munhq/mcp-kit` is missing, so the redirect guard and the refresh guard are always on.
+- The relay sets the heap limit of the daemon itself, because the kit writes the entry with no environment.
+
+### Removed
+- `packages/server/src/auth/mcp-redirects.ts` and the ambient types of `@munhq/mcp-kit`.
+
 ## [0.7.31] — 2026-11-03
 
 ### Removed

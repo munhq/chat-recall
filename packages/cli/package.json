@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.7.31",
+  "version": "0.7.32",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/munhq/chat-recall.git"
@@ -74,6 +74,7 @@
   },
   "devDependencies": {
     "@chat-recall/engine": "*",
+    "@munhq/mcp-kit": "^0.20.1",
     "better-sqlite3": "12.9.0"
   },
   "mcpName": "io.github.munhq/chat-recall"

@@ -22,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recallTarget } from '@chat-recall/engine/core/remote-target.js';
+import { adoptSealkeepSecrets } from '@chat-recall/engine/core/stored-token.js';
 import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 import { fetchWithTimeout } from './http.js';
@@ -401,6 +402,8 @@ function argValue(name: string): string | undefined {
 }
 async function main(): Promise<number> {
   if (process.env.CHAT_RECALL_MESSAGE_HOOK === '0') return 0;
+  // A login that the kit keeps in sealkeep is readable only in a process that `sealkeep run` starts; the hook says nothing if it fails.
+  await adoptSealkeepSecrets({ say: (l) => debug(l) });
   const toolArg = argValue('--tool') ?? 'claude';
   if (!isHookTool(toolArg)) { debug(`unknown tool ${toolArg}`); return 0; }
   const raw = await readStdin();

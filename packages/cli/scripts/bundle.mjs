@@ -49,7 +49,7 @@ await build({
     // The auto-indexer daemon ships as its own bin (`chat-recall-watch`) so
     // installed users get live indexing + continuous sync without a repo
     // checkout and tsx.
-    { in: 'auto-indexer/indexer.ts', out: 'watch' },
+    { in: 'auto-indexer/watch-entry.ts', out: 'watch' },
     // The scan worker is its OWN entry because worker_threads needs a real file
     // to spawn. It sits beside the other bundles so `new URL('./scan-worker.js',
     // import.meta.url)` resolves from whichever one is running.

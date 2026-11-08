@@ -45,13 +45,13 @@ like a root password: anything holding it can read every tenant on the server.
 ## 3. Start it
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-> **The first run takes several minutes and looks stalled.** It is compiling the
-> TypeScript monorepo inside the container. Do not interrupt it — a Ctrl-C
-> throws the work away and the retry starts over. Later runs hit the layer cache
-> and start in seconds.
+> **The first run pulls the images.** The server image `ghcr.io/munhq/chat-recall`
+> is built by the desk server of the project and published with the dashboard, the
+> API and the packed CLI. You build nothing: the server depends on private
+> packages, and only that build has access to them.
 
 Watch it come up:
 
@@ -157,11 +157,12 @@ services:
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Migrations run automatically at boot. Your data lives in the `db` volume and
-survives the rebuild.
+survives the new image.
 
 ## Backups
 

@@ -21,6 +21,7 @@
  * setEventReporter() rather than imported by it, so the engine never reaches
  * back into the CLI package.
  */
+import { adoptSealkeepSecrets } from '@chat-recall/engine/core/stored-token.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { spawn } from 'child_process';
 import { createServer, connect, type Socket, type Server } from 'node:net';
@@ -468,6 +469,8 @@ function installedVersion(): string | null {
 
 async function main() {
   installCrashGuards();
+  // A login that the kit keeps in sealkeep is readable only in a process that `sealkeep run` starts.
+  await adoptSealkeepSecrets();
   // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
   // does NOT take effect after startup (verified empirically on Node 23) —
   // the cap must come from the spawner. `chat-recall init` writes
