@@ -103,7 +103,10 @@ describe('the wrapper and the plugin files', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cr-dir-'));
     const out = join(dir, 'payloads');
     const wrapper = join(dir, 'w.sh');
-    writeFileSync(wrapper, '#!/bin/sh\ncat >> "$CR_HOOK_OUT"\nprintf "\\n" >> "$CR_HOOK_OUT"\n');
+    // The waiter of each prompt runs the wrapper with arguments, at the same time as the next hook. Two runs that
+    // append to one file mixed their lines (9 of 12 parallel runs failed on JSON.parse), so a run with arguments
+    // reads its input and writes nothing.
+    writeFileSync(wrapper, '#!/bin/sh\nif [ "$#" -gt 0 ]; then cat > /dev/null; exit 0; fi\ncat >> "$CR_HOOK_OUT"\nprintf "\\n" >> "$CR_HOOK_OUT"\n');
     execFileSync('chmod', ['+x', wrapper]);
     process.env.CR_HOOK_OUT = out;
     try {
@@ -131,8 +134,7 @@ describe('the wrapper and the plugin files', () => {
       for (const id of ['mine', 'flat', 'gone']) {
         await hooks.prompt({ sessionID: id, prompt: { text: 'hello' } });
       }
-      // The prompt also starts a waiter for the session, and the wrapper records
-      // that run too (hook_event_name "Stop"). Its folder is asserted in the source.
+      // The prompt also starts a waiter for the session; the wrapper skips that run. Its folder is asserted in the source.
       const payloads = readFileSync(out, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
         .filter((p) => p.hook_event_name === 'UserPromptSubmit');
       expect(payloads.map((p) => p.cwd)).toEqual(['/home/me/project', '/home/me/flat', '/home/me/other-project']);
