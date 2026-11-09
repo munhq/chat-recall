@@ -14,7 +14,9 @@
  *   POST /api/live-sessions/register  {sessionId, label?, parent?, doing?} → {session}
  *   GET  /api/live-sessions?parent=&includeEnded=&limit=              → {sessions}
  *   GET  /api/live-sessions/:address?messages=                        → {session, messages}
- *   POST /api/live-sessions/messages  {from?, to, body, replyTo?}      → {messages}
+ *   POST /api/live-sessions/messages  {from?, to, body, replyTo?, kind?, topic?} → {messages}
+ *   GET  /api/live-sessions/asks                                      → {asks}  (open ask and blocked messages)
+ *   GET  /api/live-sessions/thread/:threadId                          → {messages}  (one conversation, oldest first)
  *   POST /api/live-sessions/inbox     {sessionId, limit?}              → {messages}
  *   POST /api/live-sessions/ack       {sessionId, ids}                 → {acked}
  *
@@ -47,7 +49,9 @@ import {
   SessionOwnedElsewhereError, isFolderAddress, normalizeFolder,
   type LiveSession, type LiveSessionKind, type LiveSessionState, type LiveSessionUpdate, type SessionMessage, type StorageDriver,
 } from '@chat-recall/engine/core/store/driver.js';
-import { isPresenceSession, isSessionProcessKind, type MessageOrigin } from '@chat-recall/engine/core/session-messages.js';
+import {
+  isPresenceSession, isSessionProcessKind, isMessageKind, MESSAGE_KINDS, type MessageKind, type MessageOrigin,
+} from '@chat-recall/engine/core/session-messages.js';
 
 const router = express.Router();
 
@@ -104,6 +108,53 @@ function projectOf(v: unknown): string | undefined {
     throw new HttpError(400, 'project must be a repository name such as owner/repo (at most 200 characters)');
   }
   return v;
+}
+
+/** What a message is about: `owner/repo#42`, or a task name. */
+const TOPIC = /^[A-Za-z0-9._/@:#+-]{1,200}$/;
+
+/** A topic, or undefined when the caller did not name one. */
+function topicOf(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v !== 'string' || !TOPIC.test(v)) {
+    throw new HttpError(400, 'topic must name the task or issue the message is about, such as owner/repo#42 (at most 200 characters)');
+  }
+  return v;
+}
+
+/** A message kind, or undefined when the caller did not name one. */
+function messageKindOf(v: unknown): MessageKind | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (!isMessageKind(v)) throw new HttpError(400, `kind must be one of ${MESSAGE_KINDS.join(', ')}`);
+  return v;
+}
+
+/** An open `ask` or `blocked`, with the session on the other end named. */
+type AskRef = { id: string; session: string; label: string | null; kind: MessageKind; topic: string | null; createdAt: number };
+
+/**
+ * Each session with the questions it waits for and the questions it owes an
+ * answer to, so a list answers "who waits for whom" without reading messages.
+ */
+async function withAsks<T extends LiveSession>(
+  store: StorageDriver, owner: string, sessions: readonly T[],
+): Promise<Array<T & { waitingFor: AskRef[]; owes: AskRef[] }>> {
+  const open = await store.listOpenAsks(owner);
+  const labels = new Map<string, string | null>();
+  const labelOf = async (id: string): Promise<string | null> => {
+    if (!labels.has(id)) labels.set(id, (await store.getLiveSession(owner, id))?.label ?? null);
+    return labels.get(id) ?? null;
+  };
+  const ref = async (m: SessionMessage, other: string): Promise<AskRef> => ({
+    id: m.id, session: other, label: await labelOf(other), kind: m.kind, topic: m.topic, createdAt: m.createdAt,
+  });
+  const out: Array<T & { waitingFor: AskRef[]; owes: AskRef[] }> = [];
+  for (const s of sessions) {
+    const waitingFor = await Promise.all(open.filter((m) => m.fromSession === s.sessionId).map((m) => ref(m, m.toSession)));
+    const owes = await Promise.all(open.filter((m) => m.toSession === s.sessionId && m.fromSession).map((m) => ref(m, m.fromSession!)));
+    out.push({ ...s, waitingFor, owes });
+  }
+  return out;
 }
 
 /**
@@ -355,7 +406,7 @@ router.get('/', handle(async (req, res, store) => {
     includeEnded: req.query.includeEnded === 'true' || req.query.includeEnded === '1',
     limit: Number.isFinite(limit) ? limit : undefined,
   });
-  res.json({ sessions: await withCards(store, sessions) });
+  res.json({ sessions: await withAsks(store, owner, await withCards(store, sessions)) });
 }));
 
 router.post('/messages', handle(async (req, res, store) => {
@@ -368,6 +419,8 @@ router.post('/messages', handle(async (req, res, store) => {
   if (expectCwd !== undefined && expectCwd !== null && typeof expectCwd !== 'string') {
     throw new HttpError(400, 'expectCwd must be a folder');
   }
+  const kind = messageKindOf(req.body?.kind);
+  const topic = topicOf(req.body?.topic);
   const expected = typeof expectCwd === 'string' && expectCwd ? normalizeFolder(expectCwd) : undefined;
 
   let fromSession: string | null = null;
@@ -440,7 +493,7 @@ router.post('/messages', handle(async (req, res, store) => {
   }
 
   const messages = await store.sendSessionMessages(owner, {
-    fromSession, toSessions: recipients.map((r) => r.sessionId), body, replyTo: replyTo || null,
+    fromSession, toSessions: recipients.map((r) => r.sessionId), body, replyTo: replyTo || null, kind, topic,
   });
   res.json({
     messages,
@@ -470,13 +523,23 @@ router.post('/ack', handle(async (req, res, store) => {
   res.json({ acked: await store.ackSessionMessages(actor(req), sessionId, ids) });
 }));
 
+/** The questions nobody answered yet, across this owner's sessions. */
+router.get('/asks', handle(async (req, res, store) => {
+  res.json({ asks: await store.listOpenAsks(actor(req)) });
+}));
+
+/** One conversation, oldest message first. */
+router.get('/thread/:threadId', handle(async (req, res, store) => {
+  res.json({ messages: await store.listThread(actor(req), req.params.threadId) });
+}));
+
 // Registered last: `/:address` would otherwise also match the fixed paths.
 router.get('/:address', handle(async (req, res, store) => {
   const owner = actor(req);
   const session = await resolveOne(store, owner, req.params.address);
   const n = req.query.messages ? parseInt(String(req.query.messages), 10) : 20;
   const messages = await store.listSessionMessages(owner, session.sessionId, Number.isFinite(n) ? n : 20);
-  res.json({ session: (await withCards(store, [session]))[0], messages });
+  res.json({ session: (await withAsks(store, owner, await withCards(store, [session])))[0], messages });
 }));
 
 export default router;

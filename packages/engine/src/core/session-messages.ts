@@ -19,6 +19,25 @@ export interface WireMessage {
   from?: MessageOrigin | null;
   /** The project of the recipient, added by the server with `from`. */
   toProject?: string | null;
+  /** What the message is. A message from an older client has none, and reads as `fyi`. */
+  kind?: MessageKind;
+  /** The task or issue the message is about, such as `owner/repo#42`. */
+  topic?: string | null;
+  /** The id of the first message of the conversation this message belongs to. */
+  threadId?: string | null;
+  /** When the recipient answered it; null while an `ask` or a `blocked` is open. */
+  answeredAt?: number | null;
+}
+
+/** An open `ask` or `blocked`, with the session on the other end of it. */
+export interface OpenAsk {
+  id: string;
+  /** The other session: the one asked, or the one that asked. */
+  session: string;
+  label: string | null;
+  kind: MessageKind;
+  topic: string | null;
+  createdAt: number;
 }
 
 /** Where the sender of a message works. */
@@ -51,6 +70,10 @@ export interface WireLiveSession {
   project?: string | null;
   /** Board cards in progress that name this session. */
   cards?: Array<{ id: string; title: string; status: string }>;
+  /** The asks this session sent that nobody answered yet. */
+  waitingFor?: OpenAsk[];
+  /** The asks sent to this session that it did not answer yet. */
+  owes?: OpenAsk[];
   /** What `claude agents` reports when the session runs on this machine. */
   local?: { id?: string; kind: string; status?: string; state?: string; waitingFor?: string };
 }
@@ -79,6 +102,23 @@ export function toolOfSession(sessionId: string): string {
   if (sessionId.startsWith('cursor_')) return 'Cursor';
   if (sessionId.startsWith('pi_')) return 'pi';
   return 'Claude Code';
+}
+
+/**
+ * What a message is. `ask` and `blocked` wait for an answer: the sender sees
+ * them as open until the recipient replies. `report`, `handoff` and `fyi` need none.
+ */
+export const MESSAGE_KINDS = ['ask', 'report', 'blocked', 'handoff', 'fyi'] as const;
+export type MessageKind = (typeof MESSAGE_KINDS)[number];
+export const DEFAULT_MESSAGE_KIND: MessageKind = 'fyi';
+
+export function isMessageKind(v: unknown): v is MessageKind {
+  return typeof v === 'string' && (MESSAGE_KINDS as readonly string[]).includes(v);
+}
+
+/** A kind that waits for an answer. */
+export function waitsForAnswer(kind: MessageKind | string | null | undefined): boolean {
+  return kind === 'ask' || kind === 'blocked';
 }
 
 /** The marker the hook output starts with, so an agent can tell where it came from. */
@@ -201,7 +241,8 @@ export function formatDelivery(
   for (const [i, m] of messages.entries()) {
     const from = m.fromSession ? sessionName(m.fromSession, labels) : 'a session with no id';
     const reply = m.replyTo ? `, replying to ${m.replyTo}` : '';
-    lines.push(`From ${from}${originNote(m)}, ${formatAge(now - m.createdAt)} ago (message ${m.id}${reply}):`);
+    const what = (m.kind && m.kind !== DEFAULT_MESSAGE_KIND ? `, ${m.kind}` : '') + (m.topic ? `, about ${m.topic}` : '');
+    lines.push(`From ${from}${originNote(m)}, ${formatAge(now - m.createdAt)} ago (message ${m.id}${reply}${what}):`);
     const other = otherProjectNote(m);
     if (other) lines.push(other);
     for (const l of bodies[i].body.split('\n')) lines.push(`> ${l}`);
@@ -211,6 +252,9 @@ export function formatDelivery(
   if (first) {
     lines.push(`To answer, call recall_message_send with from: "${recipient}", to: "${first.fromSession}", `
       + `reply_to: "${first.id}".`);
+  }
+  if (messages.some((m) => waitsForAnswer(m.kind))) {
+    lines.push('A question or a block waits for your answer. The sender sees it as open until you reply with reply_to.');
   }
   return lines.join('\n').trimEnd();
 }
@@ -261,6 +305,14 @@ export function formatSessionLine(s: WireLiveSession, now = Date.now()): string 
   }
   if (s.doing) lines.push(`  doing: ${s.doing}`);
   for (const c of s.cards ?? []) lines.push(`  card ${c.id}: ${c.title}`);
+  const who = (a: OpenAsk) => (a.label ? `${a.label} (${shortId(a.session)})` : shortId(a.session));
+  const about = (a: OpenAsk) => (a.topic ? ` about ${a.topic}` : '');
+  for (const a of s.waitingFor ?? []) {
+    lines.push(`  waiting for an answer from ${who(a)} since ${formatAge(now - a.createdAt)}: ${a.kind}${about(a)} (${a.id})`);
+  }
+  for (const a of s.owes ?? []) {
+    lines.push(`  owes an answer to ${who(a)} since ${formatAge(now - a.createdAt)}: ${a.kind}${about(a)} (${a.id})`);
+  }
   return lines.join('\n');
 }
 

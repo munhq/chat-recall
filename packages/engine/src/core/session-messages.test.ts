@@ -101,6 +101,41 @@ describe('formatDelivery', () => {
   });
 });
 
+describe('typed messages', () => {
+  const ASKER = '11111111-0000-4000-8000-0000000000b2';
+  const message = (over: Record<string, unknown> = {}) => ({
+    id: 'm_1', fromSession: ASKER, toSession: A, body: 'which cookie name?', replyTo: null,
+    createdAt: NOW, deliveredAt: NOW, ...over,
+  });
+
+  test('the delivery names the kind and the topic, and says an ask waits', () => {
+    const out = formatDelivery(A, [message({ kind: 'ask', topic: 'acme/example-app#42' })], { now: NOW });
+    expect(out).toContain('(message m_1, ask, about acme/example-app#42)');
+    expect(out).toContain('A question or a block waits for your answer. The sender sees it as open until you reply with reply_to.');
+  });
+
+  test('a blocked waits too, and an fyi or a report does not', () => {
+    expect(formatDelivery(A, [message({ kind: 'blocked' })], { now: NOW })).toContain('waits for your answer');
+    expect(formatDelivery(A, [message({ kind: 'report' })], { now: NOW })).not.toContain('waits for your answer');
+    expect(formatDelivery(A, [message({ kind: 'fyi' })], { now: NOW })).not.toContain('waits for your answer');
+  });
+
+  test('a message from an older client reads as before', () => {
+    const out = formatDelivery(A, [message()], { now: NOW });
+    expect(out).toContain('(message m_1)');
+    expect(out).not.toContain('waits for your answer');
+  });
+
+  test('a session line says who waits for whom, with the age', () => {
+    const ask = { id: 'm_9', session: ASKER, label: 'lead-app', kind: 'ask' as const, topic: 'acme/example-app#42', createdAt: NOW - 12 * 60_000 };
+    const waiting = formatSessionLine(session({ waitingFor: [ask] }), NOW);
+    expect(waiting).toContain('waiting for an answer from lead-app (11111111) since 12m: ask about acme/example-app#42 (m_9)');
+    const owing = formatSessionLine(session({ owes: [{ ...ask, label: null }] }), NOW);
+    expect(owing).toContain('owes an answer to 11111111 since 12m: ask about acme/example-app#42 (m_9)');
+    expect(formatSessionLine(session(), NOW)).not.toContain('answer');
+  });
+});
+
 describe('the list of sessions by project', () => {
   const line = (s: WireLiveSession) => `- ${s.sessionId}`;
 

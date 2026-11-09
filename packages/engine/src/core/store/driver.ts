@@ -101,7 +101,7 @@ export interface TeamTaskComment { id: string; taskId: string; authorSub: string
  */
 export type LiveSessionState = 'working' | 'idle' | 'ended';
 
-import type { SessionProcessKind } from '../session-messages.js';
+import type { MessageKind, SessionProcessKind } from '../session-messages.js';
 
 /** The process a session runs in, as its hook last reported it. Two sessions of
  * one tool look the same without it: an opencode TUI and the headless
@@ -185,6 +185,24 @@ export interface SessionMessage {
   createdAt: number;
   /** When the recipient received it; null while it waits. */
   deliveredAt: number | null;
+  /** What the message is. A row written before the column existed reads as `fyi`. */
+  kind: MessageKind;
+  /** The task or issue the message is about, such as `owner/repo#42`. */
+  topic: string | null;
+  /** The id of the first message of the conversation; a first message names itself. */
+  threadId: string | null;
+  /** When the recipient answered it with a reply; null while it is open. */
+  answeredAt: number | null;
+  /** The id of the reply that answered it. */
+  answeredBy: string | null;
+}
+export interface SendSessionMessagesInput {
+  fromSession: string | null;
+  toSessions: string[];
+  body: string;
+  replyTo?: string | null;
+  kind?: MessageKind;
+  topic?: string | null;
 }
 export interface CreateTeamTaskInput {
   title: string;
@@ -271,7 +289,16 @@ export interface StorageDriver {
   listLiveSessions(ownerSub: string, opts?: { parentSession?: string; includeEnded?: boolean; limit?: number }): Promise<LiveSession[]>;
   /** The sessions an address names: an exact session id, else every non-ended session with that label. */
   resolveLiveSessions(ownerSub: string, address: string): Promise<LiveSession[]>;
-  sendSessionMessages(ownerSub: string, input: { fromSession: string | null; toSessions: string[]; body: string; replyTo?: string | null }): Promise<SessionMessage[]>;
+  /**
+   * Store one message for each recipient. A message with `replyTo` joins the
+   * thread of the message it answers, and marks that message answered when the
+   * sender is its recipient.
+   */
+  sendSessionMessages(ownerSub: string, input: SendSessionMessagesInput): Promise<SessionMessage[]>;
+  /** The `ask` and `blocked` messages that nobody answered yet, newest first. */
+  listOpenAsks(ownerSub: string, opts?: { sinceMs?: number; limit?: number }): Promise<SessionMessage[]>;
+  /** The messages of one thread, oldest first. */
+  listThread(ownerSub: string, threadId: string, limit?: number): Promise<SessionMessage[]>;
   /**
    * Lease the waiting messages for a session and return them oldest first.
    * A leased message is offered to nobody else until the lease ends. If it is
