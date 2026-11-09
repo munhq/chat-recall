@@ -111,5 +111,8 @@
       },
       "timeoutMinutes": 15
     }
+  ],
+  "preLand": [
+    "{ [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit"
   ]
 }
