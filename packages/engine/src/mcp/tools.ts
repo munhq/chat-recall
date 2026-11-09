@@ -53,6 +53,7 @@ import { redactSecrets } from '../core/secret-redactor.js';
 import { spawnChild, localAgents, PERMISSION_MODES, type LocalAgent } from '../core/session-spawn.js';
 import {
   formatDelivery, formatSessionLine, formatSessionGroups, isLongGone, formatAge, sessionName, interruptBody, toolOfSession, PRESENCE_PREFIX,
+  MESSAGE_KINDS, waitsForAnswer, DEFAULT_MESSAGE_KIND,
   type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
 import { localAiProcesses } from '../core/local-processes.js';
@@ -995,7 +996,11 @@ const RecallMessageSendSchema = z.object({
   body: z.string().min(1).max(16_000).describe('The message. Secrets in it are redacted before it leaves this machine.'),
   interrupt: z.boolean().optional()
     .describe('Stop what the recipient is doing and act on this now. A runtime that can interrupt a turn does so; every other runtime delivers it at the next opportunity.'),
-  reply_to: z.string().optional().describe('The id of the message this answers.'),
+  reply_to: z.string().optional().describe('The id of the message this answers. The reply joins its conversation and closes an open ask or blocked.'),
+  kind: z.enum(MESSAGE_KINDS).optional()
+    .describe('What this message is: "ask" (you wait for an answer), "blocked" (you cannot go on until it is answered), "report", "handoff" or "fyi" (the default). An ask or a blocked stays open for you until the recipient replies with reply_to.'),
+  topic: z.string().max(200).optional()
+    .describe('The task or issue this is about, such as "owner/repo#42". A reply keeps the topic of the message it answers.'),
   expect_cwd: z.string().min(1).optional()
     .describe('The folder the recipient must be in. The send is refused when the recipient is elsewhere.'),
 });
@@ -5348,7 +5353,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         };
         const r = await remotePost<{ messages: WireMessage[]; recipients: SentTo[] }>(
           '/api/live-sessions/messages',
-          { from: params.from, to: params.to, body, replyTo: params.reply_to, expectCwd: params.expect_cwd });
+          { from: params.from, to: params.to, body, replyTo: params.reply_to, expectCwd: params.expect_cwd, kind: params.kind, topic: params.topic });
         const lines = r.recipients.map((rc, i) => {
           const presence = rc.sessionId.startsWith(PRESENCE_PREFIX);
           const name = presence
@@ -5462,7 +5467,13 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
               : `to ${sessionName(m.toSession, labels)}`;
             const state = m.toSession === r.session.sessionId && m.deliveredAt == null ? ', unread' : '';
             const text = m.body.length > 400 ? m.body.slice(0, 400) + '…' : m.body;
-            lines.push(`- ${formatAge(now - m.createdAt)} ago, ${dir}${state} (${m.id}): ${text.replace(/\n/g, ' ')}`);
+            const what = [
+              m.kind && m.kind !== DEFAULT_MESSAGE_KIND ? m.kind : '',
+              m.topic ? `about ${m.topic}` : '',
+              m.answeredAt != null ? 'answered' : waitsForAnswer(m.kind) ? 'open' : '',
+              m.threadId && m.threadId !== m.id ? `thread ${m.threadId}` : '',
+            ].filter(Boolean).join(', ');
+            lines.push(`- ${formatAge(now - m.createdAt)} ago, ${dir}${state}${what ? `, ${what}` : ''} (${m.id}): ${text.replace(/\n/g, ' ')}`);
           }
           lines.push('', `Read what it did: recall_show with session_id "${r.session.sessionId}" and from_end.`);
           return { content: [{ type: 'text', text: lines.join('\n') }] };

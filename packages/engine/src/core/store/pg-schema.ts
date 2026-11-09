@@ -1009,6 +1009,16 @@ CREATE TABLE IF NOT EXISTS session_messages (
   delivered_at  BIGINT,
   PRIMARY KEY (tenant, id)
 );
+-- What a message is, what it is about, the conversation it belongs to, and
+-- whether its recipient answered it. An ask or a blocked stays open until a
+-- reply names it in reply_to.
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS kind        TEXT NOT NULL DEFAULT 'fyi';
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS topic       TEXT;
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS thread_id   TEXT;
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS answered_at BIGINT;
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS answered_by TEXT;
+CREATE INDEX IF NOT EXISTS idx_session_messages_open ON session_messages(tenant, owner_sub, kind, answered_at);
+CREATE INDEX IF NOT EXISTS idx_session_messages_thread ON session_messages(tenant, thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(tenant, to_session, created_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_from ON session_messages(tenant, from_session, created_at);
 

@@ -21,10 +21,10 @@ import type {
 } from '../../types/memory.js';
 import type {
   StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, UpdateTeamTaskPatch,
-  LiveSession, LiveSessionUpdate, SessionMessage,
+  LiveSession, LiveSessionUpdate, SessionMessage, SendSessionMessagesInput,
 } from './driver.js';
 import { SessionOwnedElsewhereError, isFolderAddress, normalizeFolder, LIVE_SESSION_STALE_MS } from './driver.js';
-import { isPresenceSession } from '../session-messages.js';
+import { isPresenceSession, isMessageKind, DEFAULT_MESSAGE_KIND } from '../session-messages.js';
 import { resolveProjectId } from '../project-resolver.js';
 import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
@@ -565,6 +565,12 @@ export class PgStore implements StorageDriver {
       id: r.id, fromSession: r.from_session ?? null, toSession: r.to_session, body: r.body,
       replyTo: r.reply_to ?? null, createdAt: Number(r.created_at) || 0,
       deliveredAt: r.delivered_at != null ? Number(r.delivered_at) : null,
+      kind: isMessageKind(r.kind) ? r.kind : DEFAULT_MESSAGE_KIND,
+      topic: r.topic ?? null,
+      // A row from before threads names itself as the first message of its thread.
+      threadId: r.thread_id ?? r.id,
+      answeredAt: r.answered_at != null ? Number(r.answered_at) : null,
+      answeredBy: r.answered_by ?? null,
     };
   }
 
@@ -677,20 +683,39 @@ export class PgStore implements StorageDriver {
     return live.filter((s) => s.pid == null || byProcess.get(`${s.pid}\u0000${s.cwd ?? ''}`) === s);
   }
 
-  async sendSessionMessages(
-    ownerSub: string,
-    input: { fromSession: string | null; toSessions: string[]; body: string; replyTo?: string | null },
-  ): Promise<SessionMessage[]> {
+  async sendSessionMessages(ownerSub: string, input: SendSessionMessagesInput): Promise<SessionMessage[]> {
     const now = Date.now();
     const out: SessionMessage[] = [];
+    const kind = input.kind ?? DEFAULT_MESSAGE_KIND;
     await this.tx(async (c) => {
+      // The message this one answers gives the thread and the topic, and is
+      // marked answered when the sender is the one it was sent to.
+      let thread: string | null = null;
+      let topic = input.topic ?? null;
+      let answers: string | null = null;
+      if (input.replyTo) {
+        const o = (await c.query(
+          `SELECT id, to_session, thread_id, topic, answered_at FROM session_messages WHERE tenant=$1 AND owner_sub=$2 AND id=$3`,
+          [this.t, ownerSub, input.replyTo])).rows[0];
+        if (o) {
+          thread = o.thread_id ?? o.id;
+          topic = topic ?? o.topic ?? null;
+          if (o.answered_at == null && input.fromSession && o.to_session === input.fromSession) answers = o.id;
+        }
+      }
       for (const to of input.toSessions) {
         const id = 'm_' + randomBytes(9).toString('hex');
         const r = await c.query(
-          `INSERT INTO session_messages (tenant,id,owner_sub,from_session,to_session,body,reply_to,created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-          [this.t, id, ownerSub, input.fromSession, to, input.body, input.replyTo ?? null, now]);
+          `INSERT INTO session_messages (tenant,id,owner_sub,from_session,to_session,body,reply_to,created_at,kind,topic,thread_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          [this.t, id, ownerSub, input.fromSession, to, input.body, input.replyTo ?? null, now, kind, topic, thread ?? id]);
         out.push(this.rowToSessionMessage(r.rows[0]));
+      }
+      if (answers && out[0]) {
+        await c.query(
+          `UPDATE session_messages SET answered_at=$4, answered_by=$5
+            WHERE tenant=$1 AND owner_sub=$2 AND id=$3 AND answered_at IS NULL`,
+          [this.t, ownerSub, answers, now, out[0].id]);
       }
       // Messages and ended sessions older than 30 days are of no use to a
       // running session, and without this both tables only grow.
@@ -699,6 +724,25 @@ export class PgStore implements StorageDriver {
       await c.query(`DELETE FROM live_sessions WHERE tenant=$1 AND owner_sub=$2 AND state='ended' AND updated_at < $3`, [this.t, ownerSub, cutoff]);
     });
     return out;
+  }
+
+  async listOpenAsks(ownerSub: string, opts: { sinceMs?: number; limit?: number } = {}): Promise<SessionMessage[]> {
+    const since = Date.now() - (opts.sinceMs ?? 7 * 24 * 3600_000);
+    const rows = await this.q(
+      `SELECT * FROM session_messages
+        WHERE tenant=$1 AND owner_sub=$2 AND kind IN ('ask','blocked') AND answered_at IS NULL AND created_at >= $3
+        ORDER BY created_at DESC, id DESC LIMIT $4`,
+      [this.t, ownerSub, since, Math.max(1, Math.min(500, opts.limit ?? 200))]);
+    return rows.map((r) => this.rowToSessionMessage(r));
+  }
+
+  async listThread(ownerSub: string, threadId: string, limit = 100): Promise<SessionMessage[]> {
+    const rows = await this.q(
+      `SELECT * FROM session_messages
+        WHERE tenant=$1 AND owner_sub=$2 AND (thread_id=$3 OR id=$3)
+        ORDER BY created_at, id LIMIT $4`,
+      [this.t, ownerSub, threadId, Math.max(1, Math.min(500, limit))]);
+    return rows.map((r) => this.rowToSessionMessage(r));
   }
 
   async takeSessionMessages(ownerSub: string, sessionId: string, limit = 50, leaseMs = 60_000): Promise<SessionMessage[]> {

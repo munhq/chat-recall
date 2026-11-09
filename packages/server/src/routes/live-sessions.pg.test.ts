@@ -479,6 +479,109 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
     });
   });
 
+  describe('typed messages, threads and open asks', () => {
+    const ASKER = 'eeee5555-0000-4000-8000-000000000001';
+    const ANSWERER = 'ffff6666-0000-4000-8000-000000000001';
+    const THIRD = 'abab7777-0000-4000-8000-000000000001';
+    const TOPIC_REF = 'acme/example-app#42';
+    let askId = '';
+
+    const send = (from: string, to: string, body: string, extra: object = {}) =>
+      alice.post('/api/live-sessions/messages', { from, to, body, ...extra });
+    const row = async (id: string) =>
+      (await alice.get('/api/live-sessions')).body.sessions.find((s: { sessionId: string }) => s.sessionId === id);
+
+    beforeAll(async () => {
+      for (const id of [ASKER, ANSWERER, THIRD]) {
+        await alice.post('/api/live-sessions/event', { sessionId: id, event: 'SessionStart', cwd: '/home/user/code/example-app', project: 'acme/example-app' });
+      }
+    });
+
+    test('the new columns exist on the table', async () => {
+      const r = await admin.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'session_messages'`);
+      const names = r.rows.map((c: { column_name: string }) => c.column_name);
+      for (const c of ['kind', 'topic', 'thread_id', 'answered_at', 'answered_by']) expect(names).toContain(c);
+    });
+
+    test('an ask comes back with its kind, topic and thread, in each answer a session reads', async () => {
+      const r = await send(ASKER, ANSWERER, 'which cookie name?', { kind: 'ask', topic: TOPIC_REF });
+      expect(r.status).toBe(200);
+      const m = r.body.messages[0];
+      askId = m.id;
+      expect(m).toMatchObject({ kind: 'ask', topic: TOPIC_REF, threadId: m.id, answeredAt: null, answeredBy: null });
+
+      const w = await alice.post('/api/live-sessions/wait', { sessionId: ANSWERER, timeoutSecs: 1 });
+      expect(w.body.messages[0]).toMatchObject({ id: askId, kind: 'ask', topic: TOPIC_REF });
+    });
+
+    test('the list shows who waits for whom', async () => {
+      const asker = await row(ASKER);
+      const answerer = await row(ANSWERER);
+      expect(asker.waitingFor).toEqual([expect.objectContaining({
+        id: askId, session: ANSWERER, kind: 'ask', topic: TOPIC_REF, label: 'example-app-ffff6666',
+      })]);
+      expect(asker.owes).toEqual([]);
+      expect(answerer.owes).toEqual([expect.objectContaining({ id: askId, session: ASKER, label: 'example-app-eeee5555' })]);
+      expect(answerer.waitingFor).toEqual([]);
+      const open = await alice.get('/api/live-sessions/asks');
+      expect(open.body.asks.map((a: { id: string }) => a.id)).toContain(askId);
+    });
+
+    test('a reply from someone who was not asked does not close the ask', async () => {
+      const r = await send(THIRD, ASKER, 'I think it is sid', { replyTo: askId });
+      expect(r.status).toBe(200);
+      expect(r.body.messages[0].threadId).toBe(askId);
+      const open = await alice.get('/api/live-sessions/asks');
+      expect(open.body.asks.map((a: { id: string }) => a.id)).toContain(askId);
+    });
+
+    test('the answer joins the thread, keeps the topic, and closes the ask', async () => {
+      const r = await send(ANSWERER, ASKER, 'it is called sid', { replyTo: askId, kind: 'report' });
+      expect(r.status).toBe(200);
+      const reply = r.body.messages[0];
+      expect(reply).toMatchObject({ kind: 'report', topic: TOPIC_REF, threadId: askId, replyTo: askId });
+
+      const thread = await alice.get(`/api/live-sessions/thread/${askId}`);
+      expect(thread.body.messages.map((m: { id: string }) => m.id)).toEqual(
+        expect.arrayContaining([askId, reply.id]));
+      const original = thread.body.messages.find((m: { id: string }) => m.id === askId);
+      expect(original).toMatchObject({ answeredBy: reply.id });
+      expect(original.answeredAt).toBeGreaterThan(0);
+
+      const open = await alice.get('/api/live-sessions/asks');
+      expect(open.body.asks.map((a: { id: string }) => a.id)).not.toContain(askId);
+      expect((await row(ASKER)).waitingFor).toEqual([]);
+      expect((await row(ANSWERER)).owes).toEqual([]);
+    });
+
+    test('a blocked waits for an answer like an ask', async () => {
+      const r = await send(ANSWERER, ASKER, 'cannot go on without the schema', { kind: 'blocked' });
+      const id = r.body.messages[0].id;
+      expect((await alice.get('/api/live-sessions/asks')).body.asks.map((a: { id: string }) => a.id)).toContain(id);
+      await send(ASKER, ANSWERER, 'here it is', { replyTo: id });
+      expect((await alice.get('/api/live-sessions/asks')).body.asks.map((a: { id: string }) => a.id)).not.toContain(id);
+    });
+
+    test('a message with no kind is an fyi, and no one waits for it', async () => {
+      const r = await send(ASKER, ANSWERER, 'just so you know');
+      expect(r.body.messages[0]).toMatchObject({ kind: 'fyi', topic: null });
+      expect((await alice.get('/api/live-sessions/asks')).body.asks.map((a: { id: string }) => a.id))
+        .not.toContain(r.body.messages[0].id);
+    });
+
+    test('a bad kind or topic is refused', async () => {
+      expect((await send(ASKER, ANSWERER, 'x', { kind: 'shout' })).status).toBe(400);
+      expect((await send(ASKER, ANSWERER, 'x', { topic: 'has spaces' })).status).toBe(400);
+      expect((await send(ASKER, ANSWERER, 'x', { topic: 'x'.repeat(201) })).status).toBe(400);
+    });
+
+    test('another user sees none of it', async () => {
+      expect((await bob.get('/api/live-sessions/asks')).body.asks).toEqual([]);
+      expect((await bob.get(`/api/live-sessions/thread/${askId}`)).body.messages).toEqual([]);
+    });
+  });
+
   test('another user of the same tenant cannot see or reach these sessions', async () => {
     await bob.post('/api/live-sessions/event', { sessionId: OTHER_USER_SESSION, event: 'SessionStart' });
     const list = await bob.get('/api/live-sessions');
