@@ -556,6 +556,7 @@ export class PgStore implements StorageDriver {
       unread: Number(r.unread) || 0,
       processKind: r.process_kind ?? null,
       pid: r.pid != null ? Number(r.pid) : null,
+      project: r.project ?? null,
     };
   }
 
@@ -580,8 +581,8 @@ export class PgStore implements StorageDriver {
     // The WHERE on the conflict branch keeps one person's row out of reach of
     // another, so a guessed session id cannot be taken over.
     const rows = await this.q(
-      `INSERT INTO live_sessions (tenant,session_id,owner_sub,label,parent_session,cwd,state,last_event,started_at,updated_at,doing,process_kind,pid)
-       VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,COALESCE($7,'idle'),$8,$9,$9,NULLIF($10,''),$11,$12)
+      `INSERT INTO live_sessions (tenant,session_id,owner_sub,label,parent_session,cwd,state,last_event,started_at,updated_at,doing,process_kind,pid,project)
+       VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,COALESCE($7,'idle'),$8,$9,$9,NULLIF($10,''),$11,$12,NULLIF($13,''))
        ON CONFLICT (tenant, session_id) DO UPDATE SET
          label          = CASE WHEN $4::text IS NULL THEN live_sessions.label ELSE NULLIF($4,'') END,
          parent_session = CASE WHEN $5::text IS NULL THEN live_sessions.parent_session ELSE NULLIF($5,'') END,
@@ -593,11 +594,12 @@ export class PgStore implements StorageDriver {
                                WHEN live_sessions.process_kind = 'tui' AND $11 <> 'tui' THEN live_sessions.process_kind
                                ELSE $11 END,
          pid            = COALESCE($12, live_sessions.pid),
+         project        = CASE WHEN $13::text IS NULL THEN live_sessions.project ELSE NULLIF($13,'') END,
          updated_at     = $9
        WHERE live_sessions.owner_sub = excluded.owner_sub
        RETURNING session_id`,
       [this.t, u.sessionId, u.ownerSub, u.label ?? null, u.parentSession ?? null, u.cwd ?? null,
-        u.state ?? null, u.lastEvent ?? null, now, u.doing ?? null, u.processKind ?? null, u.pid ?? null],
+        u.state ?? null, u.lastEvent ?? null, now, u.doing ?? null, u.processKind ?? null, u.pid ?? null, u.project ?? null],
     );
     if (!rows[0]) throw new SessionOwnedElsewhereError(u.sessionId);
     return (await this.getLiveSession(u.ownerSub, u.sessionId))!;

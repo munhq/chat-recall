@@ -145,6 +145,8 @@ export interface LiveSession {
   processKind: LiveSessionKind | null;
   /** The process id, so a local view can tell a running process from a stale row. */
   pid: number | null;
+  /** The repository the folder belongs to (`owner/repo`), as the hook found it; null when unknown. */
+  project: string | null;
 }
 /** A write named a session id that another user's session already holds. */
 export class SessionOwnedElsewhereError extends Error {
@@ -171,6 +173,8 @@ export interface LiveSessionUpdate {
   processKind?: LiveSessionKind;
   /** The process id that runs the session. */
   pid?: number;
+  /** The repository of the session's folder. Empty string clears it. */
+  project?: string;
 }
 export interface SessionMessage {
   id: string;

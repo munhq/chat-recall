@@ -990,6 +990,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
 );
 ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS process_kind TEXT;
 ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS pid INTEGER;
+ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS project TEXT;
 CREATE INDEX IF NOT EXISTS idx_live_sessions_owner ON live_sessions(tenant, owner_sub, updated_at);
 CREATE INDEX IF NOT EXISTS idx_live_sessions_parent ON live_sessions(tenant, parent_session);
 

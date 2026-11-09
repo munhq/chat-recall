@@ -398,6 +398,87 @@ const OTHER_USER_SESSION = '22222222-0000-4000-8000-000000000001';
     });
   });
 
+  describe('the project of a session', () => {
+    const APP = 'aaaa1111-0000-4000-8000-000000000001';
+    const OTHER = 'bbbb2222-0000-4000-8000-000000000001';
+    const APP_TOO = 'cccc3333-0000-4000-8000-000000000001';
+    const NO_PROJECT = 'dddd4444-0000-4000-8000-000000000001';
+    const start = (sessionId: string, project: string | undefined, cwd: string, extra: object = {}) =>
+      alice.post('/api/live-sessions/event', { sessionId, event: 'SessionStart', cwd, project, ...extra });
+
+    test('a session reports its project, and a session without a name gets one from it', async () => {
+      const r = await start(APP, 'acme/example-app', '/home/user/code/example-app');
+      expect(r.status).toBe(200);
+      expect(r.body.session).toMatchObject({ project: 'acme/example-app', label: 'example-app-aaaa1111' });
+
+      // A resumed session keeps its name; a name the session chose is not replaced.
+      await alice.post('/api/live-sessions/register', { sessionId: APP, label: 'lead-app' });
+      const again = await start(APP, 'acme/example-app', '/home/user/code/example-app');
+      expect(again.body.session.label).toBe('lead-app');
+      const named = await start(APP_TOO, 'acme/example-app', '/home/user/code/example-app-2', { label: 'custom-name' });
+      expect(named.body.session.label).toBe('custom-name');
+      await alice.post('/api/live-sessions/register', { sessionId: APP_TOO, label: '' });
+      await alice.post('/api/live-sessions/register', { sessionId: APP_TOO, label: 'example-app-cccc3333' });
+    });
+
+    test('a session with no project is named by its folder', async () => {
+      const r = await start(NO_PROJECT, undefined, '/home/user/code/scratch');
+      expect(r.body.session).toMatchObject({ project: null, label: 'scratch-dddd4444' });
+    });
+
+    test('a bad project is refused', async () => {
+      expect((await start(NO_PROJECT, 'has spaces', '/home/user/code/scratch')).status).toBe(400);
+      expect((await alice.post('/api/live-sessions/register', { sessionId: APP, project: 'x'.repeat(201) })).status).toBe(400);
+    });
+
+    test('a message carries where its sender works, and the project of the recipient', async () => {
+      await start(OTHER, 'acme/other-app', '/home/user/code/other-app');
+      const sent = await alice.post('/api/live-sessions/messages', { from: APP, to: OTHER, body: 'about issue 7' });
+      expect(sent.status).toBe(200);
+      expect(sent.body.recipients[0]).toMatchObject({ project: 'acme/other-app', crossProject: true });
+
+      const got = await alice.post('/api/live-sessions/inbox', { sessionId: OTHER });
+      expect(got.body.messages[0]).toMatchObject({
+        body: 'about issue 7', toProject: 'acme/other-app',
+        from: { label: 'lead-app', project: 'acme/example-app', cwd: '/home/user/code/example-app' },
+      });
+    });
+
+    test('a name or the start of an id does not cross projects; the full id and the folder do', async () => {
+      const byName = await alice.post('/api/live-sessions/messages', { from: APP, to: 'other-app-bbbb2222', body: 'x' });
+      expect(byName.status).toBe(409);
+      expect(byName.body.error).toContain('in the project acme/other-app, and the sender works in acme/example-app');
+      expect(byName.body.error).toContain('Nothing was sent');
+      expect(byName.body.recipient).toMatchObject({ sessionId: OTHER, project: 'acme/other-app' });
+
+      const byPrefix = await alice.post('/api/live-sessions/messages', { from: APP, to: 'bbbb2222', body: 'x' });
+      expect(byPrefix.status).toBe(409);
+
+      const byFolder = await alice.post('/api/live-sessions/messages', { from: APP, to: '/home/user/code/other-app', body: 'x' });
+      expect(byFolder.status).toBe(200);
+      expect(byFolder.body.recipients[0].crossProject).toBe(true);
+    });
+
+    test('a name inside one project, and a sender with no project, are not refused', async () => {
+      const same = await alice.post('/api/live-sessions/messages', { from: APP, to: 'example-app-cccc3333', body: 'same project' });
+      expect(same.status).toBe(200);
+      expect(same.body.recipients[0].crossProject).toBe(false);
+
+      const unknown = await alice.post('/api/live-sessions/messages', { from: NO_PROJECT, to: 'other-app-bbbb2222', body: 'no project known' });
+      expect(unknown.status).toBe(200);
+      expect(unknown.body.recipients[0].crossProject).toBe(false);
+    });
+
+    test('the wait and event answers carry the same origin', async () => {
+      await alice.post('/api/live-sessions/messages', { from: APP, to: OTHER, body: 'wake up' });
+      const w = await alice.post('/api/live-sessions/wait', { sessionId: OTHER, timeoutSecs: 1 });
+      expect(w.body.messages.some((m: { from?: { project?: string } }) => m.from?.project === 'acme/example-app')).toBe(true);
+      await alice.post('/api/live-sessions/messages', { from: APP, to: OTHER, body: 'once more' });
+      const e = await alice.post('/api/live-sessions/event', { sessionId: OTHER, event: 'UserPromptSubmit', take: true });
+      expect(e.body.messages[0]).toMatchObject({ toProject: 'acme/other-app', from: { project: 'acme/example-app' } });
+    });
+  });
+
   test('another user of the same tenant cannot see or reach these sessions', async () => {
     await bob.post('/api/live-sessions/event', { sessionId: OTHER_USER_SESSION, event: 'SessionStart' });
     const list = await bob.get('/api/live-sessions');
