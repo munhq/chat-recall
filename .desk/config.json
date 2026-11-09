@@ -113,6 +113,7 @@
     }
   ],
   "preLand": [
-    "{ [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit"
+    "{ [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc -b --pretty false",
+    "cd packages/server/client && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc -b --pretty false"
   ]
 }
