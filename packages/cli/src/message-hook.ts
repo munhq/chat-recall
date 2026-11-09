@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { recallTarget } from '@chat-recall/engine/core/remote-target.js';
 import { adoptSealkeepSecrets } from '@chat-recall/engine/core/stored-token.js';
 import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
+import { projectOfFolder } from '@chat-recall/engine/core/session-project.js';
 import type { WireMessage } from '@chat-recall/engine/core/session-messages.js';
 import { fetchWithTimeout } from './http.js';
 import { channelOwnsSession, pruneSessionPids, recordSessionForPids } from './channel-state.js';
@@ -114,6 +115,12 @@ function writeOut(stream: NodeJS.WriteStream, text: string): Promise<void> {
   return new Promise((resolve) => stream.write(text, () => resolve()));
 }
 
+/** The repository of a folder, or undefined. Never throws: a hook stays silent on every failure. */
+function projectOf(folder: string | undefined): string | undefined {
+  if (!folder) return undefined;
+  try { return projectOfFolder(folder) ?? undefined; } catch { return undefined; }
+}
+
 // ── Turn hooks ──────────────────────────────────────────────────────────────
 
 async function turn(payload: HookPayload, target: Target, tool: HookTool): Promise<void> {
@@ -140,6 +147,7 @@ async function turn(payload: HookPayload, target: Target, tool: HookTool): Promi
   try {
     const r = await post<{ messages?: WireMessage[]; labels?: Record<string, string> }>(target, '/api/live-sessions/event', {
       sessionId: plan.sessionId, event: plan.event, cwd: plan.cwd, take: plan.take,
+      project: projectOf(plan.cwd),
       kind: processKindOf(tool, payload), pid: processPid(payload), ...link,
     }, 4000);
     if (!r.body) return debug(`server answered HTTP ${r.status}`);
@@ -332,7 +340,7 @@ async function presence(payload: HookPayload, target: Target): Promise<number> {
   };
   for (;;) {
     if (supervisor && !alive(supervisor)) return end();
-    const reg = await post(target, '/api/live-sessions/register', { sessionId, kind: 'tui', cwd, pid }, 4000).catch(() => null);
+    const reg = await post(target, '/api/live-sessions/register', { sessionId, kind: 'tui', cwd, pid, project: projectOf(cwd) }, 4000).catch(() => null);
     if (!reg || reg.status !== 200) {
       failures += 1;
       if (failures > 20) { debug(`presence: registration answered HTTP ${reg?.status ?? 0}`); return 0; }
@@ -379,6 +387,7 @@ async function report(payload: HookPayload, target: Target): Promise<number> {
     kind: processKindOf('opencode', payload),
     cwd: typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : undefined,
     pid: processPid(payload),
+    project: projectOf(typeof payload.cwd === 'string' ? payload.cwd : undefined),
   }, 4000).catch(() => null);
   if (!r || r.status !== 200) debug(`report: HTTP ${r?.status ?? 0}`);
   return 0;

@@ -52,7 +52,7 @@ import { recallTarget } from '../core/remote-target.js';
 import { redactSecrets } from '../core/secret-redactor.js';
 import { spawnChild, localAgents, PERMISSION_MODES, type LocalAgent } from '../core/session-spawn.js';
 import {
-  formatDelivery, formatSessionLine, formatAge, sessionName, interruptBody, toolOfSession, PRESENCE_PREFIX,
+  formatDelivery, formatSessionLine, formatSessionGroups, isLongGone, formatAge, sessionName, interruptBody, toolOfSession, PRESENCE_PREFIX,
   type WireMessage, type WireLiveSession,
 } from '../core/session-messages.js';
 import { localAiProcesses } from '../core/local-processes.js';
@@ -5342,7 +5342,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // An urgent message carries the interrupt marker, which the opencode plugin reads.
         const body = params.interrupt ? interruptBody(redactedBody) : redactedBody;
         getWAL().log('message_send', { from: params.from, to: params.to, chars: body.length, interrupt: !!params.interrupt });
-        type SentTo = { sessionId: string; label: string | null; state: string; cwd: string | null; lastSeen?: number | null; processKind?: string | null };
+        type SentTo = {
+          sessionId: string; label: string | null; state: string; cwd: string | null; lastSeen?: number | null;
+          processKind?: string | null; project?: string | null; crossProject?: boolean;
+        };
         const r = await remotePost<{ messages: WireMessage[]; recipients: SentTo[] }>(
           '/api/live-sessions/messages',
           { from: params.from, to: params.to, body, replyTo: params.reply_to, expectCwd: params.expect_cwd });
@@ -5354,6 +5357,8 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           const tool = toolOfSession(rc.sessionId);
           const where = !presence && rc.cwd ? ` in ${rc.cwd}` : '';
           const process = rc.processKind ? ` (${tool}, ${rc.processKind})` : ` (${tool})`;
+          const project = rc.project ? `, project ${rc.project}` : '';
+          const crossed = rc.crossProject ? ' It works in another project than this session.' : '';
           const when =
             presence
               ? 'It has no session yet, so the message becomes its first prompt.'
@@ -5362,7 +5367,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
                   ? 'It is idle, and its plugin starts a turn with the message.'
                   : rc.state === 'idle' ? 'That session is idle. A session with a live watcher reads it and starts a turn by itself; one without reads it when its user types next.'
                     : 'It receives the message at its next tool call or turn end.';
-          return `- ${name}${where}${process}: message ${r.messages[i]?.id}. ${when}`;
+          return `- ${name}${where}${process}${project}: message ${r.messages[i]?.id}. ${when}${crossed}`;
         });
         const redacted = redactedBody !== params.body ? '\nSecrets in the body were redacted before sending.' : '';
         return { content: [{ type: 'text', text: `Sent.\n${lines.join('\n')}${redacted}` }] };
@@ -5467,8 +5472,11 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // A presence row lives only while its TUI keeps polling. A stale one is
         // a window that closed before it had a session; listing it would show
         // a "session" for work nobody ever started.
+        // A session gone for hours closed its terminal; it stays in the list only
+        // when the caller asks for ended sessions too.
         const live = sessions.filter((x) =>
-          !x.sessionId.startsWith(PRESENCE_PREFIX) || (x.lastSeen ?? x.updatedAt) >= now - LIVE_SESSION_STALE_MS);
+          (!x.sessionId.startsWith(PRESENCE_PREFIX) || (x.lastSeen ?? x.updatedAt) >= now - LIVE_SESSION_STALE_MS)
+          && (params.include_ended || !isLongGone(x, now)));
         // A tool that is open and typed nothing into has no session row, so the
         // sessions above cannot show it. /proc can, with its folder.
         const processes = await localAiProcesses().catch(() => []);
@@ -5491,7 +5499,8 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         return {
           content: [{
             type: 'text',
-            text: [head, ...live.map((x) => formatSessionLine(withLocal(x), now)), ...localLines].join('\n'),
+            // One block for each project: who works where, in one view.
+            text: [head, ...formatSessionGroups(live, (x) => formatSessionLine(withLocal(x), now)), ...localLines].join('\n'),
           }],
         };
       }

@@ -9,7 +9,7 @@
  * Every row carries the user behind the token (`owner_sub`), and every query
  * filters on it, so a session reaches only the sessions of the same person.
  *
- *   POST /api/live-sessions/event     {sessionId, event, cwd?, take?, label?, parent?, doing?} → {session, messages}
+ *   POST /api/live-sessions/event     {sessionId, event, cwd?, project?, take?, label?, parent?, doing?} → {session, messages}
  *   POST /api/live-sessions/wait      {sessionId, timeoutSecs?}        → {ended, messages}
  *   POST /api/live-sessions/register  {sessionId, label?, parent?, doing?} → {session}
  *   GET  /api/live-sessions?parent=&includeEnded=&limit=              → {sessions}
@@ -26,6 +26,12 @@
  * folder, or one of the words `parent`, `children` and `group`, which are read
  * relative to `from`. The group is the parent and all its running children.
  *
+ * A session reports its `project` (the repository of its folder). A session that
+ * starts without a name gets `<repository>-<start of id>`. Each message that
+ * comes back carries `from` (label, project, folder of the sender) and
+ * `toProject`. A send by name or by the start of an id to a session of another
+ * project is a 409; the full id and a folder may cross projects.
+ *
  * A folder names the running session in it: zero is a 404, more than one is a
  * 409 that lists them. A message to a folder must also pass `expectCwd` when
  * the sender knows it, so a recipient that moved to another folder is refused
@@ -41,7 +47,7 @@ import {
   SessionOwnedElsewhereError, isFolderAddress, normalizeFolder,
   type LiveSession, type LiveSessionKind, type LiveSessionState, type LiveSessionUpdate, type SessionMessage, type StorageDriver,
 } from '@chat-recall/engine/core/store/driver.js';
-import { isPresenceSession, isSessionProcessKind } from '@chat-recall/engine/core/session-messages.js';
+import { isPresenceSession, isSessionProcessKind, type MessageOrigin } from '@chat-recall/engine/core/session-messages.js';
 
 const router = express.Router();
 
@@ -86,6 +92,48 @@ function pidOf(v: unknown): number | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) throw new HttpError(400, 'pid must be a process id');
   return v;
+}
+
+/** A repository name as the hook reports it: `owner/repo`, or a folder name. */
+const PROJECT = /^[A-Za-z0-9._/@:+-]{1,200}$/;
+
+/** A project, or undefined when the caller did not name one. */
+function projectOf(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v !== 'string' || !PROJECT.test(v)) {
+    throw new HttpError(400, 'project must be a repository name such as owner/repo (at most 200 characters)');
+  }
+  return v;
+}
+
+/**
+ * The name a session gets when it has none: the repository (or the folder) and
+ * the start of its id, so the name is unique because the id is.
+ */
+export function defaultLabel(project: string | undefined, cwd: string | undefined, sessionId: string): string {
+  const clean = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const folder = cwd?.split(/[\\/]/).filter(Boolean).pop();
+  const base = clean((project?.split('/').pop() ?? folder ?? '')).slice(0, 40) || 'session';
+  const id = clean(sessionId.replace(/^[a-z]+_/, '')).slice(0, 8);
+  return `${base}-${id}`;
+}
+
+/**
+ * Each message with where its sender works and which project the recipient is
+ * in, so the session that reads it can tell a message from its own work from
+ * one from another project.
+ */
+async function withOrigin(
+  store: StorageDriver, owner: string, messages: readonly SessionMessage[], recipient: string, toProject?: string | null,
+): Promise<Array<SessionMessage & { from: MessageOrigin | null; toProject: string | null }>> {
+  if (!messages.length) return [];
+  const to = toProject !== undefined ? toProject : (await store.getLiveSession(owner, recipient))?.project ?? null;
+  const origins = new Map<string, MessageOrigin | null>();
+  for (const id of new Set(messages.map((m) => m.fromSession).filter((f): f is string => !!f))) {
+    const s = await store.getLiveSession(owner, id);
+    origins.set(id, s ? { label: s.label, project: s.project, cwd: s.cwd } : null);
+  }
+  return messages.map((m) => ({ ...m, from: m.fromSession ? origins.get(m.fromSession) ?? null : null, toProject: to }));
 }
 
 /** A session, as an error message names it, with what tells the reader which one it is. */
@@ -180,6 +228,7 @@ router.post('/event', handle(async (req, res, store) => {
   if (!state) throw new HttpError(400, `event must be one of ${Object.keys(EVENT_STATE).join(', ')}`);
   const processKind = kindOf(req.body?.kind);
   const pid = pidOf(req.body?.pid);
+  const project = projectOf(req.body?.project);
   const owner = actor(req);
   // A session that a parent started carries its name, parent and task in its
   // environment, and the hook sends them on SessionStart.
@@ -187,7 +236,14 @@ router.post('/event', handle(async (req, res, store) => {
   // session its report: it starts unlinked and can register later.
   let reg: Awaited<ReturnType<typeof registration>> | Record<string, never> = {};
   if (event === 'SessionStart') {
-    const fields = { label: req.body?.label || undefined, parent: req.body?.parent || undefined, doing: req.body?.doing || undefined };
+    // A session with no name gets one from its repository, so a list of sessions
+    // never shows a row that only an id names. A resumed session keeps its name.
+    const existing = await store.getLiveSession(owner, sessionId);
+    const folder = typeof cwd === 'string' && cwd ? cwd : undefined;
+    const fields = {
+      label: req.body?.label || (existing?.label ? undefined : defaultLabel(project ?? existing?.project ?? undefined, folder, sessionId)),
+      parent: req.body?.parent || undefined, doing: req.body?.doing || undefined,
+    };
     try {
       reg = await registration(store, owner, sessionId, fields);
     } catch (e) {
@@ -198,11 +254,12 @@ router.post('/event', handle(async (req, res, store) => {
   const session = await store.upsertLiveSession({
     sessionId, ownerSub: owner, state, lastEvent: event,
     cwd: typeof cwd === 'string' && cwd ? cwd.slice(0, 1024) : undefined,
-    processKind, pid,
+    processKind, pid, project,
     ...reg,
   });
-  const messages = take === true && state !== 'ended' ? await store.takeSessionMessages(owner, sessionId) : [];
-  const labels = await senderLabels(store, owner, messages);
+  const taken = take === true && state !== 'ended' ? await store.takeSessionMessages(owner, sessionId) : [];
+  const labels = await senderLabels(store, owner, taken);
+  const messages = await withOrigin(store, owner, taken, sessionId, session.project);
   res.json({
     session: messages.length ? { ...session, unread: Math.max(0, session.unread - messages.length) } : session,
     messages, labels,
@@ -250,7 +307,8 @@ router.post('/register', handle(async (req, res, store) => {
   const cwd = typeof req.body?.cwd === 'string' && req.body.cwd ? req.body.cwd.slice(0, 1024) : undefined;
   res.json({
     session: await store.upsertLiveSession({
-      sessionId, ownerSub: owner, cwd, processKind: kindOf(req.body?.kind), pid: pidOf(req.body?.pid), ...reg,
+      sessionId, ownerSub: owner, cwd, processKind: kindOf(req.body?.kind), pid: pidOf(req.body?.pid),
+      project: projectOf(req.body?.project), ...reg,
     }),
   });
 }));
@@ -274,7 +332,10 @@ router.post('/wait', handle(async (req, res, store) => {
     if (state === 'ended') { res.json({ ended: true, messages: [] }); return; }
     const messages = await store.takeSessionMessages(owner, sessionId);
     if (messages.length) {
-      res.json({ ended: false, messages, labels: await senderLabels(store, owner, messages) });
+      res.json({
+        ended: false, messages: await withOrigin(store, owner, messages, sessionId),
+        labels: await senderLabels(store, owner, messages),
+      });
       return;
     }
     if (closed || Date.now() + WAIT_STEP_MS > deadline) { res.json({ ended: false, messages: [] }); return; }
@@ -319,6 +380,7 @@ router.post('/messages', handle(async (req, res, store) => {
     }
   }
 
+  const senderRow = fromSession ? await store.getLiveSession(owner, fromSession) : null;
   let recipients: LiveSession[];
   if (to === 'parent' || to === 'children' || to === 'group') {
     if (!fromSession) throw new HttpError(400, `to: "${to}" needs from, the id of the sending session`);
@@ -343,7 +405,19 @@ router.post('/messages', handle(async (req, res, store) => {
       if (!recipients.length) throw new HttpError(404, 'No other running session is in this group.');
     }
   } else {
-    recipients = [await resolveOne(store, owner, to)];
+    const named = await resolveOne(store, owner, to);
+    // A name or the start of an id is a guess, and a guess must stay in the
+    // sender's own project. The full id and a folder are explicit, so they may
+    // cross: the sender chose that recipient.
+    if (senderRow?.project && named.project && senderRow.project !== named.project
+        && to !== named.sessionId && !isFolderAddress(to)) {
+      throw new HttpError(409,
+        `"${to}" is ${describeSession(named)} in the project ${named.project}, and the sender works in ${senderRow.project}. `
+        + 'Nothing was sent. To send across projects, address the recipient by its full session id or by its folder.', {
+          recipient: { sessionId: named.sessionId, label: named.label, cwd: named.cwd, project: named.project, state: named.state },
+        });
+    }
+    recipients = [named];
   }
   if (fromSession && recipients.some((r) => r.sessionId === fromSession)) {
     throw new HttpError(400, 'a session cannot send a message to itself');
@@ -372,7 +446,9 @@ router.post('/messages', handle(async (req, res, store) => {
     messages,
     recipients: recipients.map((r) => ({
       sessionId: r.sessionId, label: r.label, state: r.state, cwd: r.cwd,
-      lastSeen: r.lastSeen, processKind: r.processKind,
+      lastSeen: r.lastSeen, processKind: r.processKind, project: r.project,
+      // The message reached a session of another project: the sender sees that in its answer.
+      crossProject: !!(senderRow?.project && r.project && senderRow.project !== r.project),
     })),
   });
 }));
@@ -380,7 +456,9 @@ router.post('/messages', handle(async (req, res, store) => {
 router.post('/inbox', handle(async (req, res, store) => {
   const sessionId = sessionIdOf(req.body?.sessionId, 'sessionId');
   const limit = typeof req.body?.limit === 'number' ? req.body.limit : undefined;
-  res.json({ messages: await store.takeSessionMessages(actor(req), sessionId, limit) });
+  const owner = actor(req);
+  const taken = await store.takeSessionMessages(owner, sessionId, limit);
+  res.json({ messages: await withOrigin(store, owner, taken, sessionId) });
 }));
 
 router.post('/ack', handle(async (req, res, store) => {
