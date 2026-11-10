@@ -64,7 +64,7 @@ describe('formatDelivery', () => {
     expect(readMessageBody('hello')).toEqual({ body: 'hello', interrupt: false });
   });
 
-  const PI = 'pi_01a1c0ef-0000-7000-8000-00000000aaaa';
+  const PI = 'pi_0a1b2c3d-0000-7000-8000-00000000aaaa';
   const fromPi = (over: Record<string, unknown> = {}) => ({
     id: 'm_1', fromSession: PI, toSession: A, body: 'report to your own session', replyTo: null,
     createdAt: NOW, deliveredAt: NOW, ...over,
@@ -72,7 +72,7 @@ describe('formatDelivery', () => {
 
   test('names the tool, project and folder of the sender', () => {
     const out = formatDelivery(A, [fromPi({
-      from: { label: 'example-app-01a1c0ef', project: 'acme/example-app', cwd: '/work/example-app' },
+      from: { label: 'example-app-0a1b2c3d', project: 'acme/example-app', cwd: '/work/example-app' },
       toProject: 'acme/example-app',
     })], { now: NOW });
     expect(out).toContain('[pi, project acme/example-app, in /work/example-app]');
@@ -96,7 +96,7 @@ describe('formatDelivery', () => {
 
   test('a message without origin reads as before', () => {
     const out = formatDelivery(A, [fromPi()], { now: NOW });
-    expect(out).toContain('From pi_01a1c, 0s ago');
+    expect(out).toContain('From pi_0a1b2, 0s ago');
     expect(out).not.toContain('project');
   });
 });
