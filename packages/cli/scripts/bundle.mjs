@@ -15,6 +15,7 @@
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { assertNoKitCode } from './kit-guard.mjs';
 
 const here = new URL('.', import.meta.url);
@@ -75,7 +76,7 @@ await build({
   logLevel: 'info',
 });
 
-assertNoKitCode(new URL('../dist/', import.meta.url).pathname);
+assertNoKitCode(fileURLToPath(new URL('../dist/', import.meta.url)));
 
 console.log(`bundled cli.js + mcp.js + mcp-relay.js + message-hook.js + watch.js + scan-worker.js (externals: ${external.length})`);
 
