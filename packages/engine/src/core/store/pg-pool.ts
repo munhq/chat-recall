@@ -22,7 +22,6 @@
  * is a no-op for pooled pg connections — see closePgPools for process shutdown).
  */
 import { EMBEDDABLE_CHUNK_INDEX_PREDICATE } from './embed-policy.js';
-import { connectPool } from '@munhq/data-kit/pg';
 import { createHash } from 'node:crypto';
 import { currentViewer } from './tenant-context.js';
 
@@ -111,11 +110,10 @@ export async function openPgPool(databaseUrl?: string): Promise<any> {
       // server's max_connections (~100) — past that is where a pooler/PgBouncer
       // earns its place.
       const poolMax = Math.max(2, Number(process.env.PG_POOL_MAX) || 20);
-      // The pool itself comes from the kit, the same one every app of the fleet
-      // uses. 0 = no statement timeout, which is what this pool had: the
-      // database sets 30s itself, and node-postgres omits a falsy timeout from
-      // the startup packet.
-      return connectPool(url, poolMax, 0);
+      // 0 = no statement timeout, which is what this pool had: the database
+      // sets 30s itself, and node-postgres omits a falsy timeout from the
+      // startup packet.
+      return new pg.Pool({ connectionString: url, max: poolMax, statement_timeout: 0 });
     })();
     POOLS.set(url, pooled);
     // A failed open (bad URL) must not poison the cache forever.

@@ -15,6 +15,7 @@
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { assertNoKitCode } from './kit-guard.mjs';
 
 const here = new URL('.', import.meta.url);
 const cliPkg = JSON.parse(readFileSync(new URL('../package.json', here)));
@@ -28,10 +29,15 @@ const enginePkg = JSON.parse(readFileSync(new URL('../../engine/package.json', h
 // (this exact bug shipped: `import 'pino'` stayed external → every
 // `npm i -g chat-recall` broke with ERR_MODULE_NOT_FOUND).
 const NATIVE_ENGINE_DEPS = ['@lancedb/lancedb', 'pg'];
+// The private kits stay out of the package: `optionalKit()` loads one at run
+// time when the machine has it, and `assertNoKitCode` fails the build when a
+// kit reaches a bundle.
+const PRIVATE_KITS = ['@munhq/*'];
 const external = [
   ...Object.keys(cliPkg.dependencies || {}),
-  ...Object.keys(cliPkg.optionalDependencies || {}),
+  ...Object.keys(cliPkg.optionalDependencies || {}).filter((d) => !d.startsWith('@munhq/')),
   ...NATIVE_ENGINE_DEPS,
+  ...PRIVATE_KITS,
 ].filter((d) => d !== '@chat-recall/engine');
 
 await build({
@@ -68,6 +74,8 @@ await build({
   banner: { js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" },
   logLevel: 'info',
 });
+
+assertNoKitCode(new URL('../dist/', import.meta.url).pathname);
 
 console.log(`bundled cli.js + mcp.js + mcp-relay.js + message-hook.js + watch.js + scan-worker.js (externals: ${external.length})`);
 
