@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@munhq/data-kit": "^0.2.0",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "diff": "^9.0.0",
@@ -37,7 +36,6 @@
     "@lancedb/lancedb": "^0.13.0"
   },
   "devDependencies": {
-    "@munhq/mcp-kit": "^0.20.1",
     "better-sqlite3": "12.9.0"
   }
 }

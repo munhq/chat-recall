@@ -80,8 +80,8 @@ jobs:
 
       - name: Build the MCP server
         run: |
-          npm ci
-          npm run build
+          npm ci -w packages/cli -w packages/engine --include-workspace-root
+          npm run build:public
 
       # Captured by SPEAKING MCP to the built server, not by parsing source: the
       # listing then declares the tools the shipped artefact actually answers

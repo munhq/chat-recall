@@ -2,6 +2,16 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.36] — 2026-11-10
+
+0.7.32 to 0.7.35 were tagged and never published to npm: their install step needed a token for private packages. This release carries their changes.
+
+### Changed
+- **The package holds no code of a private kit.** 0.7.32 bundled `@munhq/mcp-kit` into the CLI. The kit is now loaded at run time when the machine has it installed, and the build fails when kit code reaches a bundle (`assertNoKitCode`, `packages/cli/scripts/kit-guard.mjs`).
+- **A machine without the kit logs in and works.** `chat-recall login` runs the device flow of the repository and keeps the token in a file that only you can read. `chat-recall init` registers the relay in the AI tools. Install `@munhq/mcp-kit` beside the CLI to get the keyring and sealkeep storage and the kit's registration for each tool. `CHAT_RECALL_NO_KIT=1` behaves as a machine without the kit.
+- The engine opens its Postgres pool with `pg`, with no kit.
+- GitHub CI and the release install and build the CLI and engine only (`npm run build:public`), with no token. The server tests run in the job `server-tests`, which needs the repository secret `PACKAGES_READ_TOKEN`.
+
 ## [0.7.35] — 2026-11-10
 
 ### Added

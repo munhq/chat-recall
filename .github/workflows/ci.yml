@@ -56,13 +56,15 @@ jobs:
       # (ubuntu-latest has a toolchain); it is a devDependency of engine/cli and
       # a dependency of server, not something the shipped CLI bundle needs — the
       # bundler's native-free guard enforces that separately.
+      # The CLI and engine workspaces only: neither holds a private kit, so no
+      # token is needed. The server and its tests run in `server-tests` below.
       - name: Install
-        run: npm ci
+        run: npm ci -w packages/cli -w packages/engine --include-workspace-root
 
       # Typecheck every workspace (tsc -b) and produce the CLI bundles
       # (esbuild) — this is the same `npm run build` the release image runs.
       - name: Build
-        run: npm run build
+        run: npm run build:public
 
       # The DASHBOARD, which `npm run build` above does NOT cover: the root
       # tsc -b project references the engine, cli and server, and the React
@@ -81,7 +83,7 @@ jobs:
       # servers that answer 404/HTML/502/silence — the class of failure every
       # bug in this area belonged to, now exercised on all three platforms.
       - name: Test
-        run: npx vitest run
+        run: npx vitest run packages/cli packages/engine
 
   # ── THE POSTGRES HALF OF THE SUITE, WHICH HAD NEVER RUN IN CI ─────────────
   # `vitest.config.ts` switches the store tests to Postgres when DATABASE_URL is
@@ -126,13 +128,52 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
-      - run: npm run build
-      # The store suites, and every *.pg.test.ts: the server tests that need
-      # Postgres, POST /api/sync among them. The rest of the suite runs on three
-      # platforms above.
-      - name: Store + server Postgres tests
-        run: npx vitest run packages/engine/src/core/store .pg.test.ts
+      - run: npm ci -w packages/cli -w packages/engine --include-workspace-root
+      - run: npm run build:public
+      # The store suites of the engine. The server tests that need Postgres run in
+      # `server-tests` below.
+      - name: Store Postgres tests
+        run: npx vitest run packages/engine/src/core/store
+
+  # ── THE SERVER HALF, WHICH NEEDS THE PRIVATE KITS ────────────────────────
+  # The server depends on private `@munhq` packages from GitHub Packages. This
+  # job installs them with a read token that a repository secret holds, and runs
+  # the whole suite: the server tests and the Postgres tests of the routes.
+  # The token reaches this job only. The published package is built without it
+  # (`release-npm.yml`), so no kit code can reach it. Without the secret (a fork,
+  # or a repository that has not set it) the job is skipped.
+  server-tests:
+    name: server tests (private kits)
+    runs-on: ubuntu-latest
+    env:
+      HAS_PACKAGES_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN != '' }}
+      NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+      DATABASE_URL: postgres://chat_recall:ci_only_password@127.0.0.1:5432/chat_recall
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: chat_recall
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: chat_recall
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chat_recall"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_PACKAGES_TOKEN == 'true'
+      - uses: actions/setup-node@v4
+        if: env.HAS_PACKAGES_TOKEN == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install, build and test the whole repository
+        if: env.HAS_PACKAGES_TOKEN == 'true'
+        run: |
+          npm ci
+          npm run build
+          npx vitest run
 
   # Every image and video that reaches a public surface, OCR'd frame by frame.
   #

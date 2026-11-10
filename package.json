@@ -35,7 +35,8 @@
     "docker:down": "docker compose down",
     "docker:build": "docker compose build",
     "docker:logs": "docker compose logs -f",
-    "version:sync": "node scripts/sync-server-json.mjs"
+    "version:sync": "node scripts/sync-server-json.mjs",
+    "build:public": "tsc -b packages/cli && npm run build -w chat-recall && node scripts/build-plugin.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
@@ -45,7 +46,6 @@
   },
   "license": "Elastic-2.0",
   "devDependencies": {
-    "@munhq/marketing-kit": "^0.4.0",
     "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/diff": "^7.0.2",

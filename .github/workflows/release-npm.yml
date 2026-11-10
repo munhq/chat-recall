@@ -66,9 +66,13 @@ jobs:
             console.error(`::error::npm ${process.argv[1]} is too old for trusted publishing (need >= 11.5.1)`);
             process.exit(1);' "$V"
 
-      - run: npm ci
-      - run: npm run build
-      - run: npm test
+      # The package is built from the CLI and engine workspaces only. They hold no
+      # private kit, so installing them needs no token, and `assertNoKitCode` in
+      # the build fails when kit code reaches a bundle. The server and its tests
+      # run on desk, which holds the token for the private packages.
+      - run: npm ci -w packages/cli -w packages/engine --include-workspace-root
+      - run: npm run build:public
+      - run: npx vitest run packages/cli packages/engine
 
       # The tag must match the version being published, or a mistyped tag ships
       # the wrong version under the right name — unfixable, since npm forbids

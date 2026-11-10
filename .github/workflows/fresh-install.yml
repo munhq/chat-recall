@@ -59,8 +59,8 @@ jobs:
 
       - name: Build + pack the real artifact
         run: |
-          npm ci
-          npm run build
+          npm ci -w packages/cli -w packages/engine --include-workspace-root
+          npm run build:public
           cd packages/cli && npm pack
 
       - name: Install globally from tarball (what a customer runs)

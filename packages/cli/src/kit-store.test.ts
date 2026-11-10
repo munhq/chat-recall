@@ -1,11 +1,16 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Host } from '@munhq/mcp-kit/cli';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { chmodSync, readFileSync, statSync } from 'node:fs';
+import { optionalKit, type Host } from '@chat-recall/engine/core/optional-kit.js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { describeWhere, keepDeviceToken, registerRelay, relayCommand, signIn, tokenName } from './kit-store.js';
 
 const DEFAULT = 'https://recall.example.com';
+
+/** The kit is private: a machine without it (the public CI) skips the tests of the kit's own behaviour. */
+const HAS_KIT = optionalKit() !== null;
+const NO_KIT = { CHAT_RECALL_NO_KIT: '1' };
 
 type Call = { bin: string; args: string[]; input?: string };
 
@@ -39,7 +44,7 @@ describe('tokenName', () => {
   });
 });
 
-describe('keepDeviceToken', () => {
+describe.runIf(HAS_KIT)('keepDeviceToken, with the kit', () => {
   test('by default the OS keyring takes the token and sealkeep is never asked', () => {
     const { host, calls } = fakeHost();
     const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, host, dataDir: dir, env: {} });
@@ -76,7 +81,7 @@ describe('keepDeviceToken', () => {
   });
 });
 
-describe('signIn', () => {
+describe.runIf(HAS_KIT)('signIn, with the kit', () => {
   test('hands the prompt to the caller, polls, and answers the session token', async () => {
     const seen: string[] = [];
     const answers = [
@@ -103,7 +108,54 @@ describe('signIn', () => {
   });
 });
 
-describe('registerRelay', () => {
+describe('without the kit (the public package)', () => {
+  test('the token goes to a file that only the owner reads, and the pointer names it', () => {
+    const where = keepDeviceToken(DEFAULT, 'ct_secret', { defaultServer: DEFAULT, dataDir: dir, env: NO_KIT });
+    const path = join(dir, 'tokens', 'prod');
+    expect(where).toEqual({ kind: 'file', path });
+    expect(readFileSync(path, 'utf-8')).toBe('ct_secret\n');
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(describeWhere(where)).toContain('a file that only you can read');
+  });
+
+  test('a token file that already exists is made private again', () => {
+    keepDeviceToken(DEFAULT, 'first', { defaultServer: DEFAULT, dataDir: dir, env: NO_KIT });
+    const path = join(dir, 'tokens', 'prod');
+    chmodSync(path, 0o644);
+    keepDeviceToken(DEFAULT, 'second', { defaultServer: DEFAULT, dataDir: dir, env: NO_KIT });
+    expect(readFileSync(path, 'utf-8')).toBe('second\n');
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  test('the sign-in runs the device flow of the repository and hands over the prompt', async () => {
+    const answers = [
+      { status: 200, body: { device_code: 'dc', user_code: 'ABCD-EFGH', verification_uri: `${DEFAULT}/device`, verification_uri_complete: `${DEFAULT}/device?user_code=ABCD-EFGH`, expires_in: 600, interval: 0 } },
+      { status: 400, body: { error: 'authorization_pending' } },
+      { status: 200, body: { access_token: 'session_token' } },
+    ];
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (input: string) => {
+      seen.push(String(input));
+      const a = answers.shift()!;
+      return new Response(JSON.stringify(a.body), { status: a.status });
+    });
+    try {
+      const prompts: unknown[] = [];
+      const session = await signIn(DEFAULT, (p) => prompts.push(p), { env: NO_KIT });
+      expect(session).toBe('session_token');
+      expect(prompts).toEqual([{ url: `${DEFAULT}/device?user_code=ABCD-EFGH`, userCode: 'ABCD-EFGH', verificationUri: `${DEFAULT}/device` }]);
+      expect(seen).toEqual([`${DEFAULT}/api/auth/device/code`, `${DEFAULT}/api/auth/device/token`, `${DEFAULT}/api/auth/device/token`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('the relay is left to the writer of init: no outcome, and no program runs', () => {
+    expect(registerRelay(DEFAULT, dir, undefined, NO_KIT)).toEqual([]);
+  });
+});
+
+describe.runIf(HAS_KIT)('registerRelay, with the kit', () => {
   test('adds the relay command to each installed tool and replaces nothing that is current', () => {
     const { host, calls } = fakeHost((c) => {
       // `command -v <bin>` finds claude and codex only; `mcp get` says the server is not there yet.

@@ -2,7 +2,7 @@
  * The device token of `chat-recall login`, read from the place where the kit store keeps it.
  *
  * `credentials.json` holds the server URL of a target and, for a login of the kit, a pointer to
- * the secret (`SecretWhere` of `@munhq/mcp-kit/cli`) and no token. The pointer names one of three
+ * the secret (`SecretWhere` of `optional-kit.ts`) and no token. The pointer names one of three
  * places: a file that only the owner can read, the keyring of the OS, or sealkeep. A process reads
  * the first two itself. sealkeep gives a secret only to a process that it starts, so a process
  * with a sealkeep pointer starts itself again under `sealkeep run -e <variable>=<name>` once
@@ -12,7 +12,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readSecret, readSecretFile, type SecretWhere } from '@munhq/mcp-kit/cli';
+import { optionalKit, readSecretFile, type SecretWhere } from './optional-kit.js';
 import { envCredentials } from './credentials-env.js';
 import { getDataDir } from './data-dir.js';
 
@@ -55,7 +55,8 @@ export function resolveSecret(where: SecretWhere | undefined, deps: ResolveDeps 
   const key = JSON.stringify(where);
   const hit = keyringCache.get(key);
   if (hit && now - hit.at < KEYRING_TTL_MS) return hit.value;
-  const value = (deps.readKeyring ?? ((w) => readSecret(w)))(where) ?? '';
+  // A keyring pointer is written only by a machine that has the kit, and only that machine can read it.
+  const value = (deps.readKeyring ?? ((w) => optionalKit()?.readSecret(w)))(where) ?? '';
   keyringCache.set(key, { at: now, value });
   return value;
 }
