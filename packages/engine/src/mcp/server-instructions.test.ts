@@ -3,9 +3,6 @@
  * still reads how to reach a message in a past session.
  */
 import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SERVER_INSTRUCTIONS } from './server-instructions.js';
@@ -23,13 +20,29 @@ describe('server instructions', () => {
     await server.close();
   });
 
-  test('every tool and parameter they name exists', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'tools.ts'), 'utf-8');
-    for (const tool of SERVER_INSTRUCTIONS.match(/recall_[a-z_]+/g)!.filter((t) => t !== 'recall_')) {
-      expect(src, tool).toContain(`name: '${tool}'`);
-    }
-    for (const param of ['query', 'around_line', 'from_end', 'expand_line']) {
-      expect(src, param).toMatch(new RegExp(`\\b${param}:\\s+\\{ type:`));
+  test('every tool and parameter they name exists', async () => {
+    // The list a client receives, not the source text: the schemas are made from the zod schemas.
+    const saved = process.env.CHAT_RECALL_MCP_PROFILE;
+    process.env.CHAT_RECALL_MCP_PROFILE = 'full';
+    try {
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      const server = createMcpServer();
+      await server.connect(serverSide);
+      const client = new Client({ name: 'test', version: '0' });
+      await client.connect(clientSide);
+      const tools = (await client.listTools()).tools;
+      const names = new Set(tools.map((t) => t.name));
+      for (const tool of SERVER_INSTRUCTIONS.match(/recall_[a-z_]+/g)!.filter((t) => t !== 'recall_')) {
+        expect(names.has(tool), tool).toBe(true);
+      }
+      const show = tools.find((t) => t.name === 'recall_show')!;
+      for (const param of ['query', 'around_line', 'from_end', 'expand_line']) {
+        expect(show.inputSchema.properties, param).toHaveProperty(param);
+      }
+      await client.close();
+      await server.close();
+    } finally {
+      process.env.CHAT_RECALL_MCP_PROFILE = saved;
     }
   });
 });
