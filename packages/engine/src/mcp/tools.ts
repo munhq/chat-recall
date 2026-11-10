@@ -37,6 +37,7 @@ import {
   ToolSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { inputSchemaOf } from './input-schema.js';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'node:url';
@@ -644,7 +645,7 @@ const RecallTasksSchema = z.object({
 });
 const RecallTaskCreateSchema = z.object({
   title: z.string().describe('Task title'),
-  description: z.string().optional(),
+  description: z.string().optional().describe('What the work actually is. The title is the label; this is where the detail a future reader needs belongs.'),
   project: z.string().optional().describe('project_id this task belongs to'),
   assignee: z.string().optional().describe("Teammate user id (sub) to assign; omit to leave unassigned"),
   due: z.number().optional().describe('Due date, epoch milliseconds. Set one when the work is time-bound; omit otherwise.'),
@@ -664,7 +665,7 @@ const RecallTaskUpdateSchema = z.object({
     .describe("Files those commits changed. PASS THESE: without them the card cannot narrow the session's diff to this card, and shows no changes at all rather than another repository's."),
   summary: z.string().optional().describe('One line on what changed (optional).'),
   assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
-  title: z.string().optional(),
+  title: z.string().optional().describe('Rename the card. Omit to leave the title alone.'),
   comment: z.string().optional().describe('Add a comment to the task'),
   linked_session_id: z.string().nullable().optional()
     .describe('Session id to attach to the task (null detaches). Pass YOUR OWN current session id when you start working on the task.'),
@@ -728,7 +729,7 @@ const RecallTaskCommentSchema = z.object({
 const RecallKGQuerySchema = z.object({
   entity: z.string().describe('Entity name to query (e.g., "Alice", "chat-recall", "PostgreSQL")'),
   as_of: z.string().optional().describe('Date filter — only facts valid at this date (YYYY-MM-DD)'),
-  direction: z.enum(['outgoing', 'incoming', 'both']).optional().default('both'),
+  direction: z.enum(['outgoing', 'incoming', 'both']).optional().default('both').describe('Which edges to follow: facts where the entity is the subject (outgoing), the object (incoming), or both.'),
 });
 
 const RecallKGAddSchema = z.object({
@@ -920,7 +921,7 @@ const RecallDecisionsSchema = z.object({
   project: z.string().optional().describe('Resolve for this project'),
   workspace: z.string().optional()
     .describe('Folder group to resolve through, e.g. "personal". Resolved from the current directory when omitted.'),
-  include_candidates: z.boolean().optional().default(false),
+  include_candidates: z.boolean().optional().default(false).describe('Also return unconfirmed guesses the indexer extracted. These are NOT decisions — never treat one as settled.'),
 });
 
 const RecallDecisionScanSchema = z.object({
@@ -1374,19 +1375,7 @@ Three modes on one tool:
   first prompt as the search text, excludes itself, groups hits by project).
 - \`include_outcome: true\` — append a per-result outcome one-liner (shipped /
   interrupted / abandoned + edit stats) to judge whether each hit is worth resuming.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'What you\'re looking for (e.g., "OAuth implementation"). Required unless like_session is set.' },
-            like_session: { type: 'string', description: 'Find sessions similar to this session id instead of a free-text query.' },
-            include_outcome: { type: 'boolean', default: false, description: 'Append per-result outcome one-liners (status + edit stats).' },
-            top_k: { type: 'number', default: 5, description: 'Number of results to return' },
-            project_filter: { type: 'string', description: 'Optional filter by project path substring' },
-            skip_ranking: { type: 'boolean', default: false, description: 'Skip Claude ranking for faster results' },
-            provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama', description: 'Embedding provider' },
-            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'Accepted for back-compat; search always runs against the synced server.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallSearchSchema),
       },
       {
         name: 'recall_index',
@@ -1394,13 +1383,7 @@ Three modes on one tool:
 
 Scans ~/.claude/projects/ and creates embeddings for all sessions.
 By default, only indexes new or changed sessions.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            force: { type: 'boolean', default: false, description: 'Force re-index all sessions' },
-            provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama', description: 'Embedding provider' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallIndexSchema),
       },
       {
         name: 'recall_status',
@@ -1426,18 +1409,7 @@ Four ways to reach a message:
 Message text and commands come back in full. Tool calls come with their inputs
 and results; a body over 2000 characters shows its first and last 100 and the
 line to pass as \`expand_line\` to get it whole.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id:    { type: 'string', description: 'Session ID from search results, or a plan id (filename without .md)' },
-            around_line:   { type: 'number', description: 'Transcript line to centre on. Returns max_messages messages around the message nearest to it.' },
-            max_messages:  { type: 'number', default: 10, description: 'Messages to return with around_line or query, or from the start of the session. from_end sets its own count.' },
-            from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
-            expand_line:   { type: 'number', description: 'Return only the message at this line, with every tool input and result whole.' },
-            query:         { type: 'string', description: 'Return the messages that contain this text (case-insensitive), with their lines. Searches message text, tool inputs and tool results.' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallShowSchema),
       },
       {
         name: 'recall_recent',
@@ -1451,15 +1423,7 @@ Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.
 It lists synced transcripts, which reach the server some time after they change. To find a
 session that runs NOW, or to send one a message, use recall_session_status: it lists the live
 sessions of every AI tool, with their ids and names.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project_filter: { type: 'string', description: 'Filter by project name (e.g., "acme", "poly")' },
-            limit:          { type: 'number', default: 10, description: 'Number of recent sessions to show' },
-            since_hours:    { type: 'number', description: 'Only include sessions modified in the last N hours.' },
-            scope:          { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallRecentSchema),
       },
       {
         name: 'recall_forget',
@@ -1474,14 +1438,7 @@ tell them that, because it is usually what they mean to keep.
 
 IRREVERSIBLE. There is no undo and no tool that restores it. Only pass \`confirm: true\` when the user
 has actually asked for this; do not infer it from a complaint about a conversation.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to delete (from recall_recent / recall_search).' },
-            confirm: { type: 'boolean', description: 'Must be true. Only when the user actually asked to delete it.' },
-          },
-          required: ['session_id', 'confirm'],
-        },
+        inputSchema: inputSchemaOf(RecallForgetSchema),
       },
       {
         name: 'recall_exclude_path',
@@ -1496,14 +1453,7 @@ so, and offer recall_forget for the ones that matter.
 
 There is deliberately no tool to REMOVE an exclusion: an agent may narrow what is synced, never widen it.
 Undo it with \`chat-recall exclude remove <path>\` or in the dashboard.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Absolute path (or a distinctive part of one) to stop syncing.' },
-            confirm: { type: 'boolean', description: 'Must be true. Only when the user actually asked to stop syncing it.' },
-          },
-          required: ['path', 'confirm'],
-        },
+        inputSchema: inputSchemaOf(RecallExcludePathSchema),
       },
       {
         name: 'recall_rename_session',
@@ -1514,14 +1464,7 @@ recall_recent and the web UI. Use it when the user says "name this conversation 
 or "rename this to Z". Pass an empty string to clear the name and revert to the auto title.
 
 The name persists across re-syncs and summary regeneration (it's stored separately from the AI summary).`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to name (from recall_recent / recall_search).' },
-            name:       { type: 'string', description: 'The name to give this conversation. Empty string clears it.' },
-          },
-          required: ['session_id', 'name'],
-        },
+        inputSchema: inputSchemaOf(RecallRenameSchema),
       },
       {
         name: 'recall_edits_timeline',
@@ -1538,24 +1481,7 @@ two hours of edits across every session and every AI tool.
 
 Pass \`group_by: "session"\` (with \`pattern\` + a wide \`since_hours\`, e.g. 720) to
 aggregate per session instead — "which sessions edited auth.rs in the last month?".`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            since_hours:    { type: 'number', default: 24, description: 'Time window in hours' },
-            limit:          { type: 'number', default: 100, description: 'Maximum edit rows to return' },
-            pattern:        { type: 'string', description: 'Optional substring filter on file path' },
-            project_filter: { type: 'string', description: 'Filter by encoded project directory name' },
-            include_reads:  { type: 'boolean', default: false, description: 'Include Read tool_uses too' },
-            tools:          {
-              type: 'array',
-              items: { type: 'string', enum: ['claude', 'opencode', 'codex', 'agy', 'cursor', 'hermes', 'pi'] },
-              description: 'Restrict to specific AI tools. Default: every tool this machine has.',
-            },
-            group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
-            view:           { type: 'string', enum: ['timeline', 'summary'], default: 'timeline', description: 'timeline = chronological edit rows; summary = aggregated rollup over the same window' },
-            group_by:       { type: 'string', enum: ['session'], description: '"session" = aggregate edits per session (which sessions touched files matching pattern).' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallEditsTimelineSchema),
       },
       {
         name: 'recall_context',
@@ -1569,13 +1495,7 @@ Returns:
 - Summary if available
 
 Use this to understand what happened in a session before resuming.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to get context from' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallContextSchema),
       },
       {
         name: 'recall_summary',
@@ -1590,14 +1510,7 @@ markers, and the last assistant claim paired with the user's reaction to it
 This is the triage call when scanning a session list — it answers the question
 the AI summary doesn't: did this work actually land?
 Pass \`rich: false\` to fall back to the legacy single-line AI summary only.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to get summary for' },
-            rich:       { type: 'boolean', default: true, description: 'Include structured outcome alongside AI summary' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallSummarySchema),
       },
       {
         name: 'recall_diff',
@@ -1612,17 +1525,7 @@ Pass \`file\` to focus on a single absolute path. Pass \`context_only: true\` fo
 just the per-file stats (lines added/removed) when you don't need the diff body.
 Pass \`files_only: true\` for just the list of files the session touched (grouped
 by extension, with tools used) — "which files did session X actually touch?".`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id:     { type: 'string', description: 'Session ID to replay' },
-            file:           { type: 'string', description: 'Absolute file path to focus on (optional)' },
-            context_only:   { type: 'boolean', default: false, description: 'Skip diff bodies, return stats only' },
-            files_only:     { type: 'boolean', default: false, description: 'Return just the file list (no diffs/stats)' },
-            max_diff_chars: { type: 'number', default: 4000, description: 'Truncate each per-file unified diff' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallDiffSchema),
       },
       {
         name: 'recall_commits',
@@ -1634,14 +1537,7 @@ between commit-files and session-touched-files.
 
 Use this to verify "shipped" claims — if the session edited 18 files but no
 matching commit exists, work probably stayed local.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id:     { type: 'string', description: 'Session ID to look up commits for' },
-            buffer_minutes: { type: 'number', default: 30, description: 'Window padding on each side' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallCommitsSchema),
       },
       {
         name: 'recall_markers',
@@ -1657,14 +1553,7 @@ matching commit exists, work probably stayed local.`,
 
 Returns per-prompt markers + a session-level summary count. Use this to spot
 sessions where things went sideways before reading the whole transcript.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to mark prompts in' },
-            limit:      { type: 'number', default: 200, description: 'Maximum prompts to return' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallMarkersSchema),
       },
       {
         name: 'recall_memory_search',
@@ -1673,23 +1562,7 @@ sessions where things went sideways before reading the whole transcript.`,
 Returns results from any memory source, ranked by relevance. Use source_types to filter.
 Plans and tasks are found here (source_types: ['plan', 'task']); read a full plan
 with recall_show (pass the plan id).`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'What you\'re looking for across all memory types' },
-            top_k: { type: 'number', default: 10, description: 'Number of results' },
-            source_types: {
-              type: 'array',
-              items: { type: 'string', enum: ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'] },
-              description: 'Filter by source types (default: all)',
-            },
-            project_filter: { type: 'string', description: 'Filter by project path' },
-            provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama', description: 'Embedding provider, when the server has vector search configured. Ignored on a keyword-only server.' },
-            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
-            semantic: { type: 'boolean', default: false, description: 'Reserved and currently ignored: the semantic tier is switched off server-side, so every search runs keyword FTS.' },
-          },
-          required: ['query'],
-        },
+        inputSchema: inputSchemaOf(RecallMemorySearchSchema),
       },
       {
         name: 'recall_smart_resume',
@@ -1713,14 +1586,7 @@ A bare call takes the globally newest sessions, which may belong to different
 projects — the output says so when they do. Pass project_filter to scope it.
 
 Use this instead of recall_context for a more actionable summary when resuming work.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session to resume. OMIT to resume the most recent session.' },
-            project_filter: { type: 'string', description: 'With session_id omitted, resume the latest sessions from this project.' },
-            depth: { type: 'number', default: 3, minimum: 1, maximum: 5, description: 'How many recent sessions to cover: the newest in full, the rest as digests. Ignored when session_id is set.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallSmartResumeSchema),
       },
       {
         name: 'recall_project_context',
@@ -1739,16 +1605,7 @@ Accepts EITHER a project path / name substring (e.g. "api", "example-app",
   - "user:<custom>"               (declared in ~/.chat-recall/projects.json)
 
 Use at the START of a new session to understand what's been happening in a project.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project_path: { type: 'string', description: 'Project path, name substring, or project_id (git:/ws:/git-local:/user:)' },
-            limit: { type: 'number', default: 5, description: 'Number of recent sessions to include' },
-            tasks: { type: 'number', default: 20, description: 'Max open tasks to list' },
-            plans: { type: 'number', default: 20, description: 'Max plans to list' },
-          },
-          required: ['project_path'],
-        },
+        inputSchema: inputSchemaOf(RecallProjectContextSchema),
       },
       {
         name: 'recall_weekly_digest',
@@ -1762,12 +1619,7 @@ Returns:
 - Git activity summary
 
 Use to understand overall productivity and spending.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            weeks_back: { type: 'number', default: 0, description: '0 = current week, 1 = last week' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallWeeklyDigestSchema),
       },
       {
         name: 'recall_team_activity',
@@ -1779,14 +1631,7 @@ work on projects they've shared into the team (private projects never appear).
 
 Use for "what has the team been working on", "what did <teammate> do on <project>",
 or standup/status. Filter by project, by member, or by recency (since_days).`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Filter to one project_id' },
-            member: { type: 'string', description: 'Filter to one teammate (user id / sub)' },
-            since_days: { type: 'number', description: 'Only activity in the last N days' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallTeamActivitySchema),
       },
       {
         name: 'recall_tasks',
@@ -1802,18 +1647,7 @@ work rather than report on it.
 
 Closing is earned: 'done' is refused without a linked session. Rejecting is the
 user's call, never yours.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            mine: { type: 'boolean', description: 'Only tasks assigned to me' },
-            project: { type: 'string', description: 'Filter to one project_id' },
-            status: { type: 'string', enum: [...TASK_STATUS_FILTER], description: 'Filter by status' },
-            detail: {
-              type: 'boolean',
-              description: 'Return the full brief per task — the fix, the file locations and the agent prompt — plus how to claim and close one. Use this when you intend to DO the tasks, not just list them.',
-            },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallTasksSchema),
       },
       {
         name: 'recall_task_create',
@@ -1823,18 +1657,7 @@ attach it to a project. Returns the new task id.
 When you then START working on a task, use recall_task_update to set status
 'in_progress' and link your current session (linked_session_id) — that is what
 lets the board verify the work actually shipped.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            title: { type: 'string', description: 'Task title' },
-            description: { type: 'string', description: 'What the work actually is. The title is the label; this is where the detail a future reader needs belongs.' },
-            project: { type: 'string', description: 'project_id this task belongs to' },
-            assignee: { type: 'string', description: 'Teammate user id (sub) to assign' },
-            due: { type: 'number', description: 'Due date, epoch milliseconds. Set one when the work is time-bound; omit otherwise.' },
-            linked_finding_id: { type: 'string', description: 'The code finding this task comes from (ca_…). Setting it lets the card close itself when a re-index stops reporting the finding, and dedupes against an existing card for the same finding.' },
-          },
-          required: ['title'],
-        },
+        inputSchema: inputSchemaOf(RecallTaskCreateSchema),
       },
       {
         name: 'recall_task_update',
@@ -1875,37 +1698,14 @@ THE THREE ENDINGS ARE NOT THE SAME:
 Closing a card you did not fix, as 'done', is the one thing that makes this board
 worthless: two thirds of one real board's Done column turned out to be work
 nobody had done.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Task id (t_…)' },
-            status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. 'done' needs linked_session_id; 'closed' needs closed_reason. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
-            closed_reason: { type: 'string', description: "Why the card no longer applies. REQUIRED with status 'closed'." },
-            diff: { type: 'string', description: "THE CHANGE YOU MADE for this card, as a unified diff. REQUIRED with status 'done' unless you pass commits — the board cannot reconstruct shell-driven edits, so this is the only reliable record." },
-            commits: { type: 'array', items: { type: 'string' }, description: 'Commit sha(s) carrying that change, if you committed it.' },
-            files: { type: 'array', items: { type: 'string' }, description: "Files those commits changed. PASS THESE: the card scopes the session's diff by them, and without them it can show no changes rather than risk showing another repository's." },
-            summary: { type: 'string', description: 'One line on what changed (optional).' },
-            assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
-            title: { type: 'string', description: 'Rename the card. Omit to leave the title alone.' },
-            comment: { type: 'string', description: 'Add a comment' },
-            linked_session_id: { type: 'string', description: 'Session id to attach — pass YOUR OWN current session id when you start working on this task, so the board can check whether the work shipped. Null detaches.' },
-          },
-          required: ['id'],
-        },
+        inputSchema: inputSchemaOf(RecallTaskUpdateSchema),
       },
       {
         name: 'recall_task_comment',
         description: `Leave a progress note on a team task — a comment visible to everyone on the
 board. Use it to record what you did, what is blocked, or why a status changed,
 without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string', description: 'Task id (t_…) from recall_tasks' },
-            body: { type: 'string', description: 'The comment text' },
-          },
-          required: ['task_id', 'body'],
-        },
+        inputSchema: inputSchemaOf(RecallTaskCommentSchema),
       },
       {
         name: 'recall_task_policy',
@@ -1925,20 +1725,7 @@ without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
 Use this when the user says what they want worked on — "only security", "high and
 critical for now", "stop filing hotspots", "let more in". Reading it first also
 explains a quiet board: at the ceiling, filing pauses until cards close.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            enabled: { type: 'boolean', description: 'Turn auto-filing on or off.' },
-            max_pri: { type: 'number', description: 'Severity floor: 0 critical, 1 high, 2 medium, 3 low.' },
-            ceiling: { type: 'number', description: 'How many auto-filed cards may be OPEN at once.' },
-            max_per_run: { type: 'number', description: 'Cap on NEW cards per run.' },
-            categories: { type: 'array', items: { type: 'string' }, description: 'Only file these categories; [] means all.' },
-            project: { type: 'string', description: 'Apply max_pri/categories to THIS project only, leaving other repos on the global setting.' },
-            excluded_projects: { type: 'array', items: { type: 'string' }, description: 'Replace the never-file list.' },
-            exclude_project: { type: 'string', description: 'Add ONE project to the never-file list.' },
-            include_project: { type: 'string', description: 'Remove ONE project from the never-file list.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallTaskPolicySchema),
       },
       // ── Knowledge Graph Tools ──────────────────────────────────
       {
@@ -1948,57 +1735,24 @@ explains a quiet board: at the ceiling, filing pauses until cards close.`,
 Returns typed facts with temporal validity. E.g. "example-app" → uses TypeScript, deploys to Kubernetes.
 Filter by date with as_of to see what was true at a specific point in time.
 Use this to VERIFY facts before asserting them.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            entity: { type: 'string', description: 'Entity to query (e.g., "Alice", "chat-recall")' },
-            as_of: { type: 'string', description: 'Date filter (YYYY-MM-DD, optional)' },
-            direction: { type: 'string', enum: ['outgoing', 'incoming', 'both'], default: 'both', description: 'Which edges to follow: facts where the entity is the subject (outgoing), the object (incoming), or both.' },
-          },
-          required: ['entity'],
-        },
+        inputSchema: inputSchemaOf(RecallKGQuerySchema),
       },
       {
         name: 'recall_kg_add',
         description: `Add a fact to the knowledge graph. Subject → predicate → object with optional time window.
 
 E.g. ("example-app", "uses", "Postgres", valid_from="2026-01-15")`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            subject: { type: 'string', description: 'The entity doing/being something' },
-            predicate: { type: 'string', description: 'Relationship type (e.g., "uses", "works_on", "prefers")' },
-            object: { type: 'string', description: 'The entity being connected to' },
-            valid_from: { type: 'string', description: 'When this became true (YYYY-MM-DD, optional)' },
-            source_session: { type: 'string', description: 'Session ID where this was learned (optional)' },
-          },
-          required: ['subject', 'predicate', 'object'],
-        },
+        inputSchema: inputSchemaOf(RecallKGAddSchema),
       },
       {
         name: 'recall_kg_invalidate',
         description: `Mark a fact as no longer true. Use when things change — tools replaced, decisions reversed, people leave.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            subject: { type: 'string', description: 'Entity' },
-            predicate: { type: 'string', description: 'Relationship' },
-            object: { type: 'string', description: 'Connected entity' },
-            ended: { type: 'string', description: 'When it stopped being true (YYYY-MM-DD, default: today)' },
-          },
-          required: ['subject', 'predicate', 'object'],
-        },
+        inputSchema: inputSchemaOf(RecallKGInvalidateSchema),
       },
       {
         name: 'recall_kg_timeline',
         description: `Get chronological timeline of facts. Shows the story of an entity (or everything) in order.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            entity: { type: 'string', description: 'Entity to get timeline for (optional)' },
-            limit: { type: 'number', default: 50 },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallKGTimelineSchema),
       },
       {
         name: 'recall_kg_stats',
@@ -2015,29 +1769,12 @@ E.g. ("example-app", "uses", "Postgres", valid_from="2026-01-15")`,
 
 Each agent gets their own persistent diary across sessions. Use this at the end of sessions
 or when you learn something important that should persist.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            agent_name: { type: 'string', description: 'Your name — each agent gets their own diary' },
-            entry: { type: 'string', description: 'What happened, what you learned, what matters' },
-            topic: { type: 'string', default: 'general', description: 'Topic tag' },
-            session_id: { type: 'string', description: 'Current session ID (for linking)' },
-            project_path: { type: 'string', description: 'Project path (for context)' },
-          },
-          required: ['agent_name', 'entry'],
-        },
+        inputSchema: inputSchemaOf(RecallDiaryWriteSchema),
       },
       {
         name: 'recall_diary_read',
         description: `Read your recent diary entries. See what past versions of yourself recorded across sessions.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            agent_name: { type: 'string', description: 'Agent name to read diary for' },
-            last_n: { type: 'number', default: 10, description: 'Number of recent entries' },
-          },
-          required: ['agent_name'],
-        },
+        inputSchema: inputSchemaOf(RecallDiaryReadSchema),
       },
       // ── Code intelligence (codeindex companion) ──
       // Registered ONLY when the codeindex binary is on PATH: recall_code_index
@@ -2047,42 +1784,22 @@ or when you learn something important that should persist.`,
         {
           name: 'recall_code_index',
           description: `Index a code repository with codeindex and sync its findings/hotspots/actions to your chat-recall server. Runs the codeindex analyzer LOCALLY (needs the repo files + git history), then ships the result. Use before recall_code_findings/actions if a repo hasn't been indexed yet.`,
-          inputSchema: {
-            type: 'object',
-            properties: { path: { type: 'string', description: 'Repo path (default: cwd)' } },
-          },
+          inputSchema: inputSchemaOf(RecallCodeIndexSchema),
         },
         {
           name: 'recall_code_projects',
           description: `List code-indexed projects on your server with health score, finding count, and label (poc/production/engineering).`,
-          inputSchema: { type: 'object', properties: {} },
+          inputSchema: inputSchemaOf(RecallCodeProjectsSchema),
         },
         {
           name: 'recall_code_findings',
           description: `List code findings (security / hardcoded literals / copy-paste clones / reinvention / dead code / coupling / cycles). Each finding carries a concrete, ready-to-run agent prompt that references codeindex tools. Filter by project/severity/category.`,
-          inputSchema: {
-            type: 'object',
-            properties: {
-              project: { type: 'string', description: 'Project id (omit for all)' },
-              severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
-              category: { type: 'string', description: 'security|literal|clone|duplication|dead_code|coupling|cycle' },
-              limit: { type: 'number', default: 50 },
-              view: { type: 'string', enum: ['findings', 'summary', 'hotspots', 'file-sessions'], default: 'findings', description: 'findings = the list; summary = counts by severity/category; hotspots = churn-ranked files; file-sessions = which sessions touched `file`' },
-              file: { type: 'string', description: 'view=file-sessions only: repo-relative path' },
-            },
-          },
+          inputSchema: inputSchemaOf(RecallCodeFindingsSchema),
         },
         {
           name: 'recall_code_actions',
           description: `The ranked, actionable plan for a codebase — prioritised tasks synthesised from the findings, each with a ready agent prompt. This is the "what should I fix next" list. Filter by project/status.`,
-          inputSchema: {
-            type: 'object',
-            properties: {
-              project: { type: 'string', description: 'Project id (omit for all)' },
-              status: { type: 'string', enum: ['suggested', 'queued', 'done', 'dismissed'] },
-              limit: { type: 'number', default: 30 },
-            },
-          },
+          inputSchema: inputSchemaOf(RecallCodeActionsSchema),
         },
       ] : []),
       {
@@ -2097,13 +1814,7 @@ or when you learn something important that should persist.`,
   a skill, set a project label, or reset a POC db. Reasons over BOTH the code
   findings and how sessions in this project went (failed/abandoned, recurring
   corrections). Each has rationale + evidence + an apply-action.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            scope: { type: 'string', enum: ['account', 'project'], default: 'account', description: 'account = your chat-recall data; project = one code-indexed project' },
-            project: { type: 'string', description: 'Project id (from recall_code_projects). Required when scope is "project".' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallRecommendationsSchema),
       },
       // ── Aggregated views over the recommendation engines ──
       // Registered UNGATED, unlike the recall_code_* family: they read findings
@@ -2123,14 +1834,7 @@ paste.
 This is the read side. To apply one, use the apply rail the recommendation
 already names (recall_recommendations documents it) — this tool never edits a
 CLAUDE.md itself.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Limit to one code-indexed project id (from recall_code_projects)' },
-            include_projects: { type: 'boolean', default: true, description: 'Also fan out over code-indexed projects. false = account scope only.' },
-            kind: { type: 'string', enum: [...INSTRUCTION_KINDS], description: 'rule = a CLAUDE.md line; skill = a skill to install. Omit for both.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallClaudeSuggestionsSchema),
       },
       {
         name: 'recall_improvements',
@@ -2145,16 +1849,7 @@ severity; both are mapped onto one scale so a single ordered list is honest.
 Set \`create_tasks: true\` to open one task per improvement on the shared team
 board (recall_tasks). It is off by default — this reads unless you ask it to
 write.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Limit to one code-indexed project id' },
-            min_severity: { type: 'string', enum: [...SEVERITIES], default: 'low', description: 'Drop anything below this severity' },
-            limit: { type: 'number', default: 30, description: 'Maximum improvements to return, after ranking' },
-            create_tasks: { type: 'boolean', default: false, description: 'Create one team task per returned improvement' },
-            assignee: { type: 'string', description: 'create_tasks only: teammate user id (sub) to assign each task to' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallImprovementsSchema),
       },
       // ── User-prompts / decision-record ──
       {
@@ -2164,15 +1859,7 @@ Tool results and system banners are stripped — you get only what the user actu
 "what was I asking yesterday?" or "what did I tell the agent in this session?". Pass \`query\` for
 "did I say X?": it keeps only the prompts that contain that text. Each prompt prints whole up to 2000
 characters; a longer one prints its start and end and the recall_show expand_line call for the rest.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'If set, only that session\'s prompts' },
-            since_days: { type: 'number', default: 7, description: 'How far back to look, in days.' },
-            limit: { type: 'number', default: 50, description: 'Maximum prompts to return, newest first.' },
-            query: { type: 'string', description: 'Keep only the prompts that contain this text. Case and runs of whitespace are ignored.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallUserPromptsSchema),
       },
       {
         name: 'recall_decision_record',
@@ -2183,20 +1870,7 @@ something non-obvious that future sessions should remember.
 PASS \`area\`. It is the key a reversal supersedes on: recording a new \`auth\` decision closes the
 previous \`auth\` one and leaves every other area alone. Without it the decision is stored but
 nothing it contradicts is closed, and both answers stay live forever.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            subject: { type: 'string', description: 'What the decision is about' },
-            decision: { type: 'string', description: 'The decision itself' },
-            reason: { type: 'string', description: 'Why this was decided' },
-            area: { type: 'string', description: `The area this decides, so a later decision on the same area supersedes it. Standard areas: ${DECISION_AREAS.join(', ')}. Any short slug works for an area not listed.` },
-            project: { type: 'string', description: 'Project this applies to. Omit for an account-wide decision that applies everywhere.' },
-            importance: { type: 'number', minimum: 1, maximum: 5, default: 4, description: '1-5. Only 4 and 5 surface in the wake-up bundle, so reserve those for decisions a future session must not miss.' },
-            session_id: { type: 'string', description: 'Session this decision came out of. Pass your own current session id so the decision can be traced back to the conversation that made it.' },
-            agent_name: { type: 'string', default: 'agent', description: 'Which agent is recording this, so diary entries stay separable per agent.' },
-          },
-          required: ['subject', 'decision'],
-        },
+        inputSchema: inputSchemaOf(RecallDecisionRecordSchema),
       },
       {
         name: 'recall_decisions',
@@ -2208,14 +1882,7 @@ Returns one effective value per area with the cascade already resolved (project 
 personal preferences fill gaps and never override a team decision), what each value replaced and
 when, and the session it came from. Also returns \`gaps\` — areas nobody has decided, where you are
 free to choose, and where recording the choice afterwards is worth doing.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            area: { type: 'string', description: `Only this area. Standard areas: ${DECISION_AREAS.join(', ')}.` },
-            project: { type: 'string', description: 'Resolve for this project, so its overrides win over account-wide decisions. Omit for the account-wide view.' },
-            include_candidates: { type: 'boolean', default: false, description: 'Also return unconfirmed guesses the indexer extracted. These are NOT decisions — never treat one as settled.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallDecisionsSchema),
       },
       {
         name: 'recall_decision_scan',
@@ -2232,16 +1899,7 @@ read. That is EVIDENCE, not a decision: it says what is there, never what was ru
 
 \`record: true\` writes the areas the manifests answer, at project scope, with the file and line as
 the reason. Areas the manifests do not answer are never written — ask the user instead.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Repository root to read. Defaults to the current directory.' },
-            project: { type: 'string', description: 'Project the decisions belong to. Defaults to the repository folder name.' },
-            area: { type: 'string', description: `Only this area. Standard areas: ${DECISION_AREAS.join(', ')}.` },
-            record: { type: 'boolean', default: false, description: 'Record what the manifests answer, at project scope, citing the file and line. Leave false to look first.' },
-            session_id: { type: 'string', description: 'Your current session id, so each write traces back to this conversation.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallDecisionScanSchema),
       },
       {
         name: 'recall_analytics_summary',
@@ -2251,12 +1909,7 @@ weekly delta, top tools/projects/models, and how many sessions had unknown prici
 can answer "how much have I spent this week" without you opening the UI.
 
 \`view: "patterns"\` returns behavioural patterns across sessions instead of the spend rollup.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            view: { type: 'string', enum: ['summary', 'patterns'], default: 'summary', description: 'summary = spend/activity rollup; patterns = behavioural patterns across sessions' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallAnalyticsSummarySchema),
       },
       {
         name: 'recall_wake_up',
@@ -2264,16 +1917,7 @@ can answer "how much have I spent this week" without you opening the UI.
 classifier-flagged facts (decisions/preferences/milestones at importance >=4) +
 current knowledge-graph facts. Replaces a manual context dump. Call this once at
 the start of a session to "remember who you are and what's true right now".`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            max_facts: { type: 'number', default: 10, description: 'How many high-importance classifier facts to include.' },
-            max_kg_facts: { type: 'number', default: 15, description: 'How many current knowledge-graph facts to include.' },
-            identity: { type: 'string', description: 'Override the identity line at the top of the bundle. Defaults to ~/.chat-recall/identity.txt when present.' },
-            project_filter: { type: 'string', description: 'Scope facts, KG entities and the task count to a project (substring match). Without it, facts are global.' },
-            project: { type: 'string', description: 'Alias for project_filter — the name every sibling tool uses.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallWakeUpSchema),
       },
       {
         name: 'recall_set',
@@ -2281,15 +1925,7 @@ the start of a session to "remember who you are and what's true right now".`,
 state that doesn't fit the diary (narrative) or knowledge graph (entity-relationship facts) —
 things like "current PR url", "branch I'm working on", "user's preferred test runner".
 Scope namespaces keys so per-project state doesn't collide.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            key:   { type: 'string', description: 'Key name' },
-            value: { type: 'string', description: 'Value to store. JSON-encode if structured.' },
-            scope: { type: 'string', default: 'default', description: 'Namespace' },
-          },
-          required: ['key', 'value'],
-        },
+        inputSchema: inputSchemaOf(RecallSetSchema),
       },
       {
         name: 'recall_get',
@@ -2297,14 +1933,7 @@ Scope namespaces keys so per-project state doesn't collide.`,
 omitted, LIST the recorded keys (in one scope, or across all scopes when \`scope\` is
 also omitted). Use the list mode to discover what state has been recorded without
 remembering specific keys.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            key:   { type: 'string', description: 'Key name. Omit to list keys instead.' },
-            scope: { type: 'string', description: 'Namespace (default "default" when reading; omit to list across all scopes)' },
-            limit: { type: 'number', default: 50, description: 'Max entries in list mode' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallGetSchema),
       },
       // ── Messages between sessions ────────────────────────────────
       {
@@ -2322,17 +1951,7 @@ the parent and every running child — use it to announce a decision to the whol
 than one is refused instead of guessed. When the folder is known, pass it in both \`to\` and
 \`expect_cwd\`; a recipient that is in another folder is refused and nothing is sent. An opencode TUI
 that has no session yet appears as its folder, and the message becomes its first prompt.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            from:       { type: 'string', description: 'The sending session id, so the recipient can answer.' },
-            to:         { type: 'string', description: 'A session id, the start of one, a session name, an absolute folder, "parent", "children" or "group".' },
-            body:       { type: 'string', description: 'The message. Secrets are redacted before it is sent.' },
-            reply_to:   { type: 'string', description: 'The id of the message this answers.' },
-            expect_cwd: { type: 'string', description: 'The folder the recipient must be in; the send is refused when it is elsewhere.' },
-          },
-          required: ['to', 'body'],
-        },
+        inputSchema: inputSchemaOf(RecallMessageSendSchema),
       },
       {
         name: 'recall_inbox',
@@ -2340,15 +1959,7 @@ that has no session yet appears as its folder, and the message becomes its first
 With wait_secs, wait for a message to arrive, for example the answer from a child session.
 Claude Code sessions with the message hook receive messages without this tool; use it to wait,
 or in a tool without the hook.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session:   { type: 'string', description: 'The receiving session id, usually this one.' },
-            wait_secs: { type: 'number', default: 0, description: 'Poll for up to this many seconds (max 600) when nothing waits.' },
-            limit:     { type: 'number', default: 50 },
-          },
-          required: ['session'],
-        },
+        inputSchema: inputSchemaOf(RecallInboxSchema),
       },
       {
         name: 'recall_session_spawn',
@@ -2360,20 +1971,7 @@ take over any child with \`claude attach <id>\`.
 
 Without \`permission_mode\`, a tool call that needs approval stops the child until a person attaches;
 recall_session_status shows that. Pass a permission mode only when the user chose it.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            from:            { type: 'string', description: 'This session id (the parent).' },
-            prompt:          { type: 'string', description: 'The task, as the first prompt. Say what done means and what to report.' },
-            name:            { type: 'string', description: 'A name to send to, e.g. "worker-a".' },
-            doing:           { type: 'string', description: 'One line on what the child works on.' },
-            cwd:             { type: 'string', description: "Working directory. Defaults to the parent's." },
-            model:           { type: 'string', description: 'Model alias or id. Defaults to the user\'s setting.' },
-            permission_mode: { type: 'string', enum: [...PERMISSION_MODES], description: 'Only when the user chose it.' },
-            resume:          { type: 'string', description: 'Continue this ended child (session id) with the prompt.' },
-          },
-          required: ['from', 'prompt'],
-        },
+        inputSchema: inputSchemaOf(RecallSessionSpawnSchema),
       },
       {
         name: 'recall_session_status',
@@ -2386,15 +1984,7 @@ unread messages. An opencode TUI that has no session yet is listed by its folder
 opencode or claude process with no session (Linux). With \`parent\`, list the children of one session —
 the check a coordinating session runs on the sessions it started. With \`session\`, show one session and
 its message thread. To read what a session did, follow up with recall_show and from_end.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            parent:        { type: 'string', description: 'List only the children of this session (id, start of id, or name).' },
-            session:       { type: 'string', description: 'Show one session and its messages.' },
-            include_ended: { type: 'boolean', default: false },
-            messages:      { type: 'number', default: 10, description: 'Messages to show with `session`.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallSessionStatusSchema),
       },
       {
         name: 'recall_session_register',
@@ -2402,16 +1992,7 @@ its message thread. To read what a session did, follow up with recall_show and f
 what it works on. A child calls this once with its own id and the parent's id or name, so the parent can
 list it with recall_session_status and reach it with to: "children". Set \`doing\` when you start a task
 and when it changes, so every other session can see who works on what.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session: { type: 'string', description: 'The session to change, usually this one.' },
-            name:    { type: 'string', description: 'A name, e.g. "backend-worker". Empty string removes it.' },
-            parent:  { type: 'string', description: 'The parent: id, start of id, or name. Empty string removes the link.' },
-            doing:   { type: 'string', description: 'One line: the project, issue or task this session works on. Empty string clears it.' },
-          },
-          required: ['session'],
-        },
+        inputSchema: inputSchemaOf(RecallSessionRegisterSchema),
       },
       // ── Security / Secret Findings Tools ─────────────────────────
       {
@@ -2423,16 +2004,7 @@ preview), plus per-detector totals and top rules. Use this when the user asks
 "do we have any leaked secrets?" or "security findings" or "what should I rotate".
 
 Call this first; then call recall_security_session for specific sessions.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            include_dismissed: { type: 'boolean', default: false, description: 'Show previously dismissed findings' },
-            top_k: { type: 'number', default: 20, description: 'Max distinct secrets to list' },
-            group_by: { type: 'string', enum: ['detector', 'rule', 'project', 'trend', 'sessions'], default: 'detector', description: 'detector = action-required view; rule/project = grouped counts; trend = daily counts; sessions = one row per session with findings' },
-            days: { type: 'number', default: 30, description: 'group_by=trend only: window in days (1-365)' },
-            min_detectors: { type: 'number', description: 'group_by=sessions only: require N detectors agreeing' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallSecuritySummarySchema),
       },
       {
         name: 'recall_security_session',
@@ -2440,13 +2012,7 @@ Call this first; then call recall_security_session for specific sessions.`,
 
 Use after recall_search or recall_security_summary to show exactly which lines
 in a session matched which detector.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID from search results' },
-          },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallSecuritySessionSchema),
       },
       {
         name: 'recall_recommendation_apply',
@@ -2460,14 +2026,7 @@ allowed to do destructively.
 A CLAUDE.md edit is queued for the machine that has the repo and lands within
 about 45 seconds; only that machine has the file. A label applies immediately.
 Applying twice is harmless.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Recommendation id from recall_recommendations' },
-            project: { type: 'string', description: 'Project id the recommendation belongs to' },
-          },
-          required: ['id', 'project'],
-        },
+        inputSchema: inputSchemaOf(RecallRecommendationApplySchema),
       },
       {
         name: 'recall_recommendation_dismiss',
@@ -2480,16 +2039,7 @@ recommendations stop being offered for that project and no other.
 TELL THE USER what you dismissed and why. This changes how future sessions treat
 their codebase, and a reason nobody sees is a decision nobody can review. Pass
 undo: true to put one back.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Recommendation id from recall_recommendations' },
-            project: { type: 'string', description: 'Project id the recommendation belongs to' },
-            reason: { type: 'string', description: 'Why it does not apply here. Required.' },
-            undo: { type: 'boolean', description: 'Restore a previously dismissed recommendation.' },
-          },
-          required: ['id', 'project', 'reason'],
-        },
+        inputSchema: inputSchemaOf(RecallRecommendationDismissSchema),
       },
       {
         name: 'recall_project_label',
@@ -2502,14 +2052,7 @@ higher bar on tests and review (engineering).
 
 ASK THE USER before setting 'production' or clearing a label. Both change what
 other agents will consider permitted, and that is not yours to decide alone.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Project id from recall_code_projects' },
-            label: { type: 'string', enum: ['poc', 'production', 'engineering', 'none'], description: 'none clears it' },
-          },
-          required: ['project', 'label'],
-        },
+        inputSchema: inputSchemaOf(RecallProjectLabelSchema),
       },
       {
         name: 'recall_security_dismiss',
@@ -2517,15 +2060,7 @@ other agents will consider permitted, and that is not yours to decide alone.`,
 
 Use when the user confirms a key was rotated or that the match is not a real
 secret. The dismissal syncs across devices.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            preview: { type: 'string', description: 'Masked secret preview from the security dashboard' },
-            status: { type: 'string', enum: ['rotated', 'false_positive', 'dismissed', 'undismissed'], description: 'Resolution status, or `undismissed` to put the finding back on the action-required list' },
-            reason: { type: 'string', description: 'Optional note' },
-          },
-          required: ['preview', 'status'],
-        },
+        inputSchema: inputSchemaOf(RecallSecurityDismissSchema),
       },
       {
         name: 'recall_toolkit_status',
@@ -2538,12 +2073,7 @@ uploaded them, so you can tell "my laptop has it" from "my desktop has it".
 NOTE: the server holds an INVENTORY. MCP registrations carry enough to rebuild
 elsewhere; skills and agents do not (their file content is not uploaded), and
 this tool says which is which.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            type: { type: 'string', enum: [...TOOLKIT_TYPES], description: 'Restrict to one artifact type. Omit for every type.' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallToolkitStatusSchema),
       },
       {
         name: 'recall_toolkit_sync',
@@ -2570,15 +2100,7 @@ The work is QUEUED, not done inline: the target device performs it on its next
 drain (the watch daemon polls, or run \`chat-recall toolkit drain\`). Only that
 device can write its own config files, so nothing else could do it. Read the
 outcome back with recall_toolkit_status.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            types: { type: 'array', items: { type: 'string', enum: [...TOOLKIT_TYPES] }, description: 'Artifact types to install. Omit for all.' },
-            name: { type: 'string', description: 'Install ONE named artifact. Requires exactly one entry in types.' },
-            device: { type: 'string', description: 'Hostname of the target machine. Omit to target every device on the account.' },
-            scope: { type: 'string', enum: ['pull', 'fan_out'], default: 'pull', description: "pull = install from the server (cross-device). fan_out = copy between one machine's own tools." },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallToolkitSyncSchema),
       },
       {
         name: 'recall_security_rules',
@@ -2586,105 +2108,55 @@ outcome back with recall_toolkit_status.`,
 
 Tenant rules are configured in the chat-recall dashboard; this tool exposes them
 to the agent and lets you test new regexes without persisting them.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            action: { type: 'string', enum: ['list', 'test'], default: 'list', description: 'list = existing rules; test = regex sandbox' },
-            name: { type: 'string', description: 'For test: rule name' },
-            regex: { type: 'string', description: 'For test: regex to evaluate' },
-            sample: { type: 'string', description: 'For test: text to match against' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallSecurityRulesSchema),
       },
       {
         name: 'recall_subagent_search',
         description: `Search inside SUBAGENT transcripts — the explore/compact/aside sub-tasks that run within a session and whose work never appears in the main conversation.
 
 Use when a session's own turns don't contain what you remember: the finding may have come from a subagent. Indexed server-side, so it works across devices.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Text to find inside subagent transcripts' },
-            session_id: { type: 'string', description: 'Restrict to one session' },
-            kind: { type: 'string', description: 'Restrict to one subagent kind' },
-            limit: { type: 'number', default: 20 },
-          },
-          required: ['query'],
-        },
+        inputSchema: inputSchemaOf(RecallSubagentSearchSchema),
       },
       {
         name: 'recall_redundant_files',
         description: `Before creating a file, check whether you have written one like it before. Scores the filename against every file touched in your synced history.
 
 Answers "have I built this already?" — the reinvention check.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            filename: { type: 'string', description: 'Filename you are about to create' },
-            project: { type: 'string', description: 'Restrict to one project' },
-            limit: { type: 'number', default: 20 },
-          },
-          required: ['filename'],
-        },
+        inputSchema: inputSchemaOf(RecallRedundantFilesSchema),
       },
       {
         name: 'recall_heal_audit',
         description: `Report how many of your sessions are DAMAGED — the rendered conversation is thinner than the shrink-protected raw archive, which happens when an upstream tool truncates a transcript in place (a resume/compaction rewrite, or a script mirroring a shorter file over a longer one).
 
 This is the authoritative "0 remaining" check. Read-only by default; apply=true heals, and healing only ever makes a conversation FULLER.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            since_hours: { type: 'number', description: 'Bound the scan to the last N hours. Default 168 (7 days). The scan is capped at 500 sessions so it returns within the request timeout; the reply reports what it did not cover.' },
-            apply: { type: 'boolean', default: false, description: 'false = audit only; true = heal now' },
-          },
-        },
+        inputSchema: inputSchemaOf(RecallHealAuditSchema),
       },
       {
         name: 'recall_memory_item',
         description: `Fetch ONE memory item, its full text, or its links — or browse a whole source type.
 
 Complements recall_memory_search: search finds candidates, this reads the specific item. mode=browse lists a type (e.g. every skill, every plan) without a query.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            source_type: { type: 'string', enum: ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'] },
-            id: { type: 'string', description: 'Item id. Omit with mode=browse.' },
-            mode: { type: 'string', enum: ['item', 'content', 'links', 'browse'], default: 'item', description: 'item = metadata, content = full text, links = related items, browse = list the type' },
-            limit: { type: 'number', default: 50, description: 'browse mode only' },
-          },
-          required: ['source_type'],
-        },
+        inputSchema: inputSchemaOf(RecallMemoryItemSchema),
       },
       {
         name: 'recall_regenerate_summary',
         description: 'Force a fresh AI summary for one session — use when its stored summary is missing, stale, or plainly wrong.',
-        inputSchema: {
-          type: 'object',
-          properties: { session_id: { type: 'string' } },
-          required: ['session_id'],
-        },
+        inputSchema: inputSchemaOf(RecallRegenerateSummarySchema),
       },
       {
         name: 'recall_outcome_summary',
         description: 'Aggregate session outcomes (shipped / interrupted / abandoned / in_progress) over the last N days — "how much of my work actually landed?".',
-        inputSchema: {
-          type: 'object',
-          properties: { days: { type: 'number', default: 7, description: '1-90' } },
-        },
+        inputSchema: inputSchemaOf(RecallOutcomeSummarySchema),
       },
       {
         name: 'recall_shares',
         description: 'Which projects are shared into your team. scope=mine for your own shares, scope=all for every share visible to you. Private by default — nothing is visible to teammates until shared.',
-        inputSchema: {
-          type: 'object',
-          properties: { scope: { type: 'string', enum: ['mine', 'all'], default: 'mine' } },
-        },
+        inputSchema: inputSchemaOf(RecallSharesSchema),
       },
       {
         name: 'recall_reclassify',
         description: 'Re-run the memory classifier over already-indexed chunks so classifier improvements reach old data. Idempotent — only rewrites tags that actually changed.',
-        inputSchema: { type: 'object', properties: {} },
+        inputSchema: inputSchemaOf(RecallReclassifySchema),
       },
   ];
 

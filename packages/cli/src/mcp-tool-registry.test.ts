@@ -209,3 +209,32 @@ describe('published tool count', () => {
     });
   }
 });
+
+describe('the arguments of a tool have one source', () => {
+  /** The case blocks of the dispatch, to find which zod schema parses each tool's call. */
+  const parsedBy = new Map<string, string>();
+  const cases = [...mcpSrc.matchAll(/case '(recall_[a-z_]+)':/g)];
+  cases.forEach((m, i) => {
+    const end = cases[i + 1]?.index ?? mcpSrc.length;
+    const schema = mcpSrc.slice(m.index!, end).match(/\b(Recall[A-Za-z]+Schema)\.(?:parse|safeParse)\(/)?.[1];
+    if (schema && !parsedBy.has(m[1])) parsedBy.set(m[1], schema);
+  });
+
+  test('a tool that a zod schema parses has its input schema made from that schema', () => {
+    const listStart = mcpSrc.indexOf('const all: Array<{ name: string; description: string; inputSchema: unknown }> = [');
+    const list = mcpSrc.slice(listStart, mcpSrc.indexOf('const visible = isMultiTenant()', listStart));
+    const handWritten: string[] = [];
+    const defs = [...list.matchAll(/\n\s+name: '(recall_[a-z_]+)',/g)];
+    defs.forEach((m, i) => {
+      const seg = list.slice(m.index!, defs[i + 1]?.index ?? list.length);
+      const schema = parsedBy.get(m[1]);
+      const generated = schema ? seg.includes(`inputSchema: inputSchemaOf(${schema})`) : false;
+      if (schema && !generated) handWritten.push(`${m[1]} (parsed by ${schema})`);
+    });
+    expect(handWritten, 'these tools describe their arguments twice, by hand and in zod').toEqual([]);
+  });
+
+  test('most tools are covered: only the tools with no arguments keep a literal', () => {
+    expect(parsedBy.size).toBeGreaterThan(60);
+  });
+});
