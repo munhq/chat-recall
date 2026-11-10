@@ -76,6 +76,13 @@ function parentOf(pid: number): number | null {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
     const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
     return ppid > 1 ? ppid : null;
+  } catch { /* not Linux, or the process is gone */ }
+  if (process.platform === 'win32') return null;
+  try {
+    const ppid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim());
+    return Number.isInteger(ppid) && ppid > 1 ? ppid : null;
   } catch { return null; }
 }
 

@@ -2,9 +2,10 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
-## [Unreleased]
+## [0.7.37] — 2026-11-10
 
 ### Fixed
+- **On macOS the channel record keeps the start time of the process and finds the grandparent.** Both came only from Linux's `/proc`. The record that tells the MCP server which session it belongs to now carries the start time that `ps` reports, so a reused pid cannot name another session. Windows has no equivalent and keeps the record without a start time.
 - **The tool list tells a client every argument a tool accepts.** The input schema of each tool was written by hand beside the zod schema that parses the call, and the two had drifted: `recall_message_send` did not list `interrupt`, `kind` or `topic`, and `recall_context`, `recall_user_prompts`, `recall_decision_record` and `recall_decisions` accepted arguments that no client could see (`include_turns`, `turns_limit`, `with_markers`, `scope`, `workspace`). The schema of 66 tools is now made from the zod schema (`inputSchemaOf`), so there is one source. Four parameters that had a description only in the hand-written schema got it in zod.
 - Arguments that no handler read are no longer listed: `provider` on `recall_index`, `recall_memory_search` and `recall_search`, `skip_ranking` on `recall_search`, and `scope` on `recall_recent`, `recall_memory_search` and `recall_search`. A call that still passes them works as before.
 

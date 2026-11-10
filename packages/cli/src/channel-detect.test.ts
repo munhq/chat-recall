@@ -84,7 +84,8 @@ describe('ancestorCommandLines', () => {
     expect(ancestorCommandLines([4_194_303])).toEqual([]);
   });
 
-  test('reads a process that does exist', () => {
+  // Windows has neither /proc nor ps: a process cannot be read there.
+  test.skipIf(process.platform === 'win32')('reads a process that does exist', () => {
     expect(ancestorCommandLines([process.pid]).length).toBe(1);
   });
 });
