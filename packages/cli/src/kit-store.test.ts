@@ -114,7 +114,7 @@ describe('without the kit (the public package)', () => {
     const path = join(dir, 'tokens', 'prod');
     expect(where).toEqual({ kind: 'file', path });
     expect(readFileSync(path, 'utf-8')).toBe('ct_secret\n');
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(describeWhere(where)).toContain('a file that only you can read');
   });
 
@@ -124,7 +124,7 @@ describe('without the kit (the public package)', () => {
     chmodSync(path, 0o644);
     keepDeviceToken(DEFAULT, 'second', { defaultServer: DEFAULT, dataDir: dir, env: NO_KIT });
     expect(readFileSync(path, 'utf-8')).toBe('second\n');
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   test('the sign-in runs the device flow of the repository and hands over the prompt', async () => {
@@ -185,7 +185,7 @@ describe('relayCommand', () => {
     const saved = process.env.PATH;
     process.env.PATH = dir;
     try {
-      expect(relayCommand('/opt/example/dist')).toEqual([process.execPath, '/opt/example/dist/mcp-relay.js']);
+      expect(relayCommand('/opt/example/dist')).toEqual([process.execPath, join('/opt/example/dist', 'mcp-relay.js')]);
     } finally {
       process.env.PATH = saved;
     }

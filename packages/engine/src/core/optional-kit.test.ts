@@ -29,8 +29,8 @@ describe('the token file', () => {
     const file = join(dir, 'tokens', 'prod');
     expect(saveSecretFile('ct_secret', file)).toEqual({ kind: 'file', path: file });
     expect(readFileSync(file, 'utf-8')).toBe('ct_secret\n');
-    expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(statSync(join(dir, 'tokens')).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(join(dir, 'tokens')).mode & 0o777).toBe(0o700);
   });
 
   test('is read without the newline, and a missing or empty file reads as nothing', () => {

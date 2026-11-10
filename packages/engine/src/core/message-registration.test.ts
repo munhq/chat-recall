@@ -84,7 +84,8 @@ describe('the wrapper and the plugin files', () => {
     expect(src).toContain('p.kind = KIND');
   });
 
-  test('the opencode plugin reports the folder of the session, not of the plugin instance', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('the opencode plugin reports the folder of the session, not of the plugin instance', async () => {
     // One `opencode serve` serves several projects: a plugin instance gets the
     // events of every session there, so its own location is another project's
     // folder. The session itself knows its folder (location.directory, from
@@ -200,7 +201,8 @@ describe('the wrapper and the plugin files', () => {
 });
 
 describe('the opencode 2.x plugin wakes an idle session', () => {
-  test('a message that arrives after a run ends becomes the next prompt', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('a message that arrives after a run ends becomes the next prompt', async () => {
     const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
@@ -237,7 +239,8 @@ describe('the opencode 2.x plugin wakes an idle session', () => {
 });
 
 describe('the opencode 2.x plugin after a reload', () => {
-  test('a session that was open before the plugin loaded gets a waiter when its run ends', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('a session that was open before the plugin loaded gets a waiter when its run ends', async () => {
     const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
@@ -262,7 +265,8 @@ describe('the opencode 2.x plugin after a reload', () => {
 });
 
 describe('the opencode plugin starts its watcher again', () => {
-  test('a watcher that dies without a message is replaced, and the next one delivers', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('a watcher that dies without a message is replaced, and the next one delivers', async () => {
     const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
@@ -288,7 +292,8 @@ describe('the opencode plugin starts its watcher again', () => {
 });
 
 describe('the opencode plugin delivers an urgent message', () => {
-  test('the marker interrupts the turn before the prompt, and the prompt omits it', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('the marker interrupts the turn before the prompt, and the prompt omits it', async () => {
     const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');

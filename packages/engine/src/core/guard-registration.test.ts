@@ -126,7 +126,8 @@ describe('the OpenCode guard plugin', () => {
     expect(typeof def.server).toBe('function');
   });
 
-  test('on opencode 2.x a blocking verdict throws from execute.before, which blocks the tool call', async () => {
+  // The wrapper that the plugin runs is a POSIX shell script: Windows cannot start it.
+  test.skipIf(process.platform === 'win32')('on opencode 2.x a blocking verdict throws from execute.before, which blocks the tool call', async () => {
     const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');

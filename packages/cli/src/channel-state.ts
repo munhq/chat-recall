@@ -17,6 +17,7 @@
  * Deliberately engine-free: the message hook is its own bundle and starts on
  * every turn of every session, so it must not pay for the tool surface.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDataDir } from '@chat-recall/engine/core/data-dir.js';
@@ -53,8 +54,18 @@ function startTimeOf(pid: number): string | null {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
     const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     const started = rest[19]; // field 22 of /proc/<pid>/stat
-    return started && /^\d+$/.test(started) ? started : null;
-  } catch { return null; } // not Linux, or the process is gone
+    if (started && /^\d+$/.test(started)) return started;
+  } catch { /* not Linux, or the process is gone */ }
+  // macOS has no /proc, and its `ps` prints the start time of a process as a date.
+  // Windows has neither: the record then carries no start time.
+  if (process.platform === 'win32') return null;
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const ms = out ? Date.parse(out) : NaN;
+    return Number.isFinite(ms) ? String(ms) : null;
+  } catch { return null; }
 }
 
 /**

@@ -204,7 +204,8 @@ describe('the channel marker', () => {
 });
 
 describe('the session id the hook records', () => {
-  test('is keyed by a pid both processes share', () => {
+  // Windows has neither /proc nor ps: the record carries no start time there.
+  test.skipIf(process.platform === 'win32')('is keyed by a pid both processes share', () => {
     recordSessionForPids('abc', [currentPid()]);
     expect(sessionIdFromPids([currentPid()])).toBe('abc');
     expect(readFileSync(join(channelStateDir(), 'by-pid', String(currentPid())), 'utf-8')).toMatch(/^abc \d+$/);
