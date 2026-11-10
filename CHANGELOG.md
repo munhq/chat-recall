@@ -2,6 +2,16 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.35] — 2026-11-10
+
+### Added
+- **A message says what it is.** `recall_message_send` takes `kind` (`ask`, `blocked`, `report`, `handoff` or `fyi`) and `topic` (the task or issue, such as `owner/repo#42`). A reply joins the thread of the message it answers, keeps its topic, and closes an open `ask` or `blocked`. `recall_session_status` shows "waiting for an answer from …" and "owes an answer to …" for each session, and the message lines of one session show kind, topic, answer state and thread.
+- **Sessions report their project.** The message hook sends the repository of the session's folder (`owner/repo`, from `.desk/config.json` or the `origin` remote). A session that starts with no name gets `<repository>-<start of its id>`.
+- **A message names where its sender works.** The delivery shows the tool, project and folder of the sender, and says when the sender works in another project. A send by name or by the start of an id to a session of another project is refused; the full session id or the folder reaches it.
+
+### Changed
+- `recall_session_status` lists the sessions in one block for each project, and leaves out a session whose terminal closed more than two hours ago. `include_ended` shows it.
+
 ## [0.7.34] — 2026-11-08
 
 ### Fixed
