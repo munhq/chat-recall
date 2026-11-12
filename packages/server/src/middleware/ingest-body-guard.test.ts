@@ -12,8 +12,10 @@ import type { Request, Response, NextFunction } from 'express';
 import {
   ingestBodyGuard,
   ingestInFlight,
+  ingestInFlightBytes,
   resetIngestGuard,
   DEFAULT_INGEST_MAX_BODY_BYTES,
+  DEFAULT_INGEST_MAX_INFLIGHT_BYTES,
   INGEST_BUSY_RETRY_AFTER_MS,
 } from './ingest-body-guard.js';
 
@@ -83,8 +85,57 @@ describe('ingestBodyGuard — the body size', () => {
     expect(parsed).toBe(true);
   });
 
-  test('the default cap is the documented 8 MiB', () => {
-    expect(DEFAULT_INGEST_MAX_BODY_BYTES).toBe(8 * 1024 * 1024);
+  test('the defaults are the documented 16 MiB ceiling and 8 MiB budget', () => {
+    expect(DEFAULT_INGEST_MAX_BODY_BYTES).toBe(16 * 1024 * 1024);
+    expect(DEFAULT_INGEST_MAX_INFLIGHT_BYTES).toBe(8 * 1024 * 1024);
+  });
+
+  test('a body above the byte budget runs alone and is not refused for its size', () => {
+    const guard = ingestBodyGuard({ maxBodyBytes: 4096, maxInflight: 2, maxInflightBytes: 1024 });
+    const { res } = fakeRes();
+    let parsed = false;
+    guard(fakeReq(2048), res, (() => { parsed = true; }) as NextFunction);
+
+    expect(parsed).toBe(true);
+    expect(ingestInFlight()).toBe(1);
+    expect(ingestInFlightBytes()).toBe(2048);
+  });
+
+  test('while a large body is held, even a small one is refused', () => {
+    const guard = ingestBodyGuard({ maxBodyBytes: 4096, maxInflight: 2, maxInflightBytes: 1024 });
+    const large = fakeRes();
+    guard(fakeReq(2048), large.res, (() => {}) as NextFunction);
+
+    const small = fakeRes();
+    let parsed = false;
+    guard(fakeReq(100), small.res, (() => { parsed = true; }) as NextFunction);
+
+    expect(parsed).toBe(false);
+    expect(small.reply.status).toBe(429);
+  });
+
+  test('the pod takes the next large body as soon as it is empty again', () => {
+    const guard = ingestBodyGuard({ maxBodyBytes: 4096, maxInflight: 2, maxInflightBytes: 1024 });
+    const first = fakeRes();
+    guard(fakeReq(2048), first.res, (() => {}) as NextFunction);
+    first.reply.finished();
+    expect(ingestInFlightBytes()).toBe(0);
+
+    const again = fakeRes();
+    let parsed = false;
+    guard(fakeReq(2048), again.res, (() => { parsed = true; }) as NextFunction);
+    expect(parsed).toBe(true);
+  });
+
+  test('only the ceiling refuses a body outright', () => {
+    const guard = ingestBodyGuard({ maxBodyBytes: 4096, maxInflightBytes: 1024 });
+    const { res, reply } = fakeRes();
+    let parsed = false;
+    guard(fakeReq(4097), res, (() => { parsed = true; }) as NextFunction);
+
+    expect(parsed).toBe(false);
+    expect(reply.status).toBe(413);
+    expect(reply.body.max_bytes).toBe(4096);
   });
 });
 
