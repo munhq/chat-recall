@@ -2,6 +2,13 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.39] — 2026-11-12
+
+### Fixed
+- **The collector still peaked at 1.6 GiB, and the heap cap could not stop it.** Measured with the service's own cap: a 124 MB transcript reached 263 MB after the read, 511 MB after `buildRawContainer` and 555 MB after the gzip, while `heapUsed` never passed 25 MB — the container's strings and the buffers sit outside the V8 heap. The size ceiling is now decided on the export, before the container exists: an export above `FULL_BUILD_MAX_BYTES` (24 MB by default) takes no container copy and no shadow merge, is parsed in place, and is counted once as `oversized_session`. A backend whose `fileSize()` reports 0, such as OpenCode, reaches that ceiling check.
+- **The OpenCode export copied one session four times.** `exportRawSession` read every part row into one array, joined them into one string and made a byte copy of that string: four full copies of a session, and the string half cannot fit a bounded heap. It now encodes one row at a time and concatenates the buffers once, so two copies remain and no session-sized string is built. The dump is byte-identical, and a test asserts one row per line with the session first.
+- **The daemon heap bound now comes from measurement.** `WATCH_HEAP_MB = 640` in `packages/cli/src/service-installer.ts` sets `--max-old-space-size` for the systemd unit, the launchd plist and the Windows task. It replaces 1536, which let V8 grow to 1.6 GiB of churn around a live heap of 10–65 MB and sat above the `MemoryHigh=1G` of the unit. `service-installer.test.ts` asserts that every platform starts the daemon with the same bound.
+
 ## [0.7.38] — 2026-11-12
 
 ### Fixed
