@@ -73,3 +73,30 @@ makes reconciliation re-scan everything. There are regression tests for this in
 If you remember one thing: **all ledger writes happen under `acquireIndexLock`,
 through `syncIncremental`. One writer. mtime+version for conversations,
 per-field coverage for fields. No second daemon.**
+
+## When the server is at its limit: 413 and 429
+The append route holds memory while it parses one body. Two bounds protect the
+API pod, so a slow client cannot take the pod down and turn every other sync
+into a Cloudflare 502:
+
+1. **Size.** A body larger than `CHAT_RECALL_INGEST_MAX_BODY_BYTES` (default
+   16 MiB, decompressed) gets `413` with `{"code":"body_too_large"}`.
+2. **Concurrency.** At most `CHAT_RECALL_INGEST_MAX_INFLIGHT` appends (default
+   `2`) and at most `CHAT_RECALL_INGEST_MAX_INFLIGHT_BYTES` in total (default
+   8 MiB) may run at the same time. Above the cap the route answers
+   `429` with `{"code":"ingest_busy"}` and `Retry-After: 2`. One body larger
+   than the byte budget runs alone, so two large bodies never overlap.
+
+The collector treats both answers as a request to wait, not as a fault:
+
+- it waits for `Retry-After` (or a short back-off), then sends the same batch
+  again;
+- it does NOT add the target to the failure cooldown, and it does NOT advance
+  the consecutive-failure counter. A 429 or a 413 is the server asking for a
+  pause; counting it would silence a healthy collector exactly while the server
+  recovers.
+
+A walk is also bounded by count: `CHAT_RECALL_SYNC_WALK_MAX` (default `2000`)
+sessions per walk, with unacked sessions first. A restart reads
+`~/.chat-recall/walk-state.json`: when the last successful walk is younger than
+six hours, the startup walk covers only changed sessions.

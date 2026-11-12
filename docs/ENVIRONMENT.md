@@ -10,7 +10,8 @@ at time of writing).
 | Variable | Default | What it does |
 |---|---|---|
 | `CHAT_RECALL_UPLOAD_TIMEOUT_MS` | `90000` | Per-request abort timeout for conversation uploads. |
-| `CHAT_RECALL_FULL_BUILD_MAX_MB` | `64` | Transcripts larger than this aren't fully materialized on a FULL sync — only the newest tail ships (prevents OOM on huge sessions). |
+| `CHAT_RECALL_FULL_BUILD_MAX_MB` | `24` | Transcripts larger than this aren't fully materialized on a FULL sync — only the newest tail ships (prevents OOM on huge sessions). The ceiling is now applied to the EXPORT size, before the container copy, so a huge session costs one read, not three copies. |
+| `CHAT_RECALL_SYNC_WALK_MAX` | `2000` | Sessions one walk may push. A walk orders unacked sessions first, so a cap never starves the tail of the backlog. A value that does not parse falls back to the default, so it cannot disable the bound. See [SYNC.md](SYNC.md). |
 | `CHAT_RECALL_TAIL_APPEND` | on | Set `0` to disable incremental tail-append and force FULL syncs (emergency off-switch for the offset-continuity path). |
 | `CHAT_RECALL_EXTERNAL_SCANNERS` | **off** | Set `1` to enable the external secret detectors (gitleaks/trufflehog). Off by default: they are third-party subprocesses that need pre-redaction text materialized on disk, and coverage would vary per device. Built-in regex redaction + findings and tenant rules run for everyone regardless. |
 | `CHAT_RECALL_SCAN_SECRETS` | on | Set `0` to skip the external secret scanners even when they're enabled above (e.g. to keep a huge backfill fast). |
@@ -65,6 +66,9 @@ Set on the **server** container, not the CLI. See the quick-start header of
 | `SECRET_RESCAN` | `0` disables the daily re-scan of ALREADY-STORED (redacted) text with today's rules. That pass is the only thing that can notice a secret a client's redactor missed — it is in the DB in cleartext at that point — so leave it on unless you have a reason. |
 | `SECRET_RESCAN_LIMIT` | Sessions per re-scan run (default `2000`, freshest first). |
 | `SECRET_RESCAN_EXCLUDE_TENANTS` | Comma-separated tenants to skip (default `synccheck`). |
+| `CHAT_RECALL_INGEST_MAX_BODY_BYTES` | Largest decompressed body the append route accepts, in bytes (default `16 * 1024 * 1024`). A larger body gets `413` with `{"code":"body_too_large"}`. |
+| `CHAT_RECALL_INGEST_MAX_INFLIGHT` | Appends one pod may hold at the same time (default `2`). When the count is reached the route answers `429` with `Retry-After: 2`. |
+| `CHAT_RECALL_INGEST_MAX_INFLIGHT_BYTES` | Total body bytes one pod may hold at the same time (default `8 * 1024 * 1024`). One body larger than this budget runs alone, so two large bodies never overlap. |
 | `RAW_ARCHIVE_S3_BUCKET` | Keeps the gzipped session archive in an S3-compatible bucket instead of the `raw_sessions.gz` column. Unset (the default) stores it in Postgres, which is what a self-host with no bucket does. On the hosted database that column was 1232 MB of 3564 MB, all of it TOAST, and only one read path touches it. |
 | `RAW_ARCHIVE_S3_ENDPOINT` | S3 endpoint, e.g. `https://s3.example.com`. Required with the bucket. |
 | `RAW_ARCHIVE_S3_ACCESS_KEY_ID` / `..._SECRET_ACCESS_KEY` | Credentials. Give them an identity scoped to this bucket: object storage has no row-level security, so the only thing keeping one tenant's archive from another is that the key is reachable only through a `raw_sessions` row, which is behind the tenant and author policies. |
