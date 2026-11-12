@@ -155,7 +155,7 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
   },
   'use /api/sync': {
     gates: ['syncLimiter', 'ingestBodyGuard()', "express.json({ limit: '32mb' })", 'syncRouter'],
-    reason: 'Self-authenticating via the device token; its own per-IP limiter, the ingest body guard (413 above 8mb, 429 + Retry-After while the per-pod in-flight budget is full) and the 32mb parser bound the pre-auth work an anonymous flood can trigger.',
+    reason: 'Self-authenticating via the device token; its own per-IP limiter, the ingest body guard (413 above 16mb, 429 + Retry-After while the per-pod byte budget is full) and the 32mb parser bound the pre-auth work an anonymous flood can trigger.',
   },
   'use /api/code/index': {
     gates: ["express.json({ limit: '16mb' })"],
