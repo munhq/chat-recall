@@ -47,7 +47,8 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // server. Everything else this daemon used to import (stores, embedder,
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
-import { syncIncremental, isSyncSkip } from '../src/sync-client.js';
+import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
+import { shouldWalkFull } from '../src/walk-budget.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -135,9 +136,14 @@ async function shipToServer(trigger: string): Promise<void> {
   syncInFlight = true;
   try {
     // File-change ticks fire on every debounced keystroke burst — walk only
-    // the recent-mtime window (cheap). Heartbeat/startup/intent ticks do the
-    // full ledger walk so old failed sessions still retry forever.
-    const result = await syncIncremental({ scope: trigger === 'file-change' ? 'changed' : 'full' });
+    // the recent-mtime window (cheap). Heartbeat/intent ticks still do the full
+    // ledger walk so old failed sessions retry forever. A RESTART walks
+    // 'changed' while the last successful walk is recent: re-listing every
+    // session at every start is what walked 12,224 sessions again and again and
+    // reached the 2 GiB memory cap that killed this unit (issue #16).
+    const recentSuccess = !shouldWalkFull({ lastSuccessAt: lastSuccessfulWalkAt(), now: Date.now() });
+    const scope = trigger === 'file-change' || (trigger === 'startup' && recentSuccess) ? 'changed' : 'full';
+    const result = await syncIncremental({ scope });
     if (isSyncSkip(result)) {
       // 'lock-held' is routine writer election (an MCP session's sync tick
       // won the lock) — nothing to say. Only the user-actionable reasons

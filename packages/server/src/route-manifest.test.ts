@@ -154,8 +154,8 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     reason: 'API-wide plumbing: cost telemetry, per-IP limiter, self-authenticating teams router, then tenant auth + log context; order in source is load-bearing (teams runs before tenantAuth).',
   },
   'use /api/sync': {
-    gates: ['syncLimiter', "express.json({ limit: '32mb' })", 'syncRouter'],
-    reason: 'Self-authenticating via the device token; its own per-IP limiter and 32mb parser bound the pre-auth work an anonymous flood can trigger.',
+    gates: ['syncLimiter', 'ingestBodyGuard()', "express.json({ limit: '32mb' })", 'syncRouter'],
+    reason: 'Self-authenticating via the device token; its own per-IP limiter, the ingest body guard (413 above 8mb, 429 + Retry-After while the per-pod in-flight budget is full) and the 32mb parser bound the pre-auth work an anonymous flood can trigger.',
   },
   'use /api/code/index': {
     gates: ["express.json({ limit: '16mb' })"],
