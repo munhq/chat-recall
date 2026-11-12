@@ -156,7 +156,7 @@ describe('without the kit (the public package)', () => {
 });
 
 describe.runIf(HAS_KIT)('registerRelay, with the kit', () => {
-  test('adds the relay command to each installed tool and replaces nothing that is current', () => {
+  test('gives each installed tool the hosted URL and nothing to start', () => {
     const { host, calls } = fakeHost((c) => {
       // `command -v <bin>` finds claude and codex only; `mcp get` says the server is not there yet.
       if (c.bin === 'sh') return /claude|codex/.test(c.args.join(' ')) ? 0 : 1;
@@ -166,12 +166,14 @@ describe.runIf(HAS_KIT)('registerRelay, with the kit', () => {
     const outcomes = registerRelay(DEFAULT, dir, host);
     expect(outcomes.map((o) => o.client).sort()).toEqual(['claude', 'codex']);
     expect(outcomes.every((o) => o.ok)).toBe(true);
-    const command = relayCommand(dir);
     const add = calls.filter((c) => c.args[0] === 'mcp' && c.args[1] === 'add');
     expect(add.map((c) => c.bin).sort()).toEqual(['claude', 'codex']);
-    for (const c of add) expect(c.args.slice(c.args.indexOf('--') + 1)).toEqual(command);
+    for (const c of add) {
+      expect(c.args).toContain(`${DEFAULT}/mcp`);
+      expect(c.args.join(' ')).not.toMatch(/mcp-relay|chat-recall-mcp/);
+    }
     const claude = add.find((c) => c.bin === 'claude')!;
-    expect(claude.args.slice(0, 5)).toEqual(['mcp', 'add', '--scope', 'user', 'chat-recall']);
+    expect(claude.args.slice(0, 7)).toEqual(['mcp', 'add', '--scope', 'user', '--transport', 'http', 'chat-recall']);
   });
 
   test('no installed tool gives no outcome', () => {

@@ -336,3 +336,47 @@ describe('registerMcpEverywhere skipIds', () => {
     }
   });
 });
+
+/**
+ * The server is hosted. An entry that starts a relay on this machine is work
+ * that the server already does, and the token in a static header is the only
+ * thing a client without a sign-in can hold.
+ */
+describe('registerMcpEverywhere with a hosted server', () => {
+  const HOSTED = {
+    url: 'https://recall.example/mcp',
+    authorization: 'Bearer test-token',
+    headersHelper: 'chat-recall token --header',
+  };
+
+  test('gives every client a URL entry and no command', () => {
+    makeAllPresent();
+    const results = registerMcpEverywhere(HOSTED, { home });
+    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi']);
+    expect(results.every((r) => r.state === 'created')).toBe(true);
+
+    expect(readJson(join(home, '.mcp.json')).mcpServers['chat-recall'])
+      .toEqual({ type: 'http', url: HOSTED.url, headersHelper: HOSTED.headersHelper });
+    expect(readJson(join(home, '.cursor', 'mcp.json')).mcpServers['chat-recall'])
+      .toEqual({ url: HOSTED.url, headers: { Authorization: HOSTED.authorization } });
+    expect(readJson(join(home, '.gemini', 'config', 'mcp_config.json')).mcpServers['chat-recall'])
+      .toEqual({ httpUrl: HOSTED.url, headers: { Authorization: HOSTED.authorization } });
+    expect(readJson(join(home, '.pi', 'agent', 'mcp.json')).mcpServers['chat-recall'])
+      .toEqual({ url: HOSTED.url });
+    expect(readJson(join(home, '.config', 'opencode', 'opencode.json')).mcp['chat-recall'])
+      .toEqual({ type: 'remote', url: HOSTED.url, enabled: true });
+    const codex = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
+    expect(codex).toContain(`url = "${HOSTED.url}"`);
+    expect(codex).not.toContain('command =');
+  });
+
+  test('repairs the relay entry an older init wrote', () => {
+    makeAllPresent();
+    registerMcpEverywhere(SPEC, { home });
+    const results = registerMcpEverywhere(HOSTED, { home });
+    expect(results.filter((r) => r.state === 'repaired').map((r) => r.id).sort())
+      .toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi']);
+    expect(readJson(join(home, '.mcp.json')).mcpServers['chat-recall'].command).toBeUndefined();
+    expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf-8')).not.toContain('chat-recall-mcp');
+  });
+});
