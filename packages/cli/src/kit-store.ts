@@ -146,12 +146,13 @@ export function relayCommand(bundleDir: string): string[] {
 }
 
 /**
- * Puts the relay into every AI tool of the machine that the kit knows. The other tools keep the writer of `init`, and
- * a machine without the kit leaves every tool to it.
+ * Puts the hosted server into every AI tool of the machine that the kit knows, as a URL entry: a tool that reads the
+ * entry opens the session of the person against the server itself, and no relay process starts on this machine.
+ * The other tools keep the writer of `init`, and a machine without the kit leaves every tool to it.
  * `CHAT_RECALL_MCP_REGISTRATION=own` leaves the AI tools' own programs alone (`claude mcp add` and the like), for a
  * test or an image that must not run them; the writer of `init` still runs.
  */
-export function registerRelay(server: string, bundleDir: string, host?: Host, env: NodeJS.ProcessEnv = process.env): Outcome[] {
+export function registerRelay(server: string, _bundleDir: string, host?: Host, env: NodeJS.ProcessEnv = process.env): Outcome[] {
   if (env.CHAT_RECALL_MCP_REGISTRATION?.trim().toLowerCase() === 'own') return [];
   const kit = optionalKit(env);
   if (!kit) return [];
@@ -161,6 +162,5 @@ export function registerRelay(server: string, bundleDir: string, host?: Host, en
   return kit.addMcpServer(machine, clients, {
     name: MCP_NAME,
     url: `${server.replace(/\/+$/, '')}/mcp`,
-    command: relayCommand(bundleDir),
   }).outcomes;
 }

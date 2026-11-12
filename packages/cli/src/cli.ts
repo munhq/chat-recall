@@ -581,8 +581,21 @@ program
         } catch (e) {
           rep.warn(chalk.yellow(`could not register chat-recall-mcp with the kit: ${e instanceof Error ? e.message : e}`));
         }
+        /* The server is hosted, so every tool gets its URL and none gets a relay: an AI tool that holds the URL opens
+         * the session of the person against the server itself. The token goes in as a static header only for the clients
+         * that read one (Cursor, Antigravity); Claude Code runs `chat-recall token --header` at every start, and pi and
+         * OpenCode sign in with OAuth and renew it on their own. */
+        const hosted = options.server ?? target?.base;
+        const hostedBase = hosted?.replace(/\/+$/, '');
+        const stored = target && hostedBase && hostedBase === target.base.replace(/\/+$/, '') ? target : null;
         const results = registerMcpEverywhere(
-          { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
+          hostedBase
+            ? {
+                url: `${hostedBase}/mcp`,
+                authorization: stored?.token ? `Bearer ${stored.token}` : undefined,
+                headersHelper: stored ? 'chat-recall token --header' : undefined,
+              }
+            : { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
           { extraIds: detectedClients, skipIds: kitDone.has('claude') ? ['claude'] : [] },
         );
         // ONE LINE for the ones that worked, a LINE EACH for the ones that did
@@ -4154,6 +4167,20 @@ program
   .option('--skip-mcp', 'Do not register chat-recall-mcp in the AI tools of this machine')
   .action((serverUrl: string | undefined, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string; promptJson?: boolean; skipMcp?: boolean }) =>
     runLogin(serverUrl || DEFAULT_SERVER, opts));
+
+program
+  .command('token')
+  .description('Print the credential of this machine, for a client that runs a header helper instead of a sign-in')
+  .option('--header', 'Print the whole Authorization header value')
+  .action(async (opts: { header?: boolean }) => {
+    const { recallTarget } = await import('@chat-recall/engine/core/remote-target.js');
+    const target = recallTarget();
+    if (!target?.token) {
+      console.error(chalk.red('No stored credential.') + chalk.dim(' Run `chat-recall login` first.'));
+      process.exit(1);
+    }
+    console.log(opts.header ? `Bearer ${target.token}` : target.token);
+  });
 
 program
   .command('logout <server-url>')

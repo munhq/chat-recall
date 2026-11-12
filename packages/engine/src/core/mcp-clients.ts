@@ -41,13 +41,48 @@ function piAgentDir(home: string): string {
   return override ? expandTildePath(override) : join(home, '.pi', 'agent');
 }
 
-/** What to launch. `args` is omitted for a bin on PATH. */
+/** What to launch, or the hosted endpoint to point a client at. */
 export interface McpLaunchSpec {
-  command: string;
+  /** The hosted MCP endpoint. When set, every client gets a URL entry and none gets a local bridge. */
+  url?: string;
+  /** A value for `Authorization: …`, for a client that reads a static header and runs no sign-in. */
+  authorization?: string;
+  /** A command whose output is the `Authorization` value, for a client that runs one at every start. */
+  headersHelper?: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   /** Read-only tools a client may call without asking. Ignored by clients that have no such concept. */
   alwaysAllow?: string[];
+}
+
+/**
+ * The command of a local entry. A spec with neither a URL nor a command is a
+ * caller bug, and writing `undefined` into a user's config would hide it.
+ */
+function launchCommand(spec: McpLaunchSpec): string {
+  if (!spec.command) throw new Error('an MCP entry needs a url or a command');
+  return spec.command;
+}
+
+/**
+ * The URL entry each client reads, in the shape it expects under `mcpServers`.
+ *
+ * Claude Code names the transport `http` and takes a command that prints the
+ * header (`headersHelper`). Gemini's shape, which Antigravity shares, calls the
+ * URL `httpUrl`. Cursor takes a static `Authorization` header. Pi runs its own
+ * OAuth flow, so it reads the bare URL and nothing else.
+ */
+function remoteMcpServersEntry(id: McpClientId, spec: McpLaunchSpec): Record<string, unknown> {
+  const headers = spec.authorization ? { headers: { Authorization: spec.authorization } } : {};
+  switch (id) {
+    // Claude Code is the one that runs a command for the header at every start,
+    // so the token stays out of the config file it writes.
+    case 'claude': return { type: 'http', url: spec.url, ...(spec.headersHelper ? { headersHelper: spec.headersHelper } : headers) };
+    case 'agy': return { httpUrl: spec.url, ...headers };
+    case 'cursor': return { url: spec.url, ...headers };
+    default: return { url: spec.url };
+  }
 }
 
 export type McpRegisterState =
@@ -143,11 +178,27 @@ function registerMcpServersJson(
   const servers = (cfg.mcpServers || {}) as Record<string, unknown>;
   const existing = servers[MCP_SERVER_NAME] as
     | { command?: string; args?: string[]; env?: Record<string, string>; alwaysAllow?: string[];
-        disabled?: boolean }
+        disabled?: boolean; type?: string; url?: string; httpUrl?: string;
+        headers?: Record<string, string>; headersHelper?: string }
     | undefined;
 
+  /* A hosted endpoint replaces the local bridge in every client that reads
+   * `mcpServers`. The user's `alwaysAllow` list belongs to the bridge, so the
+   * URL entry starts without one: the hosted server has its own approvals. */
+  if (spec.url) {
+    const wanted = remoteMcpServersEntry(target.id, spec);
+    const isCurrent = !!existing && !existing.disabled
+      && Object.entries(wanted).every(([k, v]) =>
+        JSON.stringify((existing as Record<string, unknown>)[k] ?? null) === JSON.stringify(v));
+    if (isCurrent) return { id: target.id, label: target.label, path, state: 'current' };
+    servers[MCP_SERVER_NAME] = wanted;
+    cfg.mcpServers = servers;
+    writeFileMkdir(path, JSON.stringify(cfg, null, 2) + '\n');
+    return { id: target.id, label: target.label, path, state: existing ? 'repaired' : 'created' };
+  }
+
   const entry: Record<string, unknown> = {
-    command: spec.command,
+    command: launchCommand(spec),
     ...(spec.args ? { args: spec.args } : {}),
   };
   if (spec.alwaysAllow) entry.alwaysAllow = existing?.alwaysAllow ?? spec.alwaysAllow;
@@ -198,10 +249,24 @@ function registerOpencodeJson(path: string, spec: McpLaunchSpec): McpRegisterRes
   if (!cfg.$schema) cfg.$schema = 'https://opencode.ai/config.json';
   const mcp = (cfg.mcp || {}) as Record<string, unknown>;
   const existing = mcp[MCP_SERVER_NAME] as
-    | { type?: string; command?: string[]; environment?: Record<string, string>; enabled?: boolean }
+    | { type?: string; command?: string[]; environment?: Record<string, string>; enabled?: boolean;
+        url?: string }
     | undefined;
 
-  const argv = [spec.command, ...(spec.args ?? [])];
+  /* OpenCode's remote entry is `type: 'remote'` with the URL; a `local` entry
+   * the user still carries is repaired in place rather than left behind. */
+  if (spec.url) {
+    const wanted: Record<string, unknown> = { type: 'remote', url: spec.url, enabled: true };
+    const isCurrent = !!existing && existing.type === 'remote'
+      && existing.enabled === true && existing.url === spec.url;
+    if (isCurrent) return { id, label, path, state: 'current' };
+    mcp[MCP_SERVER_NAME] = wanted;
+    cfg.mcp = mcp;
+    writeFileMkdir(path, JSON.stringify(cfg, null, 2) + '\n');
+    return { id, label, path, state: existing ? 'repaired' : 'created' };
+  }
+
+  const argv = [launchCommand(spec), ...(spec.args ?? [])];
   const entry: Record<string, unknown> = { type: 'local', command: argv, enabled: true };
   if (spec.env) entry.environment = { ...existing?.environment, ...spec.env };
 
@@ -238,7 +303,8 @@ const CODEX_HEADER = `[mcp_servers.${MCP_SERVER_NAME}]`;
 
 /** Render our entry as TOML. Only strings appear here, so quoting stays simple. */
 function codexBlock(spec: McpLaunchSpec): string {
-  const lines = [CODEX_HEADER, `command = ${JSON.stringify(spec.command)}`];
+  if (spec.url) return [CODEX_HEADER, `url = ${JSON.stringify(spec.url)}`].join('\n') + '\n';
+  const lines = [CODEX_HEADER, `command = ${JSON.stringify(launchCommand(spec))}`];
   if (spec.args?.length) lines.push(`args = [${spec.args.map((a) => JSON.stringify(a)).join(', ')}]`);
   const env = Object.entries(spec.env ?? {});
   if (env.length) {
