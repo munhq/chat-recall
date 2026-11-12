@@ -46,6 +46,7 @@ import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
+import { walkSessionLimit, orderRefsForWalk } from './walk-budget.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
@@ -155,7 +156,7 @@ export function isStandingFailure(err: unknown): boolean {
 }
 
 export type FailureClass =
-  | 'rate_limited' | 'payment_required' | 'auth' | 'timeout' | 'refused'
+  | 'rate_limited' | 'payload_too_large' | 'payment_required' | 'auth' | 'timeout' | 'refused'
   | 'dns' | 'network' | 'insecure_transport' | 'server_error' | 'other';
 
 /**
@@ -168,11 +169,29 @@ export type FailureClass =
  * A tag from the throw site always wins. The message tests remain for errors
  * thrown by fetch itself, and by code that predates the tag.
  */
+/**
+ * Does a failed walk count against the target's circuit breaker?
+ *
+ * A server that answers 429 (busy, Retry-After) or 413 (this body is above the
+ * limit) is not broken. The in-walk retry already honoured Retry-After, and the
+ * body limit is a fact about one session. Counting either would open the
+ * breaker for 1–15 minutes and silence a healthy collector exactly while the
+ * server recovers (issue #16: the collector sat in cooldown on 502s and on
+ * rate limits while the pods were restarting).
+ */
+export function countsForBreaker(cls: FailureClass): boolean {
+  return cls !== 'rate_limited' && cls !== 'payload_too_large';
+}
+
 export function classifyError(msg: string, err?: unknown): FailureClass {
   const tagged = taggedClass(err);
   if (tagged) return tagged;
   const m = msg.toLowerCase();
   if (m.includes('429')) return 'rate_limited';
+  // The server refused the SIZE of one body (413 with code body_too_large, or a
+  // parser limit). It is a fact about that session, not a broken target: the
+  // walk must keep its cooldown out of it (see countsForBreaker).
+  if (m.includes('body_too_large') || m.includes('payload too large') || m.includes('entity too large')) return 'payload_too_large';
   if (m.includes('402')) return 'payment_required';
   if (m.includes('401') || m.includes('403') || m.includes('token')) return 'auth';
   // 'aborted due to timeout' is what AbortSignal.timeout actually produces, and
@@ -697,7 +716,16 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       // delivered thousands of rows and then failed reads as "never synced".
       perTarget[cred.serverUrl] = { ok: false, error: msg, accepted: acceptedUploads.get(cred.serverUrl) ?? 0 };
       // Report the NEXT attempt in the same breath as the failure, so the log
-      // says what will happen rather than leaving the user to infer it.
+      // says what will happen rather than leaving the user to infer it. A 429
+      // or a 413 is the server asking for a pause, or a fact about ONE session:
+      // it is reported, but it does not count against the cooldown, because a
+      // collector in cooldown cannot use the moment the server recovers.
+      const cls = classifyError(msg, e);
+      if (!countsForBreaker(cls)) {
+        console.error(`[sync] ${cred.serverUrl}: ${cls === 'rate_limited' ? 'asked to slow down' : 'refused one oversized body'}; the target stays out of cooldown and the next walk retries`);
+        record({ kind: 'target_throttled', failures: 0, retryInMs: 0, errorClass: cls, local: isLocalHost(cred.serverUrl) ? 1 : 0 });
+        continue;
+      }
       const next = noteTargetFailure(cred.serverUrl, msg);
       const notice = breakerNotice(cred.serverUrl, next);
       if (notice) console.error(`[sync] ${notice}`);
@@ -712,7 +740,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
         kind: next.tripped ? 'breaker_trip' : 'target_failure',
         failures: next.failures,
         retryInMs: next.retryInMs,
-        errorClass: classifyError(msg, e),
+        errorClass: cls,
         local: isLocalHost(cred.serverUrl) ? 1 : 0,
       });
     }
@@ -751,6 +779,13 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       rssPeakMb: Math.round(process.memoryUsage().rss / 1048576),
     });
   }
+  // A successful target gets a timestamp, so the next daemon start can walk
+  // 'changed' instead of listing all 12,224 sessions again (issue #16).
+  if (agg) {
+    for (const t of targets) {
+      if (!errors.some((e) => e.startsWith(`${t.serverUrl}:`))) noteWalkSuccess(t.serverUrl);
+    }
+  }
   // After the walk: the connection is warm and the numbers are final. Never
   // awaited into the caller's error path — telemetry must not fail a sync.
   void flush().catch(() => {});
@@ -762,6 +797,36 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 }
 
 export interface ReconcileResult { sessions: number; scanned: number; pushed: number; absent: number; perTarget: Record<string, { pushed: number; absent: number }> }
+
+/** File that holds the last successful walk per target (see noteWalkSuccess). */
+function walkStatePath(): string { return join(getDataDir(), 'walk-state.json'); }
+
+function readWalkState(): Record<string, number> {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(walkStatePath(), 'utf-8'));
+    return raw && typeof raw === 'object' ? raw as Record<string, number> : {};
+  } catch { return {}; }
+}
+
+function noteWalkSuccess(serverUrl: string): void {
+  try {
+    const state = readWalkState();
+    state[serverUrl.replace(/\/+$/, '')] = Date.now();
+    mkdirSync(getDataDir(), { recursive: true });
+    writeFileSync(walkStatePath(), JSON.stringify(state));
+  } catch { /* the stamp only tunes the NEXT walk, so it must never fail a sync */ }
+}
+
+/**
+ * When did a walk last succeed (0 = never on this machine)?
+ * The daemon uses this to decide 'changed' or 'full' after a restart.
+ */
+export function lastSuccessfulWalkAt(serverUrl?: string): number {
+  const state = readWalkState();
+  const key = serverUrl?.replace(/\/+$/, '');
+  const stamps = key ? [state[key]] : Object.values(state);
+  return stamps.reduce<number>((max, v) => Math.max(max, typeof v === 'number' ? v : 0), 0);
+}
 
 /** POST one derived-field batch, retrying the ingest gate's 429 (honoring
  *  Retry-After) and transient 5xx. */
@@ -1727,7 +1792,13 @@ const refs = listAvailableBackends().flatMap((b) => {
   };
   let scanMs = 0, scanned = 0; // secret-scan metrics
 
-  const slice = refs.slice(0, opts.limit ?? refs.length);
+  // ONE walk is bounded (issue #16). Sessions the ledger has not acknowledged
+  // go first, so a large corpus moves forward in bounded steps instead of one
+  // unbounded pass that a restart repeats from the first session. An explicit
+  // `opts.limit` from the caller still wins.
+  const walkMax = opts.limit ?? walkSessionLimit();
+  const ordered = walkMax > 0 ? orderRefsForWalk(refs, (id) => Boolean(ledger?.get(id))) : refs;
+  const slice = walkMax > 0 ? ordered.slice(0, walkMax) : ordered;
 
   // CHAT_RECALL_SYNC_TRACE=1: phase + progress markers with heap usage, to
   // stderr. This is how the 2026-07-03 walk OOM was localized — keep it.

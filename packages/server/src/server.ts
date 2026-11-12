@@ -32,6 +32,7 @@ import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/a
 // Only the NAMES — the ids and secrets never leave the server.
 import { enabledSocialProviders as socialProviderNames } from './auth/better-auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
+import { ingestBodyGuard } from './middleware/ingest-body-guard.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter, { startBacklogRefresher, startDashboardRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
@@ -297,6 +298,12 @@ app.use((req, res, next) => {
 // general apiLimiter skips /api/sync, so this is the only per-IP bound on the
 // pre-auth work an anonymous flood can trigger here (SEC-02 + SEC-03).
 app.use('/api/sync', syncLimiter);
+// Memory bound BEFORE the body is buffered: a declared body above the cap gets
+// 413 with no buffer allocated, and the (N+1)th concurrent body gets 429 +
+// Retry-After. Without it the pod's memory was the size of one request (issue
+// #16: one 32 MB append needed ~280 MiB on a 512 MiB pod). The 32mb parser limit
+// below stays as the ceiling for a chunked body, which declares no length.
+app.use('/api/sync', ingestBodyGuard());
 app.use('/api/sync', express.json({ limit: '32mb' }));
 app.use('/api/code/index', express.json({ limit: '16mb' }));
 
