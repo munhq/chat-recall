@@ -2461,10 +2461,22 @@ export interface UnchangedConversation { unchanged: true; srcHash: string; }
  *  stays under the limit. */
 export const FULL_BUILD_MAX_BYTES =
   Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '24', 10)) * 1024 * 1024;
+
+/** Bytes of transcript an export actually carries.
+ *
+ *  The ceiling above is measured on what we HAVE, and what we have first is the
+ *  export. Checking the export is what makes the guard reach every backend:
+ *  sessionBuildBytes() reads fileSize(), which is 0 for a backend whose sessions
+ *  live in SQLite and have no file at all, so the full build ran and a 353 MB
+ *  session OOMed the walk. A build costs many times the bytes it is given, so
+ *  the decision has to be made before the build, not after it. */
+export function exportByteLength(exp: { files: Array<{ bytes: { length: number } }> } | null | undefined): number {
+  if (!exp) return 0;
+  return exp.files.reduce((n, f) => n + f.bytes.length, 0);
+}
 /** Transcript bytes beyond which the derived computations (diff, outcome,
  *  commits, markers) are skipped. They run in the scan worker and read the
- *  whole transcript; a 353 MB session with 100 MB JSON lines OOMed the walk. */
-export const DERIVED_MAX_BYTES =
+ *  whole transcript; a 353 MB session with 100 MB JSON lines OOMed the walk. */export const DERIVED_MAX_BYTES =
   Math.max(8, parseInt(process.env.CHAT_RECALL_DERIVED_MAX_MB || '64', 10)) * 1024 * 1024;
 /** Bytes of transcript one chunk of a chunked sync carries: the head of an
  *  oversized FULL sync, and each append. */
@@ -2621,7 +2633,31 @@ export async function buildConversationSync(
       // updateShadow used to build a second identical copy from the same
       // export — a wasted copy of every byte on a 47 MB transcript.
       let built: RawContainer | undefined;
-      if (exp) {
+      // THE BUILD COSTS MANY TIMES WHAT IT IS GIVEN, SO ASK BEFORE THE BUILD.
+      //
+      // Measured on this machine with the service's own heap cap: a 124 MB
+      // transcript reached 263 MB after the read, 511 MB after
+      // buildRawContainer, 555 MB after the gzip — and heapUsed never passed
+      // 25 MB, because the container's strings and the buffers are off-heap.
+      // The ceiling check after the build therefore cannot protect the build.
+      // An export over the ceiling gets no container copy and no shadow merge;
+      // the live parse below reads it once instead.
+      const exportBytes = exportByteLength(exp);
+      const overCeiling = exportBytes > FULL_BUILD_MAX_BYTES;
+      if (exp && overCeiling) {
+        console.error(`[sync] ${ref.prefixedId} export is ${(exportBytes / 1048576).toFixed(0)}MB `
+          + `(over the ${(FULL_BUILD_MAX_BYTES / 1048576).toFixed(0)}MB ceiling) — parsing it in place, `
+          + 'no container copy, no shadow merge, no raw archive');
+        record({
+          kind: 'oversized_session',
+          mb: Math.round(exportBytes / 1048576),
+          tool: ref.toolId,
+          dedupeKey: stableMark(ref.prefixedId),
+        });
+        includeRaw = false;
+        includeMeta = false;
+      }
+      if (exp && !overCeiling) {
         try {
           built = buildRawContainer(exp);
           srcHash = containerSrcHash(built);
@@ -2668,7 +2704,9 @@ export async function buildConversationSync(
           includeMeta = false;
         }
       }
-      const shadow = updateShadow(ref.rawId, exp, built);
+      const shadow = overCeiling
+        ? { container: null, status: 'skipped' as const, recovered: 0 }
+        : updateShadow(ref.rawId, exp, built);
       if (shadow.container) {
         fullestContainer = shadow.container;
         if (shadow.status === 'rewrite-merged' && shadow.recovered > 0) {

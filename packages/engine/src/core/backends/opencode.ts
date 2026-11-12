@@ -552,14 +552,24 @@ export class OpencodeBackend implements ToolBackend {
         FROM part p JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
         WHERE p.session_id = ?
         ORDER BY p.time_created ASC, p.id ASC
-      `).all(realId, realId);
-      const lines: string[] = [JSON.stringify({ kind: 'session', row: session })];
-      for (const r of rows) lines.push(JSON.stringify({ kind: 'part', row: r }));
+      `);
+      // ONE encoded Buffer per row, not four copies of the whole session.
+      // Read as .all(): every part row (each holding full tool output) landed in
+      // an array, then JSON.stringify produced one string per row, then
+      // lines.join('\n') built one string the size of the session, then
+      // Buffer.from copied it again. On a session with large parts that is four
+      // live copies, and a walk capped at a 384 MB V8 heap reached 1.6 GiB RSS
+      // on it — the container half of the memory came from here. Iterating and
+      // encoding per row holds the row buffers plus the final buffer.
+      const chunks: Buffer[] = [Buffer.from(`${JSON.stringify({ kind: 'session', row: session })}\n`, 'utf-8')];
+      for (const r of rows.iterate(realId, realId)) {
+        chunks.push(Buffer.from(`${JSON.stringify({ kind: 'part', row: r })}\n`, 'utf-8'));
+      }
       const mtime = (session as any).time_updated || (session as any).time_created || Date.now();
       return {
         tool: 'opencode',
         mtime: Number(mtime),
-        files: [{ name: `${realId}.dump.jsonl`, bytes: Buffer.from(lines.join('\n') + '\n', 'utf-8') }],
+        files: [{ name: `${realId}.dump.jsonl`, bytes: Buffer.concat(chunks) }],
       };
     } catch { return null; } finally { db.close(); }
   }

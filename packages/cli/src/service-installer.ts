@@ -17,6 +17,20 @@ import { fileURLToPath } from 'url';
 
 export type Platform = 'linux' | 'darwin' | 'win32' | 'other';
 
+/**
+ * Old-space ceiling handed to every daemon start, in MiB.
+ *
+ * V8 expands its old space until GC pressure or this ceiling stops it, so the
+ * ceiling IS the memory the collector reaches on a bursty walk: at 1536 MiB the
+ * unit peaked at 1.64 GiB with a live heap of 10-65 MiB after collection, and
+ * systemd killed it for crossing MemoryHigh. The walk's largest single working
+ * set measured on a real corpus is ~300 MiB (a 123 MB transcript: export
+ * buffers plus the container strings), so 640 MiB is twice that, and the
+ * per-session FULL_BUILD_MAX_BYTES ceiling keeps anything larger off this path.
+ * The value is exported so the unit tests assert it instead of a stale literal.
+ */
+export const WATCH_HEAP_MB = 640;
+
 export interface ServicePaths {
   /** Absolute path to the unit/plist/task definition (or null on Windows). */
   definitionPath: string | null;
@@ -161,9 +175,8 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // Bounded heap: the daemon does bursty batch work (transcript parse,
     // base64 payloads); V8's default old-space on a big-RAM box is ~4GB and
     // GC only gets aggressive near the ceiling — observed as a multi-GB RSS
-    // sawtooth. 1536MB keeps GC honest (768 OOMed on the largest subagent-fanout session) with plenty of headroom for the
-    // largest transcripts.
-    `ExecStart=${node} --max-old-space-size=1536 ${watchJs}`,
+    // sawtooth. The ceiling below is measured, not guessed: see WATCH_HEAP_MB.
+    `ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} ${watchJs}`,
     // ALWAYS: the collector never ends its own work, so any exit systemd did
     // not ask for is a fault. Under on-failure a clean exit left it dead: on
     // 2026-09-16 the unit went "inactive (dead) … status=0/SUCCESS" and stayed
@@ -229,7 +242,7 @@ export function renderLaunchdPlist(watchJs: string, node: string, logFile: strin
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     `  <key>Label</key><string>${label}</string>`,
-    `  <key>ProgramArguments</key><array><string>${node}</string><string>--max-old-space-size=1536</string><string>${watchJs}</string></array>`,
+    `  <key>ProgramArguments</key><array><string>${node}</string><string>--max-old-space-size=${WATCH_HEAP_MB}</string><string>${watchJs}</string></array>`,
     '  <key>RunAtLoad</key><true/>',
     '  <key>KeepAlive</key><true/>',
     `  <key>StandardOutPath</key><string>${logFile}</string>`,
@@ -248,7 +261,7 @@ function installWindowsTask(watchJs: string, node: string, logFile: string): Ser
   //
   // schtasks /tr cannot express redirection itself, so wrap in cmd /c. The
   // whole thing is one /tr argument, hence the escaped quotes.
-  const tr = `cmd /c \\"\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`;
+  const tr = `cmd /c \\"\\"${node}\\" --max-old-space-size=${WATCH_HEAP_MB} \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`;
   try {
     execSync(`schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`, { stdio: 'inherit' });
     // Start now too (best-effort — starts next logon if /run unsupported).
@@ -262,8 +275,8 @@ function installWindowsTask(watchJs: string, node: string, logFile: string): Ser
 /** Render the schtasks /create command (pure — no exec). */
 export function renderWindowsTaskCommand(watchJs: string, node: string, taskName = 'chat-recall-watch', logFile?: string): string {
   const tr = logFile
-    ? `cmd /c \\"\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`
-    : `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
+    ? `cmd /c \\"\\"${node}\\" --max-old-space-size=${WATCH_HEAP_MB} \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`
+    : `\\"${node}\\" --max-old-space-size=${WATCH_HEAP_MB} \\"${watchJs}\\"`;
   return `schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`;
 }
 
