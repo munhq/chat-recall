@@ -2,6 +2,13 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.38] — 2026-11-12
+
+### Fixed
+- **One append of a large session could reach the memory limit of an API pod, and the pod was killed.** The sync route held the whole body, the gunzip buffer, the parsed messages, the re-gzip and the JSON envelope at the same time: an append of a 32 MB archive needed about 280 MiB of transient memory on top of a ~220 MiB baseline. A body guard now mounts before the 32 MB parser. It answers 413 when the declared body is above 8 MiB, and 429 with `Retry-After` while the in-flight budget of two appends per pod is full. `CHAT_RECALL_INGEST_MAX_BODY_BYTES` and `CHAT_RECALL_INGEST_MAX_INFLIGHT` set both bounds. A slot is released once, on the first of `finish` or `close`, so a dropped connection cannot leak it.
+- **A throttle no longer silences the collector.** A `429` or a `413` from a server does not count for the circuit breaker of that target, so a healthy collector retries as soon as the server recovers instead of waiting out a cooldown of up to 15 minutes. The walk still reports the failure to the caller.
+- **The collector walked every session again at every start.** It held about 340 MiB before any work, and one walk of 12,224 sessions churned several hundred MiB of buffers that V8 did not return: the systemd unit peaked at 1.6 GiB against its 2 GiB cap and the OOM killer stopped it 15 times in one day. One walk now carries at most 2000 sessions (`CHAT_RECALL_SYNC_WALK_MAX`), and the sessions the ledger has not acknowledged come first, so a large corpus moves forward in bounded steps. A restart walks only the recent window while the last successful walk is younger than six hours; the stamp is kept per target in `walk-state.json` in the data folder.
+
 ## [0.7.37] — 2026-11-10
 
 ### Fixed
