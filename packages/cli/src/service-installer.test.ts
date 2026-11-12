@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { renderSystemdUnit, renderLaunchdPlist, renderWindowsTaskCommand } from './service-installer.js';
+import { renderSystemdUnit, renderLaunchdPlist, renderWindowsTaskCommand, WATCH_HEAP_MB } from './service-installer.js';
 
 describe('service-installer renders', () => {
   const node = '/usr/local/bin/node';
@@ -8,7 +8,7 @@ describe('service-installer renders', () => {
 
   test('systemd unit interpolates ExecStart + log paths (no literal ${...})', () => {
     const unit = renderSystemdUnit(watchJs, node, logFile);
-    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=1536 ${watchJs}`);
+    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} ${watchJs}`);
     // JOURNAL, not append:. A file redirected by systemd cannot be rotated by
     // anyone — systemd holds the fd, so the daemon renaming or truncating it
     // leaves systemd writing into a hole. It reached 45 MB on the maintainer's
@@ -80,13 +80,31 @@ describe('the Windows Scheduled Task command', () => {
 
   test('the heap cap survives the wrapper', () => {
     const cmd = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
-    expect(cmd).toContain('--max-old-space-size=1536');
+    expect(cmd).toContain(`--max-old-space-size=${WATCH_HEAP_MB}`);
   });
 
   test('without a log file it stays a bare invocation, not a broken redirect', () => {
     const cmd = renderWindowsTaskCommand(WATCH, NODE);
     expect(cmd).not.toContain('>>');
-    expect(cmd).toContain('--max-old-space-size=1536');
+    expect(cmd).toContain(`--max-old-space-size=${WATCH_HEAP_MB}`);
+  });
+
+  test('every platform starts the daemon with the SAME measured heap bound', () => {
+    // The collector peaked at 1.64 GiB inside a 2 GiB cgroup because V8 expanded
+    // old space to its 1536 MiB ceiling on a bursty walk, while the live heap
+    // after collection was 10-65 MiB. The ceiling has to stay low enough that a
+    // walk cannot reach systemd's MemoryHigh, and high enough for the largest
+    // single session the FULL_BUILD_MAX_BYTES ceiling still lets through (~300
+    // MiB working set).
+    expect(WATCH_HEAP_MB).toBeGreaterThanOrEqual(384);
+    expect(WATCH_HEAP_MB).toBeLessThanOrEqual(768);
+    const unit = renderSystemdUnit(WATCH, NODE, LOG);
+    const plist = renderLaunchdPlist(WATCH, NODE, LOG);
+    const task = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
+    for (const rendered of [unit, plist, task]) {
+      expect(rendered).toContain(`--max-old-space-size=${WATCH_HEAP_MB}`);
+      expect(rendered).not.toContain('--max-old-space-size=1536');
+    }
   });
 });
 

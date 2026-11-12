@@ -208,6 +208,35 @@ describe('OpencodeBackend', () => {
     expect(ref.firstPrompt).toBe('');
     expect(ref.messageCount).toBe(0);
   });
+
+  it('exportRawSession writes one row per line, session first, trailing newline', () => {
+    seedDb();
+    const exp = new OpencodeBackend().exportRawSession('opencode_ses_1');
+    expect(exp).not.toBeNull();
+    expect(exp!.files.length).toBe(1);
+    expect(exp!.files[0].name).toBe('ses_1.dump.jsonl');
+    expect(exp!.mtime).toBe(5000);
+    // The dump is a stable line format: the row of the session, then one line
+    // per part in (time_created, id) order, every line newline-terminated. A
+    // reader that splits on \n must see only the trailing empty string, and no
+    // line may carry an escaped newline instead of a break.
+    const text = exp!.files[0].bytes.toString('utf-8');
+    expect(text.endsWith('\n')).toBe(true);
+    const lines = text.split('\n');
+    expect(lines.pop()).toBe('');
+    const parsed = lines.map((l) => JSON.parse(l));
+    expect(parsed.map((p) => p.kind)).toEqual(['session', 'part', 'part', 'part']);
+    expect(parsed[0].row.id).toBe('ses_1');
+    expect(parsed.slice(1).map((p) => p.row.part_id)).toEqual(['prt_1', 'prt_2', 'prt_3']);
+    expect(JSON.parse(parsed[1].row.part_data).text).toBe('the first prompt');
+    expect(parsed[1].row).toEqual({
+      message_id: 'msg_a',
+      message_data: JSON.stringify({ role: 'user', summary: { diffs: 'x'.repeat(200_000) } }),
+      part_id: 'prt_1',
+      part_data: JSON.stringify({ type: 'text', text: 'the first prompt' }),
+      time_created: 7,
+    });
+  });
 });
 
 // ── Codex ──────────────────────────────────────────────────────────
