@@ -2,7 +2,7 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
-## [0.7.48] — 2026-11-13
+## [0.7.49] — 2026-11-13
 
 ### Fixed
 - **The scan worker kept its memory for the life of the process, and that memory was the top of the collector's peak.** Measured on 2026-11-13 at 16:44 UTC on 0.7.47: the same unit held 471 MB of anonymous memory with the pool on and 293 MB with `CHAT_RECALL_SCAN_WORKERS=0`, while a heap snapshot of the main isolate held 55.9 MB of objects in 789,704 nodes and only 0.8 MB of `JSArrayBufferData`. A worker isolate keeps the pages it touched until it ends. The pool now retires a worker after its task (`CHAT_RECALL_SCAN_TASKS_PER_WORKER`, default 1) and starts a fresh one for the next task, and a fresh worker gets the rule pack again through `needsPack`. The worker heap ceiling is 128 MB. `packages/cli/src/scan-pool-recycle.test.ts` holds the recycle and the pack together, because a worker with no rules finds nothing and reports no error.
