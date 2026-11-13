@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.41] — 2026-11-13
+
+### Fixed
+- **The daemon returns its pages when a tick ends and when the code pass pauses at the bound.** 0.7.40 bounded the pass, and the unit then stayed at 511 MB of resident anon memory after the pass paused, because V8 keeps committed pages it cannot use. `shipToServer()` now calls `releaseMemory()` in its `finally`, and the pass calls it before it pauses at the bound.
+
 ## [0.7.40] — 2026-11-13
 
 ### Fixed

@@ -77,6 +77,20 @@ describe('a pass stops at the bound', () => {
     expect(done).toBe(3);
     expect(rss).toBe(240);
   });
+  it('returns the pages when it pauses at the bound', () => {
+    // The tick calls releaseMemory() before it breaks, so the daemon does not sit
+    // at the bound for the rest of the run with committed pages it cannot use.
+    let rss = 300;
+    let released = 0;
+    let done = 0;
+    for (let i = 0; i < 50; i++) {
+      if (isOverMemoryLimit(rss, 512)) { released++; break; }
+      rss += 40;
+      done++;
+    }
+    expect(done).toBe(6);
+    expect(released).toBe(1);
+  });
 });
 
 describe('releaseMemory', () => {
