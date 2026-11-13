@@ -115,7 +115,7 @@ export function reclaimCgroup(keepFileMb = 64, dir: string | null = cgroupDir())
 }
 
 /** The page cache the resident tick leaves in place, in MiB. */
-export const DEFAULT_RECLAIM_FILE_MB = 128;
+export const DEFAULT_RECLAIM_FILE_MB = 64;
 
 /**
  * True when the cgroup holds more reclaimable file pages than the ceiling.
@@ -127,6 +127,39 @@ export const DEFAULT_RECLAIM_FILE_MB = 128;
  */
 export function shouldReclaim(fileMb: number | null, limitMb = DEFAULT_RECLAIM_FILE_MB): boolean {
   return fileMb !== null && limitMb >= 0 && fileMb > limitMb;
+}
+
+/**
+ * The last-resort bound of the collector (issue #16).
+ *
+ * The code pass and the walk each stop at their own bound, and the resident tick
+ * returns the file pages. What stays is the anonymous memory that V8 committed
+ * and never gives back: on 2026-11-13 at 15:13 UTC the cgroup held 444 MB of
+ * anonymous memory, 345 MB of file pages and a 78 MB `codeindex` child, against
+ * a main-isolate heap of 55.9 MB, and the peak reached 984 MB.
+ *
+ * `memory.reclaim` returns file pages only. A process that stays above the hard
+ * bound for two ticks in a row ends, and the unit starts it again
+ * (`Restart=always`). Nothing repeats: the walk resumes with the unacked
+ * sessions, and the cursor records the workspaces that completed.
+ */
+export const DEFAULT_HARD_MAX_MB = 720;
+export const HARD_BOUND_TICKS = 2;
+export const HARD_BOUND_MIN_UPTIME_MS = 5 * 60_000;
+
+export function hardMaxMb(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.CHAT_RECALL_WATCH_HARD_MAX_MB);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_HARD_MAX_MB;
+}
+
+export function shouldRestartForMemory(
+  usedMb: number,
+  maxMb: number,
+  consecutiveTicks: number,
+  uptimeMs: number,
+): boolean {
+  if (!(maxMb > 0)) return false;
+  return uptimeMs >= HARD_BOUND_MIN_UPTIME_MS && consecutiveTicks >= HARD_BOUND_TICKS && usedMb > maxMb;
 }
 
 /** `memory.current` of the cgroup in MiB, or null when it cannot be read. */

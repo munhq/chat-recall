@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.50] — 2026-11-13
+
+### Fixed
+- **The collector ends itself at a hard memory bound, and it returns the page cache ten times as often.** The 0.7.49 recycle still left the cgroup peak at 984 MB (2026-11-13 at 15:13 UTC): 444 MB of anonymous memory, 345 MB of file pages, 72 MB of kernel memory and a 78 MB `codeindex` child, against 55.9 MB of objects in the heap of the main isolate. `memory.reclaim` returns file pages only, so the resident tick now runs every 10 s and reclaims above 64 MB (`DEFAULT_RECLAIM_FILE_MB`), and a process that stays above `CHAT_RECALL_WATCH_HARD_MAX_MB` (default 720) for two ticks in a row exits for a clean start, which `Restart=always` performs. Nothing repeats: the walk resumes with the unacked sessions, and the cursor keeps the workspaces that completed. `shouldRestartForMemory` in `packages/cli/src/memory-guard.ts` makes the decision, and `packages/cli/src/memory-guard-hard-bound.test.ts` holds the bound, the exact edge at 720 MB and the five-minute startup floor.
+
 ## [0.7.49] — 2026-11-13
 
 ### Fixed
