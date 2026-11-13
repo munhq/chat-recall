@@ -187,7 +187,7 @@ describe('relayCommand', () => {
     const saved = process.env.PATH;
     process.env.PATH = dir;
     try {
-      expect(relayCommand('/opt/example/dist')).toEqual([process.execPath, join('/opt/example/dist', 'mcp-relay.js')]);
+      expect(relayCommand('/opt/example/dist')).toEqual([process.execPath, join('/opt/example/dist', 'mcp.js')]);
     } finally {
       process.env.PATH = saved;
     }
