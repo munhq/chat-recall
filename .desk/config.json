@@ -97,7 +97,7 @@
     {
       "name": "packages/engine:test",
       "setup": "npm ci -w packages/cli -w packages/engine --include-workspace-root --no-audit --no-fund",
-      "command": "npx vitest run packages/engine",
+      "command": "npx vitest run packages/engine --maxWorkers=2 --testTimeout=60000",
       "paths": [
         "packages/engine/**",
         "packages/cli/package.json",
@@ -107,14 +107,15 @@
         "tsconfig.json",
         "vitest.config.ts",
         "vitest.setup.ts",
-        "vitest.global-setup.ts"
+        "vitest.global-setup.ts",
+        ".desk/config.json"
       ],
       "timeoutMinutes": 30
     },
     {
       "name": "packages/cli:test",
       "setup": "npm ci -w packages/cli -w packages/engine --include-workspace-root --no-audit --no-fund && npm run build:public",
-      "command": "npx vitest run packages/cli",
+      "command": "npx vitest run packages/cli --maxWorkers=2 --testTimeout=60000",
       "paths": [
         "packages/cli/**",
         "packages/engine/**",
@@ -125,14 +126,15 @@
         "vitest.config.ts",
         "vitest.setup.ts",
         "vitest.global-setup.ts",
-        "scripts/build-plugin.mjs"
+        "scripts/build-plugin.mjs",
+        ".desk/config.json"
       ],
       "timeoutMinutes": 30
     },
     {
       "name": "packages/server:test",
       "setup": "npm ci --no-audit --no-fund",
-      "command": "npx vitest run packages/server",
+      "command": "npx vitest run packages/server --maxWorkers=2 --testTimeout=60000",
       "paths": [
         "packages/server/**",
         "packages/engine/**",
@@ -142,7 +144,8 @@
         "tsconfig.json",
         "vitest.config.ts",
         "vitest.setup.ts",
-        "vitest.global-setup.ts"
+        "vitest.global-setup.ts",
+        ".desk/config.json"
       ],
       "secrets": {
         "NODE_AUTH_TOKEN": "npmtoken"
