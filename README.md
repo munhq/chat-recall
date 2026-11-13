@@ -196,7 +196,7 @@ any of it. Secrets are masked client-side before anything leaves the machine.
 {
   "mcpServers": {
     "chat-recall": {
-      "url": "http://127.0.0.1:7717/mcp"
+      "url": "http://127.0.0.1:7717/chat-recall"
     }
   }
 }
