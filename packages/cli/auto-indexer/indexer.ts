@@ -49,7 +49,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, rssMb, usedMb } from '../src/memory-guard.js';
+import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -962,7 +962,7 @@ async function codeIndexTick(): Promise<void> {
     catch (e) { daemonLog.error(`code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
     let ok = 0, unchanged = 0;
     const cursor = readCursor();
-    const rssLimit = memoryLimitMb();
+    const memBudget = startBudget(usedMb(rssMb()));
     for (const ws of workspaces) {
       // The pass stops at the memory bound (issue #16). It used to add a
       // workspace on top of a heap that was already full — the cgroup peak
@@ -970,13 +970,13 @@ async function codeIndexTick(): Promise<void> {
       // work is not lost: the cursor records completions, so the next pass
       // continues with the workspaces that wait.
       const used = usedMb(rssMb());
-      if (isOverMemoryLimit(used, rssLimit)) {
+      if (shouldPause(used, memBudget, ok)) {
         // Return the pages before the pass pauses. Without this the daemon sat at
         // the bound for the rest of the run, because V8 keeps committed pages it
         // got back from a full heap.
         releaseMemory();
         reclaimCgroup();
-        daemonLog.info(`code intelligence: paused at the memory bound (used=${used}MB ≥ ${rssLimit}MB) — ${workspaces.length - ok - unchanged} workspace(s) wait for the next pass`);
+        daemonLog.info(`code intelligence: paused at the memory bound (used=${used}MB, started at ${memBudget.baselineMb}MB) — ${workspaces.length - ok - unchanged} workspace(s) wait for the next pass`);
         break;
       }
       // A workspace whose code did not change since its last completed scan
