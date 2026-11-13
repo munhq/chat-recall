@@ -31,6 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
+import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, usedMb } from './memory-guard.js';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { targetToken, type SecretWhere } from '@chat-recall/engine/core/stored-token.js';
@@ -1954,6 +1955,21 @@ const refs = listAvailableBackends().flatMap((b) => {
     // What a waiting user needs to know is how much of the corpus has been
     // LOOKED AT, which is this counter and matches the denominator.
     considered++;
+    // ── MEMORY BOUND ──
+    // The walk builds one session at a time but V8 keeps the buffers of every
+    // session it has built, and the opencode export of one large session holds
+    // its whole dump as one buffer. Measured on 2026-11-13: a file-change sync
+    // took the cgroup from 578 MB to 1524 MB of anon in six seconds, and the
+    // unit was killed for it. The bound is the same one the code pass uses, and
+    // it stops the walk instead of the process: the ledger holds what shipped,
+    // and the next tick continues with the unacked sessions first.
+    const usedNow = usedMb();
+    if (isOverMemoryLimit(usedNow, memoryLimitMb())) {
+      releaseMemory();
+      reclaimCgroup();
+      console.error(`[sync] walk paused at the memory bound (used=${usedNow}MB) after ${considered} of ${slice.length} session(s) — the next tick continues`);
+      break;
+    }
     // complete is `considered === slice.length`, not a constant false.
     //
     // The post-loop report below sets complete:true, but it lands after the last
@@ -2173,6 +2189,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     } catch { /* best-effort */ }
 
     walked++;
+    releaseMemory();   // return this session's pages before the next one builds
     if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
   }
 

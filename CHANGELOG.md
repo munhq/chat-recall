@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.44] — 2026-11-13
+
+### Fixed
+- **The sync walk had no memory bound, and one sync took the unit to 1.5 GiB.** Measured on 2026-11-13: a file-change sync took the cgroup from 578 MB to 1524 MB of anon in six seconds, and the cgroup peak reached 1.65 GiB. The walk now reads `usedMb()` before each session and stops at `CHAT_RECALL_WATCH_RSS_MAX_MB` (default 512) instead of letting the unit be killed; the ledger holds what shipped and the next tick continues with the unacked sessions first. The walk also calls `releaseMemory()` after each session it builds.
+
 ## [0.7.43] — 2026-11-13
 
 ### Fixed
