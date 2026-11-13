@@ -23,7 +23,7 @@ import { dirname, join } from 'path';
 import { loadSettings, saveSettings } from './settings.js';
 import { getDataDir } from './paths.js';
 import {
-  ARGON2_PROD, deriveMasterKey, encryptBlob, decryptBlob, generateSalt, keyIdFor, sha256Hex,
+  ARGON2_PROD, type Argon2Params, deriveMasterKey, encryptBlob, decryptBlob, generateSalt, keyIdFor, sha256Hex,
 } from './vault-crypto.js';
 import { walkVaultSources, type VaultSourceFile, type VaultTool } from './vault-source.js';
 
@@ -138,12 +138,12 @@ export interface VaultEnableResult { keyId: string; saltHex: string }
  * passphrase + the salt copied from the first device's settings — but
  * v0 ships the salt server-side (for now we ask the user to copy it).
  */
-export function vaultEnable(passphrase: string, opts: { existingSaltHex?: string } = {}): VaultEnableResult {
+export function vaultEnable(passphrase: string, opts: { existingSaltHex?: string; kdf?: Argon2Params } = {}): VaultEnableResult {
   const salt = opts.existingSaltHex
     ? Buffer.from(opts.existingSaltHex, 'hex')
     : generateSalt();
   if (salt.length !== 32) throw new VaultConfigError('salt must be 32 bytes (64 hex chars)');
-  const key = deriveMasterKey(passphrase, salt, ARGON2_PROD);
+  const key = deriveMasterKey(passphrase, salt, opts.kdf ?? ARGON2_PROD);
   const keyId = keyIdFor(key);
   const saltHex = Buffer.from(salt).toString('hex');
 
@@ -184,7 +184,7 @@ export class VaultPassphraseMismatchError extends Error {}
 export async function vaultEnableWithRemote(
   passphrase: string,
   remote: VaultRemote,
-  opts: { fetchImpl?: typeof fetch } = {},
+  opts: { fetchImpl?: typeof fetch; kdf?: Argon2Params } = {},
 ): Promise<VaultEnableRemoteResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const base = remote.baseUrl.replace(/\/+$/, '');
@@ -200,7 +200,7 @@ export async function vaultEnableWithRemote(
   }
 
   if (published.saltHex) {
-    const result = vaultEnable(passphrase, { existingSaltHex: published.saltHex });
+    const result = vaultEnable(passphrase, { existingSaltHex: published.saltHex, kdf: opts.kdf });
     if (published.keyId && published.keyId !== result.keyId) {
       throw new VaultPassphraseMismatchError(
         'That passphrase does not match the one your other device used for this workspace. '
@@ -213,7 +213,7 @@ export async function vaultEnableWithRemote(
 
   // Nothing published yet — this is device one. Generate, then publish so the
   // next device needs nothing but the passphrase.
-  const result = vaultEnable(passphrase);
+  const result = vaultEnable(passphrase, { kdf: opts.kdf });
   try {
     const r = await doFetch(`${base}/api/vault/salt`, {
       method: 'POST', headers, body: JSON.stringify({ saltHex: result.saltHex, keyId: result.keyId }),
@@ -224,7 +224,7 @@ export async function vaultEnableWithRemote(
     if (r.status === 409) {
       const body = (await r.json()) as { saltHex?: string; keyId?: string | null };
       if (body.saltHex && body.saltHex !== result.saltHex) {
-        const redone = vaultEnable(passphrase, { existingSaltHex: body.saltHex });
+        const redone = vaultEnable(passphrase, { existingSaltHex: body.saltHex, kdf: opts.kdf });
         if (body.keyId && body.keyId !== redone.keyId) {
           throw new VaultPassphraseMismatchError(
             'Another device published a vault with a different passphrase. Nothing was changed here.',
@@ -254,13 +254,13 @@ export interface VaultSyncReport {
  * changed since last upload — re-encrypting (and re-uploading) bytes
  * we've already shipped is wasted work.
  */
-export async function vaultSync(passphrase: string): Promise<VaultSyncReport> {
+export async function vaultSync(passphrase: string, opts: { kdf?: Argon2Params } = {}): Promise<VaultSyncReport> {
   const ctx = context();
   const v = loadSettings().team.vault;
   if (!v.enabled) throw new VaultConfigError('Vault not enabled. Run `chat-recall vault enable` first.');
   if (!v.saltHex) throw new VaultConfigError('Vault salt missing — re-run `vault enable`.');
 
-  const key = deriveMasterKey(passphrase, Buffer.from(v.saltHex, 'hex'), ARGON2_PROD);
+  const key = deriveMasterKey(passphrase, Buffer.from(v.saltHex, 'hex'), opts.kdf ?? ARGON2_PROD);
   const expectedKeyId = keyIdFor(key);
   if (v.keyId && v.keyId !== expectedKeyId) {
     throw new VaultConfigError(`Wrong passphrase. Expected keyId ${v.keyId}, got ${expectedKeyId}.`);
@@ -366,13 +366,13 @@ function importedPathFor(tool: VaultTool, sessionId: string): string {
  *
  * Idempotent — re-runs skip files whose decrypted bytes already match.
  */
-export async function vaultRestore(passphrase: string, opts: { since?: number } = {}): Promise<VaultRestoreReport> {
+export async function vaultRestore(passphrase: string, opts: { since?: number; kdf?: Argon2Params } = {}): Promise<VaultRestoreReport> {
   const ctx = context();
   const v = loadSettings().team.vault;
   if (!v.enabled) throw new VaultConfigError('Vault not enabled.');
   if (!v.saltHex) throw new VaultConfigError('Vault salt missing.');
 
-  const key = deriveMasterKey(passphrase, Buffer.from(v.saltHex, 'hex'), ARGON2_PROD);
+  const key = deriveMasterKey(passphrase, Buffer.from(v.saltHex, 'hex'), opts.kdf ?? ARGON2_PROD);
   const expectedKeyId = keyIdFor(key);
 
   const since = opts.since ?? 0;  // restore everything by default (idempotent skip handles dupes)

@@ -221,7 +221,7 @@ beforeEach(() => {
 // pairing breaks, failing the ledger-idempotency test.)
 describe('vault-client end-to-end', () => {
   test('vaultEnable persists salt + keyId to settings', () => {
-    const r = vaultEnable('correct-horse-battery', { existingSaltHex: '00'.repeat(32) });
+    const r = vaultEnable('correct-horse-battery', { existingSaltHex: '00'.repeat(32), kdf: ARGON2_TEST });
     expect(r.saltHex).toBe('00'.repeat(32));
     expect(r.keyId).toMatch(/^[0-9a-f]{24}$/);
 
@@ -236,13 +236,11 @@ describe('vault-client end-to-end', () => {
   });
 
   test('full sync → restore on a fresh data dir round-trips the source bytes', async () => {
-    // Use ARGON2_TEST? vaultEnable uses ARGON2_PROD always. For test
-    // speed we'd ideally use TEST params, but the orchestration code
-    // always reaches for PROD. Accept the ~5s penalty for one-time
-    // KDF here — the round-trip is the point.
-    vaultEnable('correct-horse-battery', { existingSaltHex: '11'.repeat(32) });
+    // Every call passes ARGON2_TEST: the round trip is the point, and the
+    // production parameters cost about 5 s of CPU for each derivation.
+    vaultEnable('correct-horse-battery', { existingSaltHex: '11'.repeat(32), kdf: ARGON2_TEST });
 
-    const sync = await vaultSync('correct-horse-battery');
+    const sync = await vaultSync('correct-horse-battery', { kdf: ARGON2_TEST });
     expect(sync.uploaded.length).toBe(1);
     expect(sync.uploaded[0].sessionId).toBe('aaaa-bbbb');
     expect(sync.failures).toEqual([]);
@@ -251,7 +249,7 @@ describe('vault-client end-to-end', () => {
     // simulates the "second device" without needing a second tmp tree.
     const importedRoot = join(tmp, 'data', 'imported');
     if (existsSync(importedRoot)) rmSync(importedRoot, { recursive: true, force: true });
-    const restore = await vaultRestore('correct-horse-battery');
+    const restore = await vaultRestore('correct-horse-battery', { kdf: ARGON2_TEST });
     expect(restore.restored.length).toBe(1);
     expect(restore.failures).toEqual([]);
 
@@ -262,26 +260,26 @@ describe('vault-client end-to-end', () => {
   }, 60_000);
 
   test('second sync skips unchanged files (idempotent)', async () => {
-    vaultEnable('correct-horse-battery', { existingSaltHex: '22'.repeat(32) });
-    const r1 = await vaultSync('correct-horse-battery');
+    vaultEnable('correct-horse-battery', { existingSaltHex: '22'.repeat(32), kdf: ARGON2_TEST });
+    const r1 = await vaultSync('correct-horse-battery', { kdf: ARGON2_TEST });
     // The idempotency claim below is meaningless if the FIRST sync silently
     // failed (a failed upload writes no ledger row, so the second sync
     // re-uploading would be CORRECT behavior, not a bug).
     expect(JSON.stringify(r1.failures)).toBe('[]');
     expect(r1.uploaded.length).toBe(1);
-    const r2 = await vaultSync('correct-horse-battery');
+    const r2 = await vaultSync('correct-horse-battery', { kdf: ARGON2_TEST });
     expect(r2.uploaded).toEqual([]);
     expect(r2.skipped.find(s => s.reason === 'unchanged')).toBeDefined();
   }, 60_000);
 
   test('wrong passphrase on sync after enable fails fast', async () => {
-    vaultEnable('correct-horse-battery', { existingSaltHex: '33'.repeat(32) });
-    await expect(vaultSync('different-passphrase')).rejects.toThrow(/Wrong passphrase/);
+    vaultEnable('correct-horse-battery', { existingSaltHex: '33'.repeat(32), kdf: ARGON2_TEST });
+    await expect(vaultSync('different-passphrase', { kdf: ARGON2_TEST })).rejects.toThrow(/Wrong passphrase/);
   }, 20_000);
 
   test('vaultStatus reports disabled before enable, enabled after', () => {
     expect(vaultStatus().enabled).toBe(false);
-    vaultEnable('correct-horse-battery', { existingSaltHex: '44'.repeat(32) });
+    vaultEnable('correct-horse-battery', { existingSaltHex: '44'.repeat(32), kdf: ARGON2_TEST });
     expect(vaultStatus().enabled).toBe(true);
   });
 
@@ -289,6 +287,6 @@ describe('vault-client end-to-end', () => {
     const s = loadSettings();
     s.team = { ...s.team, enabled: false };
     saveSettings(s);
-    await expect(vaultSync('correct-horse-battery')).rejects.toThrow(VaultConfigError);
+    await expect(vaultSync('correct-horse-battery', { kdf: ARGON2_TEST })).rejects.toThrow(VaultConfigError);
   });
 });

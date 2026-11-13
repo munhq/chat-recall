@@ -11,10 +11,13 @@
  *  2. Being offline must not brick setup. The vault still enables locally and
  *     publishes on a later run.
  *
- * Uses ARGON2 as configured by vaultEnable (PROD params), so these are slow by
- * design — a fast KDF would be the bug.
+ * Every call passes ARGON2_TEST. The orchestration does not depend on the cost
+ * parameters, and the production parameters cost about 5 s of CPU for each
+ * derivation. vault-client.test.ts derives one key with the defaults and checks
+ * that they are the production parameters.
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { ARGON2_TEST } from './vault-crypto.js';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -48,7 +51,7 @@ describe('vaultEnableWithRemote', () => {
       return json({ ok: true, created: true });
     }) as unknown as typeof fetch;
 
-    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl });
+    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl, kdf: ARGON2_TEST });
     expect(r.saltSource).toBe('local');
     expect(r.saltHex).toMatch(/^[0-9a-f]{64}$/);
     // It published exactly what it derived — salt AND the key fingerprint.
@@ -60,10 +63,10 @@ describe('vaultEnableWithRemote', () => {
   test('device two adopts the published salt — no --existing-salt, same key', async () => {
     const { vaultEnableWithRemote, vaultEnable } = await import('./vault-client.js');
     // What device one would have produced.
-    const one = vaultEnable('correct-horse-battery', { existingSaltHex: 'ab'.repeat(32) });
+    const one = vaultEnable('correct-horse-battery', { existingSaltHex: 'ab'.repeat(32), kdf: ARGON2_TEST });
 
     const fetchImpl = (async () => json({ saltHex: one.saltHex, keyId: one.keyId })) as unknown as typeof fetch;
-    const two = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl });
+    const two = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl, kdf: ARGON2_TEST });
 
     expect(two.saltSource).toBe('server');
     expect(two.saltHex).toBe(one.saltHex);
@@ -73,31 +76,31 @@ describe('vaultEnableWithRemote', () => {
 
   test('a WRONG passphrase is refused instead of silently making unreadable blobs', async () => {
     const { vaultEnableWithRemote, vaultEnable, VaultPassphraseMismatchError } = await import('./vault-client.js');
-    const one = vaultEnable('correct-horse-battery', { existingSaltHex: 'cd'.repeat(32) });
+    const one = vaultEnable('correct-horse-battery', { existingSaltHex: 'cd'.repeat(32), kdf: ARGON2_TEST });
 
     const fetchImpl = (async () => json({ saltHex: one.saltHex, keyId: one.keyId })) as unknown as typeof fetch;
-    await expect(vaultEnableWithRemote('a-different-passphrase', REMOTE, { fetchImpl }))
+    await expect(vaultEnableWithRemote('a-different-passphrase', REMOTE, { fetchImpl, kdf: ARGON2_TEST }))
       .rejects.toThrow(VaultPassphraseMismatchError);
   }, 60_000);
 
   test('offline still enables locally — setup is never bricked by a down server', async () => {
     const { vaultEnableWithRemote } = await import('./vault-client.js');
     const fetchImpl = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
-    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl });
+    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl, kdf: ARGON2_TEST });
     expect(r.saltSource).toBe('local');
     expect(r.saltHex).toMatch(/^[0-9a-f]{64}$/);
   }, 30_000);
 
   test('lost the publish race → adopts the winner rather than keeping an orphan salt', async () => {
     const { vaultEnableWithRemote, vaultEnable } = await import('./vault-client.js');
-    const winner = vaultEnable('correct-horse-battery', { existingSaltHex: 'ef'.repeat(32) });
+    const winner = vaultEnable('correct-horse-battery', { existingSaltHex: 'ef'.repeat(32), kdf: ARGON2_TEST });
 
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       if (!init?.method || init.method === 'GET') return json({ saltHex: null, keyId: null });   // race window
       return json({ error: 'conflict', saltHex: winner.saltHex, keyId: winner.keyId }, 409);
     }) as unknown as typeof fetch;
 
-    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl });
+    const r = await vaultEnableWithRemote('correct-horse-battery', REMOTE, { fetchImpl, kdf: ARGON2_TEST });
     expect(r.saltSource).toBe('server');
     expect(r.saltHex).toBe(winner.saltHex);
     expect(r.keyId).toBe(winner.keyId);
