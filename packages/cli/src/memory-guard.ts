@@ -114,6 +114,21 @@ export function reclaimCgroup(keepFileMb = 64, dir: string | null = cgroupDir())
   try { writeFileSync(join(dir, 'memory.reclaim'), `${reclaimMb}M`); return true; } catch { return false; }
 }
 
+/** The page cache the resident tick leaves in place, in MiB. */
+export const DEFAULT_RECLAIM_FILE_MB = 128;
+
+/**
+ * True when the cgroup holds more reclaimable file pages than the ceiling.
+ *
+ * The pass calls `reclaimCgroup` at its own boundaries, but the file pages keep
+ * growing between them: the transcripts are read, the watcher records inotify
+ * events, and every page stays in `memory.current` and in the unit peak. A tick
+ * every 30 s asks a pure decision here, so the peak tracks the live heap.
+ */
+export function shouldReclaim(fileMb: number | null, limitMb = DEFAULT_RECLAIM_FILE_MB): boolean {
+  return fileMb !== null && limitMb >= 0 && fileMb > limitMb;
+}
+
 /** `memory.current` of the cgroup in MiB, or null when it cannot be read. */
 export function cgroupCurrentMb(dir: string | null = cgroupDir()): number | null {
   if (!dir) return null;

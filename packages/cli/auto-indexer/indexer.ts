@@ -49,7 +49,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb } from '../src/memory-guard.js';
+import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -1020,6 +1020,25 @@ if (CODE_INDEX_ON) {
   setTimeout(() => { ticks.request('codeIndex', TICK_PRIORITY.codeIndex, codeIndexTick); }, 90_000);   // first pass shortly after startup
   daemonLog.info(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
 }
+
+// ── Resident guard: keep the cgroup small between passes ──────────────────
+// The pass reclaims at its own boundaries, but the file pages keep growing
+// between them: the transcripts are read, the watcher records inotify events,
+// and every page stays in `memory.current` and in the unit peak. A tick every
+// 30 s returns whatever sits above DEFAULT_RECLAIM_FILE_MB, so the peak tracks
+// the live heap. Report 14:57:24 showed 50 MB of heap and 537 MB of rss while
+// `memory.current` held 1.66 GB.
+function residentTick(): void {
+  const dir = cgroupDir();
+  const fileMb = dir ? memoryStatMb(dir, 'file') : null;
+  if (shouldReclaim(fileMb)) {
+    reclaimCgroup(DEFAULT_RECLAIM_FILE_MB);
+    daemonLog.info(`resident: returned the page cache above ${DEFAULT_RECLAIM_FILE_MB}MB (file=${fileMb}MB)`);
+  }
+  releaseMemory();
+}
+setInterval(residentTick, 30_000).unref();
+setTimeout(residentTick, 45_000);
 
 // ── CLI self-update: keep the daemon current with the logged-in server ──────
 // Checksum-pinned, same-origin, default-on for self-host (CHAT_RECALL_AUTO_UPDATE
