@@ -174,8 +174,8 @@ COPY site-src/ ./site-src/
 COPY web-standards/bin/ ./web-standards/bin/
 COPY README.md ./product/README.md
 COPY docs/ ./product/docs/
-# The site dependencies install from files that a change under packages/ does not
-touch, so this layer stays a cache hit on a package change.
+# The site dependencies install from files that a change under packages/ does
+# not touch, so this layer stays a cache hit on a package change.
 RUN --mount=type=cache,target=/root/.npm \
     --mount=type=secret,id=npmtoken \
     export NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" && \
