@@ -9,7 +9,7 @@
  * rank for the queries buyers actually type.
  *
  * WHERE IT IS SAFE TO PRINT. Here, and nowhere else. The MCP server is a
- * different entry point (mcp.ts, reached through mcp-relay.js) and speaks
+ * different entry point (mcp.ts) and speaks
  * JSON-RPC over stdio, where one stray line of text corrupts the stream. This
  * module is imported by cli.ts only. Keep it that way.
  *

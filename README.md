@@ -196,28 +196,36 @@ any of it. Secrets are masked client-side before anything leaves the machine.
 {
   "mcpServers": {
     "chat-recall": {
-      "command": "chat-recall-mcp"
+      "url": "http://127.0.0.1:7717/mcp"
     }
   }
 }
 ```
 
-`chat-recall-mcp` is a relay, not the server. It finds the background daemon for
-your tool profile, starts one if there is none, and passes bytes to it. Every
-session on a machine therefore shares one loaded engine instead of carrying its
-own: a session costs about 50 MB rather than 87 MB, against a single shared
-daemon, and background sync runs in one process instead of racing a lock in all
-of them. The daemon exits 15 minutes after the last session closes.
+The entry is a URL, and the client starts no process. The host of the machine
+serves chat-recall on that URL. One process serves every session of the machine,
+so the engine loads once: background sync runs in one process, and no session
+races another for the index lock. The host starts at login and the client
+reconnects to it.
 
-Two knobs, both optional:
+The host is `mcp-kit-host`, from `@munhq/mcp-kit`. It serves every local MCP
+server of the machine, not only chat-recall. `chat-recall init` installs it
+through the kit and adds chat-recall to its list of servers. chat-recall adds no
+unit, timer or job of its own, and it adds no second copy of the kit: the
+published package holds the host code that it needs.
 
-```bash
-CHAT_RECALL_NO_DAEMON=1          # load the whole server in each session instead
-CHAT_RECALL_DAEMON_IDLE_SECS=0   # keep the daemon resident (default 900)
+If the machine has no host, `init` writes the stdio entry, which runs the server
+in each session:
+
+```json
+{
+  "mcpServers": {
+    "chat-recall": {
+      "command": "chat-recall-mcp"
+    }
+  }
+}
 ```
-
-If the daemon cannot be reached for any reason, the session loads the server
-itself and works exactly as it did before — slower, never broken.
 
 `chat-recall init` installs the Claude Code hooks in every profile's
 `settings.json`. If you added only the MCP server, from a marketplace button or

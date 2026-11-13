@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ALL_HOOKS, ensureHooks, installHooks, isOurEntry, uninstallHooks, claudeSettingsFiles,
+  ALL_HOOKS, ensureHooks as ensureHooksReal, installHooks as installHooksReal, isOurEntry,
+  uninstallHooks as uninstallHooksReal, claudeSettingsFiles,
 } from './install-hooks.js';
+import type { Host } from './vendor/mcp-kit/host.js';
 import { isMessageHookEntry, isMessageWaiterEntry, isBoardHookEntry } from './board-hooks.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +27,15 @@ const savedTools = Object.fromEntries(Object.keys(TOOL_HOMES).map((k) => [k, pro
 let root: string;
 let profile: string;
 let settingsFile: string;
+// The host of the machine writes a config file and runs systemctl. The tests give it a machine of their own, so that
+// a run of this file changes nothing outside the temp folder.
+let machine: Host;
+const wrappers = {
+  installHooks: (dir: string, sel = ALL_HOOKS) => installHooksReal(dir, sel, { host: machine, platform: 'linux' }),
+  uninstallHooks: () => uninstallHooksReal({ host: machine, platform: 'linux' }),
+  ensureHooks: (dir: string) => ensureHooksReal(dir, { host: machine, platform: 'linux' }),
+};
+const { installHooks, uninstallHooks, ensureHooks } = wrappers;
 
 const read = (f: string) => JSON.parse(readFileSync(f, 'utf-8'));
 const commands = (cfg: any, event: string): string[] =>
@@ -39,6 +50,14 @@ beforeEach(() => {
   process.env.CHAT_RECALL_CLAUDE_HOME = profile;
   process.env.CHAT_RECALL_DATA_DIR = join(root, 'data');
   for (const [name, dir] of Object.entries(TOOL_HOMES)) process.env[name] = join(root, 'tools', dir);
+  const files = new Map<string, string>();
+  machine = {
+    home: join(root, 'machine'),
+    env: {},
+    run: () => ({ code: 0, stdout: '', stderr: '' }),
+    read: (path) => files.get(path),
+    write: (path, text) => { files.set(path, text); },
+  };
 });
 afterEach(() => {
   process.env.CHAT_RECALL_CLAUDE_HOME = saved.home;

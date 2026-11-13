@@ -139,10 +139,10 @@ export async function signIn(
   return kit.deviceLogin({ server, clientId: CLI_CLIENT_ID, fetch: watching, noBrowser: true, write: () => undefined, sleep: o.sleep });
 }
 
-/** The command that an AI tool runs for the relay: `chat-recall-mcp` on the PATH, else the bundle beside this file. */
+/** The command that an AI tool runs for the server: `chat-recall-mcp` on the PATH, else the bundle beside this file. */
 export function relayCommand(bundleDir: string): string[] {
   const bin = resolveOnPath('chat-recall-mcp');
-  return bin ? [bin] : [process.execPath, join(bundleDir, 'mcp-relay.js')];
+  return bin ? [bin] : [process.execPath, join(bundleDir, 'mcp.js')];
 }
 
 /**

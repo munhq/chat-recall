@@ -45,11 +45,6 @@ await build({
   entryPoints: [
     { in: 'src/cli.ts', out: 'cli' },
     { in: 'src/mcp.ts', out: 'mcp' },
-    // The relay is its OWN entry, and must stay tiny. It is what an AI tool
-    // spawns per session; mcp.js is what it relays to. Bundling the two
-    // together would load the whole engine in every session again, which is
-    // the entire cost the split removes.
-    { in: 'src/mcp-relay.ts', out: 'mcp-relay' },
     // The message hook is its own entry for the same reason: Claude Code runs
     // it on every tool call, so it must not load the CLI.
     { in: 'src/message-hook.ts', out: 'message-hook' },
@@ -68,9 +63,6 @@ await build({
   format: 'esm',
   target: 'node18',
   external,
-  // Bake the CLI version in so the watch daemon can tell the server it's stale
-  // (auto-update) without a runtime package.json read.
-  define: { __CLI_VERSION__: JSON.stringify(cliPkg.version) },
   // Some externalized deps (native addons) use CommonJS require(); shim it for ESM.
   banner: { js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" },
   logLevel: 'info',
@@ -78,7 +70,7 @@ await build({
 
 assertNoKitCode(fileURLToPath(new URL('../dist/', import.meta.url)));
 
-console.log(`bundled cli.js + mcp.js + mcp-relay.js + message-hook.js + watch.js + scan-worker.js (externals: ${external.length})`);
+console.log(`bundled cli.js + mcp.js + message-hook.js + watch.js + scan-worker.js (externals: ${external.length})`);
 
 // ── Native-free guard ────────────────────────────────────────────────────
 // The collector must install with zero compilation: a user running
@@ -121,7 +113,7 @@ const lazyRe = /\bimport\(\s*['"]([^'"\s.][^'"\s]*)['"]\s*\)/g;
 const lazyAllowed = new Set([...allowed, ...NATIVE_ENGINE_DEPS]);
 const toPkg = (spec) => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
 const offenders = new Set();
-for (const out of ['cli.js', 'mcp.js', 'mcp-relay.js', 'message-hook.js', 'watch.js', 'scan-worker.js']) {
+for (const out of ['cli.js', 'mcp.js', 'message-hook.js', 'watch.js', 'scan-worker.js']) {
   const code = readFileSync(new URL(`../dist/${out}`, here), 'utf-8');
   for (const re of bootRes) {
     for (const m of code.matchAll(re)) {

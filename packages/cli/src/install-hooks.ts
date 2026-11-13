@@ -25,6 +25,8 @@ import {
   HOOK_TIMEOUT_SECONDS, resolveCliEntry, resolveMessageHookEntry,
 } from './board-hooks.js';
 import { cliVersion } from './http.js';
+import { installMcpHost, removeMcpHost } from './mcp-host.js';
+import type { HostInstall, McpHostDeps } from './mcp-host.js';
 import { registerTuiPlugin, tuiPluginEntry, unregisterTuiPlugin } from '@chat-recall/engine/core/opencode-tui-config.js';
 
 /** Which hooks to install. Every one is on unless the user turned it off. */
@@ -209,6 +211,11 @@ export interface InstallReport {
   guardTargets: Array<{ label: string; configPath: string; note?: string }>;
   /** The other AI tools that got the message hook. */
   messageTargets: Array<{ label: string; configPath: string; note?: string }>;
+  /**
+   * The host of this machine, which serves every local server over a URL.
+   * The host belongs to `@munhq/mcp-kit`, and chat-recall adds its server to it.
+   */
+  host: HostInstall;
 }
 
 /**
@@ -219,7 +226,7 @@ export interface InstallReport {
  * command through cmd.exe, which cannot run a `.sh`. The board and message
  * hooks are node plus a bundle path, and install everywhere.
  */
-export async function installHooks(distDir: string, sel: HookSelection = ALL_HOOKS): Promise<InstallReport> {
+export async function installHooks(distDir: string, sel: HookSelection = ALL_HOOKS, deps: McpHostDeps = {}): Promise<InstallReport> {
   const shellSkipped = process.platform === 'win32';
   const scriptsDir = getHooksDir();
   // The copy of a removed script is ours, and no entry runs it any more.
@@ -243,6 +250,8 @@ export async function installHooks(distDir: string, sel: HookSelection = ALL_HOO
 
   const report: InstallReport = {
     written: [], skipped: [], migrated: 0, shellSkipped, scriptsDir, selection: sel, guardTargets: [], messageTargets: [],
+    // One host per machine serves chat-recall to every session, so each client holds a URL.
+    host: installMcpHost(distDir, deps),
   };
   for (const settingsFile of claudeSettingsFiles()) {
     const config = readJson(settingsFile);
@@ -283,11 +292,13 @@ export interface UninstallReport {
   files: string[];
   guardRemoved: Array<{ label: string; configPath: string }>;
   messagesRemoved: Array<{ label: string; configPath: string }>;
+  /** The files of the host that the removal wrote or stopped. */
+  hostRemoved: string[];
 }
 
 /** Remove every chat-recall hook, and record the choice so the MCP server does not put them back. */
-export async function uninstallHooks(): Promise<UninstallReport> {
-  const report: UninstallReport = { removed: 0, files: [], guardRemoved: [], messagesRemoved: [] };
+export async function uninstallHooks(deps: McpHostDeps = {}): Promise<UninstallReport> {
+  const report: UninstallReport = { removed: 0, files: [], guardRemoved: [], messagesRemoved: [], hostRemoved: [] };
   for (const settingsFile of claudeSettingsFiles()) {
     for (const file of [settingsFile, join(dirname(settingsFile), 'hooks.json')]) {
       if (!existsSync(file)) continue;
@@ -302,6 +313,8 @@ export async function uninstallHooks(): Promise<UninstallReport> {
   }
   report.guardRemoved = await removeGuardFromOtherTools();
   report.messagesRemoved = await removeMessagesFromOtherTools();
+  // A server entry that points at a process that is gone stops the host of the whole machine at each start.
+  report.hostRemoved = removeMcpHost(deps);
   writeJsonAtomic(statePath(), { version: cliVersion(), selection: ALL_HOOKS, uninstalled: true } satisfies InstallState);
   return report;
 }
@@ -323,13 +336,13 @@ function profileMissingHooks(settingsFile: string, sel: HookSelection): boolean 
  * profile is missing them. The MCP server calls this at every start.
  * Returns null when nothing was needed, or when the user uninstalled them.
  */
-export async function ensureHooks(distDir: string): Promise<InstallReport | null> {
+export async function ensureHooks(distDir: string, deps: McpHostDeps = {}): Promise<InstallReport | null> {
   const state = readState();
   if (state?.uninstalled) return null;
   const sel = { ...ALL_HOOKS, ...(state?.selection ?? {}) };
   const stale = !state || state.version !== cliVersion();
   if (!stale && !claudeSettingsFiles().some((f) => profileMissingHooks(f, sel))) return null;
-  return installHooks(distDir, sel);
+  return installHooks(distDir, sel, deps);
 }
 
 // ── The decision guard in the AI tools that are not Claude Code ──────────────

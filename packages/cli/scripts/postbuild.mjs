@@ -18,6 +18,16 @@ for (const path of ['dist/cli.js', 'dist/mcp.js', 'dist/watch.js']) {
   }
 }
 
+// The vendored host kit is copied as files, not bundled: `dist/mcp.js` imports
+// `./vendor/mcp-kit/host.js` and the host program is `dist/vendor/mcp-kit/host-main.js`, which Node runs
+// as its own process. Run `node scripts/vendor-mcp-kit.mjs` to refresh it from the pinned kit version.
+try {
+  cpSync('src/vendor', 'dist/vendor', { recursive: true });
+  console.log('copied src/vendor → dist/vendor');
+} catch (err) {
+  console.warn(`vendor copy failed: ${err.message}`);
+}
+
 // Copy the repo-root hook scripts into the package. `install-hooks` resolves
 // them at <pkg>/hooks/*.sh (see findHook in src/cli.ts) and package.json ships
 // the `hooks` dir in `files` — but the sources live at the monorepo root, so

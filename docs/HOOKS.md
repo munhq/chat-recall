@@ -28,8 +28,9 @@ long-polls the same endpoint and sends `notifications/claude/channel`, and the c
 takes a turn with it. No hook and no process of ours is involved in the delivery, so
 nothing can time out.
 
-The session is served in the MCP server's own process rather than by the shared daemon,
-because the flag is on the session's command line and only that process can see it.
+The channel needs a process that chat-recall starts itself, because the flag is on the
+session's command line and the host of the machine cannot see it. On a machine with a host,
+put `CHAT_RECALL_CHANNEL=1` in the environment of the server entry instead.
 `CHAT_RECALL_CHANNEL=1` turns it on and `0` turns it off, whatever the command line says.
 
 Two limits come from Claude Code, not from this repository: a plain server needs the

@@ -36,9 +36,10 @@ machine with Docker Compose. Both are the same program. See
 ## The assistants ask
 
 An assistant reaches the memory through the MCP server, which runs on your
-machine and calls the server for each tool. One MCP process serves all
-sessions of a machine: each session starts a small relay that connects to it,
-so ten open sessions do not load ten copies of the engine.
+machine and calls the server for each tool. The client holds a URL on LOOPBACK:
+the host of the machine serves chat-recall there, so ten open sessions do not
+load ten copies of the engine. The host serves every local MCP server of the
+machine, and it starts at login.
 
 An assistant without the CLI, such as claude.ai or ChatGPT, connects to the
 remote MCP endpoint of the server. See [Connect claude.ai or ChatGPT](./CONNECTORS.md).

@@ -24,10 +24,7 @@
 import { adoptSealkeepSecrets } from '@chat-recall/engine/core/stored-token.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { spawn } from 'child_process';
-import { createServer, connect, type Socket, type Server } from 'node:net';
-import { unlinkSync } from 'node:fs';
-import { ensureSocketDir, restrictSocket, socketPath, socketPathFromArgv } from './mcp-socket.js';
-import { onInputFinished, watchParent } from './relay-lifecycle.js';
+import { onInputFinished, watchParent } from './session-exit.js';
 import { createSyncSupervisor } from './sync-supervisor.js';
 import { fileURLToPath } from 'node:url';
 import {
@@ -45,9 +42,9 @@ import { beginChannel } from './channel.js';
 // The version a caller sees is THIS package's, read from the manifest that
 // ships beside dist/. The engine cannot resolve it — its own manifest carries a
 // different version — so the host that knows states it.
-setServerVersion(JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
-).version);
+/** The version of the running server: the sync delegate compares the copy on disk with this one. */
+const CLI_VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')) as { version?: string }).version ?? '0.0.0';
+setServerVersion(CLI_VERSION);
 setEventReporter(reportClientEvent);
 setIndexRunner(runIndexChild);
 setUpdateNotice(updateNotice);
@@ -216,7 +213,7 @@ function startBackgroundSync(): void {
       const { installedVersion } = await import('./auto-update.js');
       const { installedIsNewer, runInstalledSync } = await import('./sync-delegate.js');
       const installed = installedVersion();
-      if (installedIsNewer(RELAY_VERSION, installed)) {
+      if (installedIsNewer(CLI_VERSION, installed)) {
         const code = await runInstalledSync(fileURLToPath(new URL('./cli.js', import.meta.url)));
         if (code !== 0) console.error(`[mcp] sync by the installed CLI ${installed} ended with ${code ?? 'no exit code'}`);
         return;
@@ -290,211 +287,30 @@ function installCrashGuards(): void {
   });
 }
 
-declare const __CLI_VERSION__: string;
-const RELAY_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-
-/** Seconds with no session attached before the daemon exits. 0 keeps it up. */
-function daemonIdleSecs(): number {
-  const raw = process.env.CHAT_RECALL_DAEMON_IDLE_SECS;
-  if (raw === undefined) return 900;
-  const n = Number.parseInt(raw.trim(), 10);
-  return Number.isFinite(n) ? n : 900;
-}
-
-/**
- * Is something already serving this address?
- *
- * The stale check is a connect, never a timestamp or a pid file: the only
- * question that matters is whether anything answers on that path right now.
- */
-function addressIsLive(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = connect(path);
-    probe.once('connect', () => {
-      probe.destroy();
-      resolve(true);
-    });
-    probe.once('error', () => {
-      probe.destroy();
-      resolve(false);
-    });
-  });
-}
-
-function listen(path: string): Promise<Server | null> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once('error', async (err: NodeJS.ErrnoException) => {
-      if (err.code !== 'EADDRINUSE') return resolve(null);
-      // Either a sibling daemon won the same race honestly — in which case it
-      // serves this profile and there is nothing for us to add — or a previous
-      // daemon died without cleaning up its socket file.
-      if (await addressIsLive(path)) return resolve(null);
-      try {
-        unlinkSync(path);
-      } catch {
-        /* nothing to remove: a named pipe, or another process got there first */
-      }
-      const retry = createServer();
-      retry.once('error', () => resolve(null));
-      retry.listen(path, () => {
-        restrictSocket(path);
-        resolve(retry);
-      });
-    });
-    server.listen(path, () => {
-      restrictSocket(path);
-      resolve(server);
-    });
-  });
-}
-
-/**
- * Serve every session on this profile from one process.
- *
- * Each connection gets its own MCP server object — the handshake state and the
- * request/response pairing are per-client and must not be shared — while the
- * expensive things behind them are created once: the loaded engine, the
- * background sync loop, the skills check.
- *
- * That last point is a correctness gain, not only a cost one. Background sync
- * used to run in EVERY session's event loop, with an index lock electing one
- * writer out of however many were racing. One daemon means one writer by
- * construction.
- */
-async function runDaemon(): Promise<boolean> {
-  // The relay that started this process already picked the path and is
-  // waiting on it; its choice wins over anything resolved here. Resolving is
-  // for the case where a person ran `chat-recall-mcp-server --daemon` by hand.
-  let path = socketPathFromArgv(process.argv);
-  if (!path) {
-    try {
-      path = socketPath(ensureSocketDir(), RELAY_VERSION);
-    } catch (err) {
-      // No usable runtime directory means no daemon is possible on this
-      // machine. Say so and leave; sessions serve themselves in-process.
-      console.error(`[mcp] ${(err as Error).message}; sessions will run in-process`);
-      return false;
-    }
-  }
-
-  const server = await listen(path);
-  if (!server) {
-    // Somebody else is serving this profile. Say so, so the caller does NOT go
-    // on to the startup work below: a daemon that lost the race would otherwise
-    // still refresh skills and start a sync loop before exiting, which is the
-    // duplicated work the single-daemon design exists to remove.
-    return false;
-  }
-
-  let live = 0;
-  let idleSince = Date.now();
-
-  server.on('connection', (socket: Socket) => {
-    live += 1;
-    socket.on('close', () => {
-      live -= 1;
-      if (live === 0) idleSince = Date.now();
-    });
-    // A relay that goes away mid-request must not take the daemon with it.
-    socket.on('error', () => { /* the close handler above does the accounting */ });
-
-    void createMcpServer()
-      .connect(new StdioServerTransport(socket, socket))
-      .catch((err) => console.error('[mcp] session failed to start:', err?.message ?? err));
-  });
-
-  console.error(`[mcp] daemon listening on ${path} (v${RELAY_VERSION})`);
-
-  const idleSecs = daemonIdleSecs();
-  if (idleSecs > 0) {
-    const timer = setInterval(() => {
-      if (live > 0) return;
-      if (Date.now() - idleSince < idleSecs * 1000) return;
-      // Stop taking new work first, so a session that arrives during the
-      // wind-down starts a fresh daemon instead of attaching to one that is
-      // leaving.
-      clearInterval(timer);
-      server.close(() => {
-        try {
-          if (process.platform !== 'win32') unlinkSync(path);
-        } catch {
-          /* already gone */
-        }
-        process.exit(0);
-      });
-    }, 5_000);
-    timer.unref();
-  }
-
-  const shutdown = () => {
-    try {
-      server.close();
-      if (process.platform !== 'win32') unlinkSync(path);
-    } catch {
-      /* best effort on the way out */
-    }
-    process.exit(0);
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
-
-  // An upgrade replaces the files on disk, and this process keeps running the
-  // code it loaded. On 2026-10-02 five daemons ran three older releases for
-  // days after an install and kept writing their old view of the sync ledger.
-  // So the daemon leaves when the installed version changes; each relay then
-  // reconnects and starts the new code (relay-lifecycle.ts resilientBridge).
-  const upgradeTimer = setInterval(() => {
-    const installed = installedVersion();
-    // 0.0.0 is a run outside the bundle, which has no version to compare.
-    if (installed && RELAY_VERSION !== '0.0.0' && installed !== RELAY_VERSION) {
-      console.error(`[mcp] v${installed} is installed; daemon v${RELAY_VERSION} is leaving`);
-      clearInterval(upgradeTimer);
-      shutdown();
-    }
-  }, 30_000);
-  upgradeTimer.unref();
-  return true;
-}
-
-/** The version in the package.json beside this bundle, or null when unreadable. */
-function installedVersion(): string | null {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')) as { version?: unknown };
-    return typeof pkg.version === 'string' ? pkg.version : null;
-  } catch {
-    return null;
-  }
-}
-
 async function main() {
   installCrashGuards();
   // A login that the kit keeps in sealkeep is readable only in a process that `sealkeep run` starts.
   await adoptSealkeepSecrets();
   // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
   // does NOT take effect after startup (verified empirically on Node 23) —
-  // the cap must come from the spawner. `chat-recall init` writes
-  // NODE_OPTIONS into the MCP registration for exactly that reason; the
-  // in-process defense is the bounded 'changed' sync ticks above.
-  if (process.argv.includes('--daemon')) {
-    if (!await runDaemon()) return; // another daemon owns this profile
-  } else {
-    // Serving one client over this process's stdio: the path taken when the
-    // daemon is turned off, and the fallback whenever it cannot be reached.
-    const transport = new StdioServerTransport();
-    const server = createMcpServer();
-    // A session that named chat-recall as a channel server gets the capability
-    // declared before the transport answers initialize, and delivery started
-    // after. Null for every other session, which is almost all of them.
-    const beginChannelDelivery = beginChannel(server);
-    await server.connect(transport);
-    beginChannelDelivery?.();
-    // The transport never ends the process on its own. A session server whose
-    // client is gone must exit, or it keeps its sync loop and its heap forever.
-    const leave = () => process.exit(0);
-    onInputFinished(process.stdin, leave);
-    watchParent(leave);
-  }
+  // the cap must come from the spawner. `chat-recall init` gives the server its
+  // NODE_OPTIONS for exactly that reason; the in-process defense is the bounded
+  // 'changed' sync ticks above.
+  // The host of the machine starts this process once and keeps it. A client
+  // that starts it directly, on a machine with no host, speaks over stdio.
+  const transport = new StdioServerTransport();
+  const server = createMcpServer();
+  // A session that named chat-recall as a channel server gets the capability
+  // declared before the transport answers initialize, and delivery started
+  // after. Null for every other session, which is almost all of them.
+  const beginChannelDelivery = beginChannel(server);
+  await server.connect(transport);
+  beginChannelDelivery?.();
+  // The transport never ends the process on its own. The host closes the pipe
+  // when it stops, and the parent watch covers a host that died uncleanly.
+  const leave = () => process.exit(0);
+  onInputFinished(process.stdin, leave);
+  watchParent(leave);
 
   // Deliver the chat-recall skills to this machine's AI tools. This is THE
   // delivery hook that works no matter how the MCP was configured — `chat-recall

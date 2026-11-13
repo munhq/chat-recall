@@ -534,21 +534,17 @@ program
       if (!options.skipMcp) {
         const projectRoot = join(import.meta.dirname, '..');
 
-        // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
-        // or a packaged binary). Fall back to the source-checkout path only in
-        // an un-installed dev tree. Re-running `init` REPAIRS a stale entry
-        // (e.g. an old `node <checkout>/dist/mcp.js`) instead of skipping it.
-        let mcpBinOnPath = false;
-        mcpBinOnPath = isOnPath('chat-recall-mcp');
+        // The host of the machine serves chat-recall over a URL, so most clients hold a URL and no process.
+        // This is the entry for a machine with no host: the installed `chat-recall-mcp` bin when it is on
+        // PATH, else the server beside this CLI. Re-running `init` REPAIRS a stale entry.
+        const mcpBinOnPath = isOnPath('chat-recall-mcp');
         const launch: { command: string; args?: string[] } = mcpBinOnPath
           ? { command: 'chat-recall-mcp' }
-          : { command: 'node', args: [join(projectRoot, 'dist', 'mcp-relay.js')] };
+          : { command: process.execPath, args: [join(projectRoot, 'dist', 'mcp.js')] };
         // Cap the V8 heap via the spawner: v8.setFlagsFromString cannot change
         // the limit after startup (verified), so NODE_OPTIONS is the only knob
-        // that works when the AI tool owns the spawn. What gets spawned is now
-        // the relay, which needs almost none of it — but the relay hands its
-        // environment to the daemon it starts, so the cap lands on the process
-        // that actually holds the engine.
+        // that works when the AI tool owns the spawn. The host passes its own
+        // environment to every server that it starts, so the cap lands there too.
         const MCP_ENV = { NODE_OPTIONS: '--max-old-space-size=1024' };
 
         // Every tool detected in step 1 gets the entry, not just Claude Code.
@@ -581,13 +577,17 @@ program
         } catch (e) {
           rep.warn(chalk.yellow(`could not register chat-recall-mcp with the kit: ${e instanceof Error ? e.message : e}`));
         }
-        /* The server is hosted, so every tool gets its URL and none gets a relay: an AI tool that holds the URL opens
-         * the session of the person against the server itself. The token goes in as a static header only for the clients
-         * that read one (Cursor, Antigravity); Claude Code runs `chat-recall token --header` at every start, and pi and
-         * OpenCode sign in with OAuth and renew it on their own. */
+        /* A hosted server gives every tool its URL: an AI tool that holds the URL opens the session of the person
+         * against the server itself. The token goes in as a static header only for the clients that read one
+         * (Cursor, Antigravity); Claude Code runs `chat-recall token --header` at every start, and pi and OpenCode
+         * sign in with OAuth and renew it on their own. */
         const hosted = options.server ?? target?.base;
         const hostedBase = hosted?.replace(/\/+$/, '');
         const stored = target && hostedBase && hostedBase === target.base.replace(/\/+$/, '') ? target : null;
+        // With no hosted server, the local memory lives on this machine: the host of the machine serves it over
+        // LOOPBACK on a URL, and the client holds that URL. The stdio entry stays for a machine that has no host.
+        const { localMcpUrl } = await import('./mcp-host.js');
+        const localUrl = hostedBase ? null : localMcpUrl();
         const results = registerMcpEverywhere(
           hostedBase
             ? {
@@ -595,7 +595,9 @@ program
                 authorization: stored?.token ? `Bearer ${stored.token}` : undefined,
                 headersHelper: stored ? 'chat-recall token --header' : undefined,
               }
-            : { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
+            : localUrl
+              ? { url: localUrl }
+              : { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
           { extraIds: detectedClients, skipIds: kitDone.has('claude') ? ['claude'] : [] },
         );
         // ONE LINE for the ones that worked, a LINE EACH for the ones that did
