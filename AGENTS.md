@@ -36,3 +36,13 @@ The goal of the owner is a check, a test run, a lint and an image build that end
 6. Order the layers of a Dockerfile by how often their inputs change: the system packages, then the lock files and the install, then the sources. Install once in a stage (`deps`) and start every other stage from it, so the install runs once for the image. Give each stage that BuildKit can build at the same time its own inputs (`servertsc` and `clipack` start from `engine`).
 7. Copy into a step only the files that it reads. `COPY packages/ ./product/packages/` ran the site gates and the docs build again for each change of a server file; the gates read eight files, and the docs build reads the README, `docs/` and `reference.json`. A stage that only produces a small result (`reference`) hands it over with `COPY --from=<stage> <file>`, and BuildKit keys the next step by the content of that file.
 8. Prove one change at a time with one `desk try`. Do not start several runs at once: the 40 cores of the cluster are shared with production.
+
+## Keep the pipeline inside its time budget
+
+The goal of the owner (munhq/desk#145, #243): every check of this repository ends in under 60 s, and more work must not make it slower. A change that adds time to a check is not done.
+
+1. Before you land, run `desk try` and read the time of each check. If your change makes a check slower, make the test or the build cheaper, or split it, before you land.
+2. Run `desk runs budget --check` to see which checks are over 60 s by the median of the last 5 landings.
+3. Do not raise a budget to land a change. A higher budget is a decision of the owner.
+4. While a check is over its budget and the server setting `budget.mode` is `refuse`, only a change of type `perf`, `build`, `ci`, `test` or `revert` lands.
+5. Put the cache first: keep a cache key to the files that a step reads, and keep a build cache on the persistent folder of the runner. The rules for a fast check are in `docs/runs.md` of munhq/desk.
