@@ -49,7 +49,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { isOverMemoryLimit, memoryLimitMb, releaseMemory, rssMb } from '../src/memory-guard.js';
+import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, rssMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -185,6 +185,8 @@ async function shipToServer(trigger: string): Promise<void> {
     // committed. Return the pages when the tick ends, so the next tick starts
     // from the live set and not from the last tick's high-water mark.
     releaseMemory();
+    // The page cache of the walk counts in the cgroup peak too.
+    reclaimCgroup();
   }
 }
 
@@ -1004,6 +1006,9 @@ async function codeIndexTick(): Promise<void> {
       releaseMemory();   // return this workspace's pages before the next one starts
     }
     if (ok > 0 || unchanged > 0) daemonLog.info(`code intelligence: indexed ${ok}/${workspaces.length} workspace(s), ${unchanged} unchanged`);
+    // The file pages of the pass are most of its cgroup peak.
+    releaseMemory();
+    reclaimCgroup();
   } finally {
     codeIndexInFlight = false;
   }

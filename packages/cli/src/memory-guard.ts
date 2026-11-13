@@ -18,10 +18,14 @@
  *     next tick continue the work, so the memory stays under the bound by
  *     construction;
  *   - `releaseMemory` returns the pages after a heavy unit (one workspace, one
- *     walk target) when the daemon runs with `--expose-gc`.
+ *     walk target) when the daemon runs with `--expose-gc`;
+ *   - `reclaimCgroup` takes back the page cache of the cgroup when a heavy pass
+ *     ends, because the page cache of the pass counts in the cgroup peak.
  *
  * The limit is `CHAT_RECALL_WATCH_RSS_MAX_MB`, in MiB of resident memory.
  */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Resident-size bound of the daemon, in MiB. */
 export const DEFAULT_RSS_MAX_MB = 512;
@@ -55,4 +59,43 @@ export function releaseMemory(gc: (() => void) | undefined = (globalThis as { gc
   if (typeof gc !== 'function') return false;
   gc();
   return true;
+}
+
+/** The cgroup v2 directory of this process, or null when it has none. */
+export function cgroupDir(cgroupFile = '/proc/self/cgroup'): string | null {
+  let text: string;
+  try { text = readFileSync(cgroupFile, 'utf8'); } catch { return null; }
+  const line = text.split('\n').find((l) => l.startsWith('0::'));
+  if (!line) return null;
+  return `/sys/fs/cgroup${line.slice(3).trim()}`;
+}
+
+/** One key of `memory.stat`, in MiB, or null when it cannot be read. */
+export function memoryStatMb(dir: string, key: string): number | null {
+  let text: string;
+  try { text = readFileSync(join(dir, 'memory.stat'), 'utf8'); } catch { return null; }
+  for (const line of text.split('\n')) {
+    const [name, value] = line.split(' ');
+    if (name === key && value) return Math.round(Number(value) / 1048576);
+  }
+  return null;
+}
+
+/**
+ * Ask the kernel to take back the page cache of this cgroup, and keep a floor.
+ *
+ * The pages are reclaimable, but they count in `memory.current` and in the
+ * cgroup peak. After a code-intelligence pass over 50 workspaces the watch unit
+ * held 775 MB of file pages, and that page cache was most of a 1.4 GiB peak
+ * while the live heap was small. The write needs no privilege when the user owns
+ * the cgroup. A failure is not an error: the kernel reclaims under pressure
+ * anyway, so this only makes the peak smaller sooner.
+ */
+export function reclaimCgroup(keepFileMb = 64, dir: string | null = cgroupDir()): boolean {
+  if (!dir) return false;
+  const fileMb = memoryStatMb(dir, 'file');
+  if (fileMb === null) return false;
+  const reclaimMb = Math.floor(fileMb - keepFileMb);
+  if (reclaimMb <= 0) return false;
+  try { writeFileSync(join(dir, 'memory.reclaim'), `${reclaimMb}M`); return true; } catch { return false; }
 }

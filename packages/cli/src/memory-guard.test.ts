@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_RSS_MAX_MB, isOverMemoryLimit, memoryLimitMb, releaseMemory } from './memory-guard.js';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DEFAULT_RSS_MAX_MB, cgroupDir, isOverMemoryLimit, memoryLimitMb, memoryStatMb, reclaimCgroup, releaseMemory } from './memory-guard.js';
 
 /**
  * The bound (issue #16).
@@ -102,5 +105,46 @@ describe('releaseMemory', () => {
 
   it('does nothing when the daemon has no --expose-gc', () => {
     expect(releaseMemory(undefined)).toBe(false);
+  });
+});
+
+describe('reclaimCgroup', () => {
+  /** A cgroup directory with a memory.stat and a memory.reclaim file. */
+  function fakeCgroup(fileBytes: number) {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-cgroup-'));
+    writeFileSync(join(dir, 'memory.stat'), `anon ${100 * 1048576}\nfile ${fileBytes}\nkernel 20971520\n`);
+    writeFileSync(join(dir, 'memory.reclaim'), '');
+    return dir;
+  }
+
+  it('takes back the page cache above the floor', () => {
+    const dir = fakeCgroup(775104192);
+    try {
+      expect(memoryStatMb(dir, 'file')).toBe(739);
+      expect(reclaimCgroup(64, dir)).toBe(true);
+      expect(readFileSync(join(dir, 'memory.reclaim'), 'utf8')).toBe('675M');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does nothing when the page cache is under the floor', () => {
+    const dir = fakeCgroup(40 * 1048576);
+    try {
+      expect(reclaimCgroup(64, dir)).toBe(false);
+      expect(readFileSync(join(dir, 'memory.reclaim'), 'utf8')).toBe('');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does nothing when the process has no cgroup', () => {
+    expect(reclaimCgroup(64, null)).toBe(false);
+  });
+
+  it('reads the unified cgroup path from the cgroup file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-cgfile-'));
+    const file = join(dir, 'cgroup');
+    writeFileSync(file, '0::/user.slice/user-1000.slice/app.slice/x.service\n');
+    try {
+      expect(cgroupDir(file)).toBe('/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/x.service');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+    expect(cgroupDir(join(dir, 'absent'))).toBe(null);
   });
 });

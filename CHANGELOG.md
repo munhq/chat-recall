@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.42] — 2026-11-13
+
+### Fixed
+- **The page cache of a pass counted in the cgroup peak, and the daemon now gives it back.** The anon bound of 0.7.41 held (the sampler never passed 520 MB of anon), and the peak still reached 1.4 GiB during the code-intelligence pass: `memory.stat` showed 775 MB of file pages, 197 MB of kernel memory and 189 MB of slab, while the `codeindex` child held 81–140 MB. The page cache is reclaimable, but the kernel counts it in `memory.current` and in the peak. `reclaimCgroup()` writes to the `memory.reclaim` file of the unit's own cgroup when a tick and a pass end, which needs no privilege, and it keeps a floor of 64 MiB of file pages. On this machine the write took the file pages from 775 MB to 361 MB.
+
 ## [0.7.41] — 2026-11-13
 
 ### Fixed
