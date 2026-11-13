@@ -37,6 +37,12 @@ import {
 const STATE_TTL_MS = 7 * 24 * 3600_000;
 /** One long-poll; the server holds it for at most 25 s. */
 const WAIT_SECS = 25;
+/** The unit of the wait between two failed requests of the waiter: 1 s, then 2, 4, 8, 16 and 32 units, at most 30 s.
+ *  A test of the waiter sets a short unit through CHAT_RECALL_WAIT_BACKOFF_UNIT_MS. */
+const BACKOFF_UNIT_MS = (() => {
+  const v = Number(process.env.CHAT_RECALL_WAIT_BACKOFF_UNIT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 1000;
+})();
 
 type Target = { base: string; token: string };
 
@@ -284,7 +290,7 @@ async function wait(payload: HookPayload, target: Target, tool: HookTool = 'clau
         failures += 1;
         notFound = r.status === 404 ? notFound + 1 : 0;
         if (notFound >= 5 || failures > 120) return supervised ? 77 : 0;
-        await new Promise((res) => setTimeout(res, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5))));
+        await new Promise((res) => setTimeout(res, Math.min(30_000, BACKOFF_UNIT_MS * 2 ** Math.min(failures, 5))));
         continue;
       }
       failures = 0;

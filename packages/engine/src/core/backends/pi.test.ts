@@ -481,7 +481,9 @@ describe('PiBackend', () => {
     writeFileSync(live, lines('live prompt'));
     writeFileSync(copy, lines('copied prompt'));
     utimesSync(live, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-    utimesSync(copy, new Date(Date.now()), new Date(Date.now()));
+    // The copy is newer than the live file now, and older than the append below. A copy stamped with the
+    // present time tied with the append on a file system whose time has a coarse step.
+    utimesSync(copy, new Date(Date.now() - 30_000), new Date(Date.now() - 30_000));
 
     const backend = new PiBackend();
     const key = backend.listSessions()[0].rawId;

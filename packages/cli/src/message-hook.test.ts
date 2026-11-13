@@ -49,7 +49,7 @@ function runHook(args: string[], payload: unknown): Promise<{ code: number | nul
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn(process.execPath, [HOOK, ...args], {
-      env: { ...process.env, CHAT_RECALL_DATA_DIR: join(root, 'data'), CHAT_RECALL_TOKEN: '', CHAT_RECALL_SERVER: '' },
+      env: { ...process.env, CHAT_RECALL_DATA_DIR: join(root, 'data'), CHAT_RECALL_TOKEN: '', CHAT_RECALL_SERVER: '', CHAT_RECALL_WAIT_BACKOFF_UNIT_MS: '10' },
     });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (c) => { stdout += c; });
@@ -86,7 +86,7 @@ describe.skipIf(!existsSync(HOOK))('message hook, the waiter', () => {
     const r = await runHook(['--wait'], { session_id: SID, hook_event_name: 'Stop' });
     expect(r.code).toBe(0);
     expect(calls.filter((c) => c.path === '/api/live-sessions/wait')).toHaveLength(5);
-  }, 120_000);
+  }, 20_000);
 
   test('supervised: a stopped waiter says why, so a plugin starts it only when it helps', async () => {
     handler = () => ({ status: 200, json: { ended: true, messages: [] } });
