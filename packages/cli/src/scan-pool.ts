@@ -22,6 +22,14 @@
  *    so a pathological session kills one task instead of the daemon — the OOM
  *    that started all of this was exactly a transcript-sized allocation with no
  *    ceiling.
+ *
+ * 4. A WORKER IS RETIRED AFTER ITS TASK. A worker isolate commits the pages it
+ *    touched and never returns them: measured 2026-11-13, the process held
+ *    471 MB of anonymous memory with the pool on and 293 MB with
+ *    CHAT_RECALL_SCAN_WORKERS=0, while a heap snapshot of the main isolate held
+ *    56 MB of objects in total. Terminating the worker returns that memory to
+ *    the operating system, and the next task starts on a fresh worker — a spawn
+ *    takes milliseconds against a scan that does not.
  */
 import { Worker } from 'node:worker_threads';
 import { existsSync } from 'node:fs';
@@ -38,7 +46,18 @@ import type { ScanTask, ScanResult, DerivedTask, DerivedResult } from './scan-wo
  * cgroup. A worker that needs more than 256 MB for one session dies on its
  * limit, and the pool already fails that task and the caller runs it inline.
  */
-const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 256;
+const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 128;
+
+/**
+ * Tasks a worker serves before it is terminated.
+ *
+ * One by default: a worker that scanned a large session keeps that memory for
+ * its whole life (see constraint 4). A larger number trades memory for spawn
+ * time, and the environment can raise it. */
+const MAX_TASKS_PER_WORKER = (() => {
+  const raw = Number(process.env.CHAT_RECALL_SCAN_TASKS_PER_WORKER);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+})();
 
 /**
  * How many workers.
@@ -77,6 +96,10 @@ interface Slot {
   worker: Worker;
   /** Resolver for the task in flight, if any. Either task kind. */
   pending: ((r: ScanResult | DerivedResult) => void) | null;
+  /** Tasks this worker has answered. It is retired at MAX_TASKS_PER_WORKER. */
+  tasks: number;
+  /** True once the pool ended this worker on purpose; its exit is not a death. */
+  retiring: boolean;
 }
 
 export class ScanPool {
@@ -85,22 +108,34 @@ export class ScanPool {
   private nextId = 1;
   private started = false;
   private disabled = false;
-  /** Version of the rule pack each worker has installed, by slot index. */
+  /** Version of the rule pack each worker generation has installed. */
   private packSent = new Map<number, string>();
+  /** Counts worker generations: a fresh worker needs the rule pack again. */
+  private gen = 0;
 
-  constructor(private readonly size = poolSize()) {
+  constructor(private readonly size = poolSize(), private readonly overrideScript?: string) {
     if (this.size < 1) this.disabled = true;
   }
 
   /** True when tasks will actually run on a worker. */
   get enabled(): boolean { return !this.disabled; }
 
+  /** How many workers this pool has started. Tests read it to see a recycle. */
+  get workerGeneration(): number { return this.gen; }
+
   private start(): void {
     if (this.started) return;
     this.started = true;
-    const script = workerScript();
+    if (this.size < 1) { this.disabled = true; return; }
+    for (let i = 0; i < this.size; i++) this.spawnSlot();
+    if (this.slots.length === 0) this.disabled = true;
+  }
+
+  /** Start one worker, or leave the pool disabled when it cannot start. */
+  private spawnSlot(): void {
+    const script = this.overrideScript ?? workerScript();
     if (!script) { this.disabled = true; return; }
-    for (let i = 0; i < this.size; i++) {
+    {
       try {
         const worker = new Worker(script, {
           resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
@@ -112,16 +147,19 @@ export class ScanPool {
           // (resourceLimits), so an empty list is both correct and insulating.
           execArgv: [],
         });
-        const slot: Slot = { worker, pending: null };
+        const slot: Slot = { worker, pending: null, tasks: 0, retiring: false };
+        this.gen += 1;
         worker.on('message', (r: ScanResult) => {
           const resolve = slot.pending;
           slot.pending = null;
           resolve?.(r);
+          this.retireIfDue(slot);
           this.pump();
         });
         // A dead worker must not strand its caller. Fail the task in flight so
         // the caller falls back inline, and retire the slot.
         const die = (err: unknown) => {
+          if (slot.retiring) return;
           const resolve = slot.pending;
           slot.pending = null;
           this.slots = this.slots.filter((s) => s !== slot);
@@ -150,11 +188,27 @@ export class ScanPool {
         this.slots.push(slot);
       } catch { /* one failure is enough to know: fall back inline */ }
     }
-    if (this.slots.length === 0) this.disabled = true;
+  }
+
+  /**
+   * End a worker that has served its tasks, and take the slot out of the pool.
+   *
+   * `terminate()` returns the isolate's committed pages to the operating
+   * system, which is the point of the whole exercise. The exit that follows is
+   * ours, so `die` ignores it. The next task starts a fresh worker, and
+   * `needsPack` then asks the caller for the rule pack again.
+   */
+  private retireIfDue(slot: Slot): void {
+    slot.tasks += 1;
+    if (slot.tasks < MAX_TASKS_PER_WORKER) return;
+    slot.retiring = true;
+    this.slots = this.slots.filter((s) => s !== slot);
+    void slot.worker.terminate().catch(() => undefined);
   }
 
   private pump(): void {
     if (this.queue.length === 0) { this.refIfBusy(); return; }
+    if (!this.disabled && this.slots.length === 0) this.spawnSlot();
     const slot = this.slots.find((s) => s.pending === null);
     if (!slot) { this.refIfBusy(); return; }
     const next = this.queue.shift()!;
@@ -220,17 +274,23 @@ export class ScanPool {
    * than a worker scanning with rules it never got.
    */
   needsPack(version: string): boolean {
-    return this.packSent.get(0) !== version;
+    // A caller asks this before it dispatches, so the pool must be up now: a
+    // worker is only sent a pack it can install.
+    this.start();
+    if (!this.disabled && this.slots.length === 0) this.spawnSlot();
+    return this.packSent.get(this.gen) !== version;
   }
 
   markPackSent(version: string): void {
-    this.packSent.set(0, version);
+    this.packSent.clear();
+    this.packSent.set(this.gen, version);
   }
 
   async close(): Promise<void> {
     const slots = this.slots;
     this.slots = [];
     this.disabled = true;
+    for (const s of slots) s.retiring = true;
     await Promise.all(slots.map((s) => s.worker.terminate().catch(() => undefined)));
   }
 }
