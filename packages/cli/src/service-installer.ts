@@ -176,7 +176,7 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // base64 payloads); V8's default old-space on a big-RAM box is ~4GB and
     // GC only gets aggressive near the ceiling — observed as a multi-GB RSS
     // sawtooth. The ceiling below is measured, not guessed: see WATCH_HEAP_MB.
-    `ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} ${watchJs}`,
+    `ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} --expose-gc ${watchJs}`,
     // ALWAYS: the collector never ends its own work, so any exit systemd did
     // not ask for is a fault. Under on-failure a clean exit left it dead: on
     // 2026-09-16 the unit went "inactive (dead) … status=0/SUCCESS" and stayed
@@ -242,7 +242,7 @@ export function renderLaunchdPlist(watchJs: string, node: string, logFile: strin
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     `  <key>Label</key><string>${label}</string>`,
-    `  <key>ProgramArguments</key><array><string>${node}</string><string>--max-old-space-size=${WATCH_HEAP_MB}</string><string>${watchJs}</string></array>`,
+    `  <key>ProgramArguments</key><array><string>${node}</string><string>--max-old-space-size=${WATCH_HEAP_MB}</string><string>--expose-gc</string><string>${watchJs}</string></array>`,
     '  <key>RunAtLoad</key><true/>',
     '  <key>KeepAlive</key><true/>',
     `  <key>StandardOutPath</key><string>${logFile}</string>`,

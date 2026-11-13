@@ -1818,7 +1818,10 @@ const refs = listAvailableBackends().flatMap((b) => {
     try {
       await reconcileFieldsForTarget(
         cred,
-        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({ previews: false }); } catch { return []; } }),
+        // Reuse the listing this sync already made. A second full listing of
+        // every backend cost about 100 MB of committed heap on every tick
+        // (issue #16).
+        () => refs,
         { convRefs: slice },
       );
     } catch (e) {

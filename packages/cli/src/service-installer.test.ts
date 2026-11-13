@@ -8,7 +8,9 @@ describe('service-installer renders', () => {
 
   test('systemd unit interpolates ExecStart + log paths (no literal ${...})', () => {
     const unit = renderSystemdUnit(watchJs, node, logFile);
-    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} ${watchJs}`);
+    // --expose-gc lets the daemon return the pages of a finished unit of work
+    // (issue #16). The heap bound alone does not bound the cgroup peak.
+    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} --expose-gc ${watchJs}`);
     // JOURNAL, not append:. A file redirected by systemd cannot be rotated by
     // anyone — systemd holds the fd, so the daemon renaming or truncating it
     // leaves systemd writing into a hole. It reached 45 MB on the maintainer's
