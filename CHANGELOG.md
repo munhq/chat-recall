@@ -2,12 +2,16 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.47] — 2026-11-13
+
+### Fixed
+- The collector returns the page cache of its cgroup every 30 s when the file pages pass 128 MB. Report 14:57:24 showed a 50 MB heap and 537 MB of rss while `memory.current` held 1.66 GB of file pages. `shouldReclaim` in `packages/cli/src/memory-guard.ts` makes the decision, and the resident tick in `packages/cli/auto-indexer/indexer.ts` runs it.
+- The scan worker holds 256 MB of heap, not 768 MB. The watch unit reached 1.6 GiB of peak (`maxRss`) while the main isolate held 50 MB. A task that needs more dies on its limit, and the pool falls back to the inline path.
+
 ## [0.7.46] — 2026-11-13
 
 ### Fixed
 - **The sync walk paused before its first session, so the daemon used up to a full core and shipped nothing through the walk.** Measured on 2026-11-13 on 0.7.44: the idle daemon held 535 to 580 MB, the bound was 512 MB, and the check ran before the first session of each walk. The journal repeated `walk paused at the memory bound (used=584MB) after 1 of 15 session(s)` every 13 seconds, and the process used 73 to 98 percent of a core on the listing, the garbage collection and the cgroup reclaim of each tick. A pass now measures the memory that it adds above its starting size (`CHAT_RECALL_WATCH_GROWTH_MAX_MB`, default 256) and stops at the absolute bound (`CHAT_RECALL_WATCH_RSS_MAX_MB`, default 896, below the unit's `MemoryHigh=1G`). Each pass builds at least one session or workspace before it can pause. The code-intelligence pass uses the same budget.
-- The collector returns the page cache of its cgroup every 30 s when the file pages pass 128 MB. Report 14:57:24 showed a 50 MB heap and 537 MB of rss while `memory.current` held 1.66 GB of file pages. `shouldReclaim` in `packages/cli/src/memory-guard.ts` makes the decision, and the resident tick in `packages/cli/auto-indexer/indexer.ts` runs it.
-- The scan worker holds 256 MB of heap, not 768 MB. The watch unit reached 1.6 GiB of peak (`maxRss`) while the main isolate held 50 MB. A task that needs more dies on its limit, and the pool falls back to the inline path.
 
 ## [0.7.45] — 2026-11-13
 
