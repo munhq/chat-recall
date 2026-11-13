@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_RSS_MAX_MB, cgroupDir, isOverMemoryLimit, memoryLimitMb, memoryStatMb, reclaimCgroup, releaseMemory } from './memory-guard.js';
+import { DEFAULT_RSS_MAX_MB, cgroupCurrentMb, cgroupDir, isOverMemoryLimit, memoryLimitMb, memoryStatMb, reclaimCgroup, releaseMemory, usedMb } from './memory-guard.js';
 
 /**
  * The bound (issue #16).
@@ -105,6 +105,29 @@ describe('releaseMemory', () => {
 
   it('does nothing when the daemon has no --expose-gc', () => {
     expect(releaseMemory(undefined)).toBe(false);
+  });
+});
+
+describe('usedMb', () => {
+  it('takes the cgroup when the cgroup holds more than the daemon', () => {
+    expect(usedMb(300, 1405)).toBe(1405);
+  });
+
+  it('takes the daemon when the daemon holds more', () => {
+    expect(usedMb(600, 200)).toBe(600);
+  });
+
+  it('takes the daemon when there is no cgroup', () => {
+    expect(usedMb(300, null)).toBe(300);
+  });
+
+  it('reads memory.current of the cgroup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-current-'));
+    writeFileSync(join(dir, 'memory.current'), '1473245184\n');
+    try {
+      expect(cgroupCurrentMb(dir)).toBe(1405);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+    expect(cgroupCurrentMb(null)).toBe(null);
   });
 });
 

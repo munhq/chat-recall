@@ -99,3 +99,25 @@ export function reclaimCgroup(keepFileMb = 64, dir: string | null = cgroupDir())
   if (reclaimMb <= 0) return false;
   try { writeFileSync(join(dir, 'memory.reclaim'), `${reclaimMb}M`); return true; } catch { return false; }
 }
+
+/** `memory.current` of the cgroup in MiB, or null when it cannot be read. */
+export function cgroupCurrentMb(dir: string | null = cgroupDir()): number | null {
+  if (!dir) return null;
+  try {
+    const n = Number(readFileSync(join(dir, 'memory.current'), 'utf8').trim());
+    return Number.isFinite(n) ? Math.round(n / 1048576) : null;
+  } catch { return null; }
+}
+
+/**
+ * The memory this daemon holds, in MiB, as the bound must see it.
+ *
+ * `process.memoryUsage().rss` sees only the daemon's own pages. A code pass
+ * spawns the `codeindex` child in the same cgroup and reads whole workspaces,
+ * so the file pages and the child's pages count in the cgroup peak but not in
+ * the rss. This returns the larger of the two, so the pass pauses on the number
+ * the unit is killed for.
+ */
+export function usedMb(rss = rssMb(), cgroup = cgroupCurrentMb()): number {
+  return cgroup !== null && cgroup > rss ? cgroup : rss;
+}

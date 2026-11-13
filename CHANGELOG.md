@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.43] — 2026-11-13
+
+### Fixed
+- **The bound saw only the daemon's own pages, and the pass ran on while the unit held 1.4 GiB.** `process.memoryUsage().rss` excludes the `codeindex` child and the file pages of the workspaces the pass reads, so the pass kept starting workspaces while `memory.current` of the cgroup was 1.4 GiB. `usedMb()` now returns the larger of the daemon's rss and the cgroup's `memory.current`, and the pass pauses on that number. The pass also takes back the file pages of each finished workspace, so the peak of a pass is one workspace above the floor.
+
 ## [0.7.42] — 2026-11-13
 
 ### Fixed

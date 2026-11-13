@@ -49,7 +49,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, rssMb } from '../src/memory-guard.js';
+import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, rssMb, usedMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -969,13 +969,14 @@ async function codeIndexTick(): Promise<void> {
       // reached 1.5 GiB and this pass was the largest single source of it. The
       // work is not lost: the cursor records completions, so the next pass
       // continues with the workspaces that wait.
-      const rss = rssMb();
-      if (isOverMemoryLimit(rss, rssLimit)) {
+      const used = usedMb(rssMb());
+      if (isOverMemoryLimit(used, rssLimit)) {
         // Return the pages before the pass pauses. Without this the daemon sat at
         // the bound for the rest of the run, because V8 keeps committed pages it
         // got back from a full heap.
         releaseMemory();
-        daemonLog.info(`code intelligence: paused at the memory bound (rss=${rss}MB ≥ ${rssLimit}MB) — ${workspaces.length - ok - unchanged} workspace(s) wait for the next pass`);
+        reclaimCgroup();
+        daemonLog.info(`code intelligence: paused at the memory bound (used=${used}MB ≥ ${rssLimit}MB) — ${workspaces.length - ok - unchanged} workspace(s) wait for the next pass`);
         break;
       }
       // A workspace whose code did not change since its last completed scan
@@ -1004,6 +1005,7 @@ async function codeIndexTick(): Promise<void> {
       noteIndexed(ws, Date.now(), fp);
       ok++;
       releaseMemory();   // return this workspace's pages before the next one starts
+      reclaimCgroup();   // and take back the file pages the workspace read
     }
     if (ok > 0 || unchanged > 0) daemonLog.info(`code intelligence: indexed ${ok}/${workspaces.length} workspace(s), ${unchanged} unchanged`);
     // The file pages of the pass are most of its cgroup peak.
