@@ -17,6 +17,26 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { opencodeDbPath, opencodeDbPaths } from '../tool-paths.js';
 
+/**
+ * Byte budget for one `exportRawSession` dump.
+ *
+ * A part row holds a full tool output, and the dump keeps every row buffer plus
+ * the final concatenation, so an unbounded dump holds the session twice. A
+ * session with large parts took the watch process to 1.5 GiB of anonymous
+ * memory for 20 s while the rest of the walk stayed under 500 MB. Past the
+ * budget the dump keeps the rows that fit and appends a `truncated` marker, so
+ * a reader knows the dump is short instead of reading a cut line.
+ *
+ * Override with CHAT_RECALL_OPENCODE_DUMP_MAX_BYTES.
+ */
+export const DEFAULT_DUMP_MAX_BYTES = 64 * 1024 * 1024;
+
+export function dumpMaxBytes(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.CHAT_RECALL_OPENCODE_DUMP_MAX_BYTES;
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_DUMP_MAX_BYTES;
+}
+
 // OpenCode keeps its sessions in its own SQLite file, so indexing it means
 // reading that file. That read is the ONLY reason this project touches SQLite
 // at all — every one of chat-recall's own stores is Postgres.
@@ -561,9 +581,21 @@ export class OpencodeBackend implements ToolBackend {
       // live copies, and a walk capped at a 384 MB V8 heap reached 1.6 GiB RSS
       // on it — the container half of the memory came from here. Iterating and
       // encoding per row holds the row buffers plus the final buffer.
+      // The dump also stays inside a byte budget: rows past it are skipped and
+      // one `truncated` line says how many, so memory stays bounded whatever
+      // size the session grew to.
+      const budget = dumpMaxBytes();
       const chunks: Buffer[] = [Buffer.from(`${JSON.stringify({ kind: 'session', row: session })}\n`, 'utf-8')];
+      let used = chunks[0].length;
+      let skipped = 0;
       for (const r of rows.iterate(realId, realId)) {
-        chunks.push(Buffer.from(`${JSON.stringify({ kind: 'part', row: r })}\n`, 'utf-8'));
+        const encoded = Buffer.from(`${JSON.stringify({ kind: 'part', row: r })}\n`, 'utf-8');
+        if (used + encoded.length > budget) { skipped++; continue; }
+        used += encoded.length;
+        chunks.push(encoded);
+      }
+      if (skipped > 0) {
+        chunks.push(Buffer.from(`${JSON.stringify({ kind: 'truncated', skipped_rows: skipped, limit_bytes: budget })}\n`, 'utf-8'));
       }
       const mtime = (session as any).time_updated || (session as any).time_created || Date.now();
       return {
