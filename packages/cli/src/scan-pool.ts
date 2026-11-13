@@ -29,8 +29,16 @@ import { fileURLToPath } from 'node:url';
 import { cpus } from 'node:os';
 import type { ScanTask, ScanResult, DerivedTask, DerivedResult } from './scan-worker.js';
 
-/** Per-worker heap ceiling. One session's text plus its gzip, with headroom. */
-const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 768;
+/**
+ * Per-worker heap ceiling. One session's text plus its gzip, with headroom.
+ *
+ * Measured on 2026-11-13: with the ceiling at 768 MB the watch unit reached
+ * 1.6 GiB of peak while the main isolate held 50 MB of heap and 537 MB of rss
+ * (report 14:57:24), and the scan worker was the only other isolate in the
+ * cgroup. A worker that needs more than 256 MB for one session dies on its
+ * limit, and the pool already fails that task and the caller runs it inline.
+ */
+const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 256;
 
 /**
  * How many workers.
