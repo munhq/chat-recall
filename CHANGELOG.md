@@ -1,3 +1,8 @@
+## [0.7.45] — 2026-11-13
+
+### Fixed
+- **One OpenCode session build held 1.5 GiB of anonymous memory for 20 s.** Measured on 2026-11-13 at 12:11: the build of one OpenCode session (a dump of its rows from a 1.09 GB SQLite file) raised anon from 473 MB to 1533 MB and back to 497 MB RSS, while the rest of the walk stayed under 512 MB. `exportRawSession` now stays inside `DEFAULT_DUMP_MAX_BYTES` (64 MiB): rows past the budget are skipped and one `truncated` line says how many, so the dump is short in a way a reader can see. `CHAT_RECALL_OPENCODE_DUMP_MAX_BYTES` overrides the budget.
+
 # Changelog
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
