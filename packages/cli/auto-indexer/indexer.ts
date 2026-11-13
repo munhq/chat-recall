@@ -181,6 +181,10 @@ async function shipToServer(trigger: string): Promise<void> {
     for (const server of syncTargetUrls()) noteSyncOutcome(server, false, msg);
   } finally {
     syncInFlight = false;
+    // A walk of 12,219 refs churns about 400 MB of buffers that V8 keeps
+    // committed. Return the pages when the tick ends, so the next tick starts
+    // from the live set and not from the last tick's high-water mark.
+    releaseMemory();
   }
 }
 
@@ -965,6 +969,10 @@ async function codeIndexTick(): Promise<void> {
       // continues with the workspaces that wait.
       const rss = rssMb();
       if (isOverMemoryLimit(rss, rssLimit)) {
+        // Return the pages before the pass pauses. Without this the daemon sat at
+        // the bound for the rest of the run, because V8 keeps committed pages it
+        // got back from a full heap.
+        releaseMemory();
         daemonLog.info(`code intelligence: paused at the memory bound (rss=${rss}MB ≥ ${rssLimit}MB) — ${workspaces.length - ok - unchanged} workspace(s) wait for the next pass`);
         break;
       }
