@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parentGone, pidAlive, watchParent, type ParentProbe } from './session-exit.js';
 
@@ -68,11 +71,15 @@ describe.runIf(posix)('a real orphaned stdio process', () => {
   it('exits after its parent dies, while another process still holds its stdin open', async () => {
     const exitPath = fileURLToPath(new URL('./session-exit.ts', import.meta.url));
     const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const goneFile = join(tmpdir(), `chat-recall-orphan-${process.pid}-${Date.now()}.gone`);
     // The MCP server of the machine: waits on stdin forever, and can leave only
     // through the parent watch.
     const childSrc = [
+      `import { writeFileSync } from 'node:fs';`,
       `import { watchParent } from ${JSON.stringify(exitPath)};`,
-      `watchParent(() => process.exit(0), { intervalMs: 50 });`,
+      // The parent holds the only pipe to this process, so the child reports
+      // the loss of its parent in a file that outlives the pipe.
+      `watchParent(() => { writeFileSync(${JSON.stringify(goneFile)}, 'gone'); process.exit(0); }, { intervalMs: 50 });`,
       `process.stdin.resume();`,
       `process.stdin.on('end', () => process.stderr.write('child-saw-eof\\n'));`,
       `process.stderr.write('watching\\n');`,
@@ -105,10 +112,20 @@ describe.runIf(posix)('a real orphaned stdio process', () => {
         await new Promise<void>((r) => parent.once('exit', () => r()));
       }
       expect(pidAlive(holderPid)).toBe(true);
-      await until(() => !pidAlive(childPid), 30_000);
+      await until(() => existsSync(goneFile) || !pidAlive(childPid), 30_000);
+      // The child leaves the watch and then exits. A machine whose init does
+      // not reap an orphan keeps it as a zombie, and kill(pid, 0) answers for
+      // a zombie, so the file says the child left and the pid does not.
+      expect(existsSync(goneFile)).toBe(true);
+      if (pidAlive(childPid)) {
+        let state = 'unknown';
+        try { state = readFileSync(`/proc/${childPid}/stat`, 'utf8').split(') ')[1][0]; } catch { /* no /proc */ }
+        console.error(`orphan ${childPid} left the watch and still answers kill(0); /proc state ${state}`);
+      }
       expect(err).not.toContain('child-saw-eof');
     } finally {
       try { process.kill(holderPid); } catch { /* already gone */ }
+      try { rmSync(goneFile, { force: true }); } catch { /* not written */ }
     }
   }, 180_000);
 });
