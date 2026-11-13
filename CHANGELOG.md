@@ -2,6 +2,12 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.40] — 2026-11-13
+
+### Fixed
+- **The memory of the collector has a bound, and the pass stops at it.** The 0.7.39 cap bounded the V8 heap and the cgroup peak still reached 1.5 GiB in six minutes on a corpus of 12,219 sessions. A heap snapshot at 415 MB of resident memory held 55 MB of live objects, so no object held the memory: the pages came from churn. The code-intelligence pass now stops at `CHAT_RECALL_WATCH_RSS_MAX_MB` (512 MiB by default) and the next tick continues with the workspaces that wait, because the cursor records completions only. The daemon returns the pages of each finished workspace, and the unit starts it with `--expose-gc` for that.
+- **One full listing of the sessions cost about 100 MB, and the daemon made two or three of them on every sync tick.** Three listings of 12,219 refs took the resident size from 65 MB to 294 MB, and two garbage collections left 247 MB. The field reconcile now reuses the listing the walk already made.
+
 ## [0.7.39] — 2026-11-12
 
 ### Fixed
