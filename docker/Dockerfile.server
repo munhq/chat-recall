@@ -12,22 +12,37 @@
 # is never a layer and no user builds against the private packages: a self-host
 # user pulls the published image.
 
-# ── Stage 0: compile the engine's shared modules ──────────────────────────────
-# The client imports the shared secret classifier from @chat-recall/engine
-# (single source of truth with the server). Build the engine's dist here so the
-# isolated client stage can resolve that subpath exactly like the dev tree does
-# (via node_modules/@chat-recall/engine), with no barrel/Node deps pulled in.
-FROM node:24-bookworm-slim AS enginebuild
+# ── Stage 0: the dependencies, installed once ────────────────────────────────
+# Every stage below starts from this one, so the install runs once for the image and its layer depends only on the
+# package files and the lock file. The token is a BuildKit secret, so it is never a layer and never in the image.
+# Every @munhq package must be present, or the build stops here: npm would otherwise skip one that it cannot fetch,
+# and the image would run with no redirect guard or no mail.
+FROM node:24-bookworm-slim AS deps
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
+COPY package.json package-lock.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
 COPY .npmrc ./
 RUN --mount=type=cache,target=/root/.npm \
     --mount=type=secret,id=npmtoken \
-    NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" npm ci
+    NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" npm ci && \
+    for p in @munhq/mailkit @munhq/product-kit @munhq/auth @munhq/mcp-kit; do \
+      { [ -f "packages/server/node_modules/$p/package.json" ] || [ -f "node_modules/$p/package.json" ]; } \
+        || { echo "$p is not installed: check the npm token and the package's access"; exit 1; }; \
+    done
+
+# The production dependencies: the install without the dev dependencies. Native modules were compiled in the stage
+# `deps` with the toolchain present; copying them keeps the runtime image free of python3, make and g++.
+FROM deps AS proddeps
+RUN npm prune --omit=dev
+
+# ── Stage 1a: compile the engine ─────────────────────────────────────────────
+# The client imports the shared secret classifier from @chat-recall/engine (single source of truth with the server).
+# The engine dist is built here once, and the client, the server and the CLI start from it.
+FROM deps AS engine
+COPY tsconfig.base.json tsconfig.json ./
 COPY packages/engine/ ./packages/engine/
 RUN npx tsc -b packages/engine
 
@@ -39,8 +54,8 @@ RUN --mount=type=cache,target=/root/.npm npm ci || npm install
 COPY packages/server/client/ ./
 # Provide the compiled engine as a resolvable package so Vite bundles the shared
 # classifier (only the pure subpath is imported — no engine barrel).
-COPY --from=enginebuild /app/packages/engine/package.json ./node_modules/@chat-recall/engine/package.json
-COPY --from=enginebuild /app/packages/engine/dist ./node_modules/@chat-recall/engine/dist
+COPY --from=engine /app/packages/engine/package.json ./node_modules/@chat-recall/engine/package.json
+COPY --from=engine /app/packages/engine/dist ./node_modules/@chat-recall/engine/dist
 # Vite bakes these at build time. Unset (compose default) → same-origin /api,
 # no external auth. The SaaS build sets VITE_CLOUD=1: the client renders the
 # landing + embedded better-auth login (services/auth.ts).
@@ -60,67 +75,47 @@ ENV VITE_GLITCHTIP_DSN=$VITE_GLITCHTIP_DSN
 RUN --mount=type=secret,id=glitchtipdsn,required=false \
     VITE_GLITCHTIP_DSN="${VITE_GLITCHTIP_DSN:-$(cat /run/secrets/glitchtipdsn 2>/dev/null || true)}" npm run build
 
-# ── Stage 2: compile the TypeScript workspaces ────────────────────────────────
-FROM node:24-bookworm-slim AS build
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
-COPY packages/engine/package.json ./packages/engine/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/server/package.json ./packages/server/
-COPY .npmrc ./
-# The token is a BuildKit secret, so it is never a layer and never in the image.
-# Every @munhq package must be present, or the build stops here: npm would
-# otherwise skip one that it cannot fetch, and the image would run with no
-# redirect guard or no mail.
-RUN --mount=type=cache,target=/root/.npm \
-    --mount=type=secret,id=npmtoken \
-    NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" npm ci && \
-    for p in @munhq/mailkit @munhq/product-kit @munhq/auth @munhq/mcp-kit; do \
-      { [ -f "packages/server/node_modules/$p/package.json" ] || [ -f "node_modules/$p/package.json" ]; } \
-        || { echo "$p is not installed: check the npm token and the package's access"; exit 1; }; \
-    done
-COPY packages/engine/ ./packages/engine/
+# ── Stage 2: compile the server, and build and pack the CLI ──────────────────
+# The two stages share only the engine, so BuildKit builds them at the same time, and a change of the server does not
+# build the CLI again.
+FROM engine AS servertsc
 COPY packages/server/ ./packages/server/
+RUN npx tsc -b packages/server
+
+# The tarball is served by this same server at /install/chat-recall.tgz (routes/install.ts), so every deployment hands
+# out a CLI that exactly matches its own version, with no npm-registry publish in the loop.
+FROM engine AS clipack
 COPY packages/cli/ ./packages/cli/
-# The CLI's `prepack` copies this into packages/cli, because npm reads a readme
-# only from the package directory it publishes. `npm pack` below therefore FAILS
-# without it — and the tarball this server hands out should carry the same readme
-# the registry does, so the fix is to ship the file, not to soften the copy.
+# The CLI's `prepack` copies this into packages/cli, because npm reads a readme only from the package directory it
+# publishes. `npm pack` therefore FAILS without it, and the tarball this server hands out should carry the same
+# readme the registry does, so the fix is to ship the file, not to soften the copy.
 COPY README.md ./
-# Build server + engine, then build AND `npm pack` the CLI: the tarball is
-# served by this same server at /install/chat-recall.tgz (routes/install.ts),
-# so every deployment hands out a CLI that exactly matches its own version —
-# no npm-registry publish in the loop. Pack BEFORE prune (the CLI build needs
-# devDeps: tsc + esbuild).
-RUN npx tsc -b packages/engine packages/server \
-    && npm run build --workspace=chat-recall \
+RUN npm run build --workspace=chat-recall \
     && npm pack --workspace=chat-recall --pack-destination /app \
     && mv /app/chat-recall-*.tgz /app/chat-recall.tgz \
-    && node -p "require('./packages/cli/package.json').version" > /app/cli-version.txt \
-    && npm prune --omit=dev
+    && node -p "require('./packages/cli/package.json').version" > /app/cli-version.txt
 
 # ── Stage 3: runtime ──────────────────────────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-# Production node_modules only (native modules were compiled in stage 2's
-# npm ci with the toolchain present; copying them over keeps the runtime
+# Production node_modules only (native modules were compiled in the stage `deps`
+# with the toolchain present; copying them over keeps the runtime
 # image free of python3/make/g++).
 COPY package.json package-lock.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/server/package.json ./packages/server/
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=proddeps /app/node_modules ./node_modules
 # npm nests non-hoistable deps under the workspace (better-auth lives at
 # packages/server/node_modules — a peer-version clash keeps it out of the
 # root). Copying only the root node_modules shipped an image that crashed
 # with ERR_MODULE_NOT_FOUND at boot.
-COPY --from=build /app/packages/server/node_modules ./packages/server/node_modules
+COPY --from=proddeps /app/packages/server/node_modules ./packages/server/node_modules
 
 # Compiled JS + the engine workspace the server resolves via the symlink.
-COPY --from=build /app/packages/engine/dist ./packages/engine/dist
-COPY --from=build /app/packages/server/dist ./packages/server/dist
+COPY --from=engine /app/packages/engine/dist ./packages/engine/dist
+COPY --from=servertsc /app/packages/server/dist ./packages/server/dist
 
 # The built SPA, served same-origin from STATIC_DIR.
 COPY --from=client /client/dist ./client
@@ -138,8 +133,8 @@ COPY packages/server/scripts/import-keycloak-users.mjs ./packages/server/scripts
 # The packed CLI, served at /install/chat-recall.tgz (see routes/install.ts).
 # cli-version.txt lets /api/capabilities advertise the packed CLI version so
 # installed clients can self-update (util/cli-release.ts).
-COPY --from=build /app/chat-recall.tgz ./install/chat-recall.tgz
-COPY --from=build /app/cli-version.txt ./install/cli-version.txt
+COPY --from=clipack /app/chat-recall.tgz ./install/chat-recall.tgz
+COPY --from=clipack /app/cli-version.txt ./install/cli-version.txt
 
 # Build stamp for /health's `build` field — answers "did the deploy actually
 # roll?" without any CI plumbing. GIT_SHA is optional (CI can pass it); the
@@ -157,6 +152,14 @@ ENV CHAT_RECALL_DATA_DIR=/data
 ENV STATIC_DIR=/app/client
 
 CMD ["node", "packages/server/dist/server.js"]
+
+# ── The reference data of the docs: every MCP tool and every CLI command ──────
+# scripts/dump-reference.mjs reads packages/engine/dist and packages/cli/dist, and runs the CLI with `--help`.
+FROM proddeps AS reference
+COPY --from=engine /app/packages/engine/ ./packages/engine/
+COPY --from=clipack /app/packages/cli/ ./packages/cli/
+COPY scripts/dump-reference.mjs ./scripts/dump-reference.mjs
+RUN mkdir -p /out && node scripts/dump-reference.mjs /out/reference.json
 
 # ── chatrecall.dev: the site and the docs on top of the server ────────────────
 # Built by desk (.desk/config.json, image `cloud`, target cloud), with the
@@ -181,7 +184,17 @@ RUN --mount=type=cache,target=/root/.npm \
     export NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken)" && \
     (cd site-src && npm ci --no-audit --no-fund) && \
     (cd site-src/docs-site && npm ci --no-audit --no-fund)
-COPY packages/ ./product/packages/
+# The gates read only these files of the product: the fonts and the two style sheets of the client, the version of the
+# CLI, and the six sources that check-parity.mjs reads. Any other change of packages/ leaves every step below as a
+# cache hit, so a change of the server does not run the Chromium of the social cards again.
+COPY packages/server/client/public/fonts/ ./product/packages/server/client/public/fonts/
+COPY packages/server/client/src/index.css packages/server/client/src/fonts.css ./product/packages/server/client/src/
+COPY packages/cli/package.json ./product/packages/cli/package.json
+COPY packages/cli/src/mcp.ts ./product/packages/cli/src/mcp.ts
+COPY packages/engine/src/mcp/tools.ts ./product/packages/engine/src/mcp/tools.ts
+COPY packages/engine/src/core/live-session-scan.ts ./product/packages/engine/src/core/live-session-scan.ts
+COPY packages/server/src/util/entitlements.ts packages/server/src/util/billing.ts ./product/packages/server/src/util/
+COPY packages/server/src/routes/licence.ts ./product/packages/server/src/routes/licence.ts
 ARG OPENAI_APPS_CHALLENGE=""
 RUN --mount=type=secret,id=privatenames \
     CHAT_RECALL_PRIVATE_NAMES="$(cat /run/secrets/privatenames)" \
@@ -193,11 +206,10 @@ RUN node web-standards/bin/seo-audit.mjs --dist overlay/site --config site-src/s
 RUN node site-src/check-parity.mjs product
 RUN node site-src/check-links.mjs --dist overlay/site
 RUN cd site-src && CHROME=chromium-nosandbox CLIENT_DIR=/w/product/packages/server/client node render-cards.mjs --check
-# The MCP tool and CLI references of the docs come from the built server and
-# CLI of the build stage, so they name what this image ships.
-COPY --from=build /app/ /w/built/
-COPY scripts/dump-reference.mjs /w/built/scripts/
-RUN cd /w/built && node scripts/dump-reference.mjs /w/product/reference.json
+# The MCP tool and CLI references of the docs come from the built engine and CLI, so they name what this image ships.
+# The stage `reference` hands over one small file: the docs build below is a cache hit while the references are the
+# same text, whatever else changed in the code.
+COPY --from=reference /out/reference.json /w/product/reference.json
 RUN cd site-src/docs-site && PRODUCT_DIR=/w/product npm run build && \
     cp -r build /w/overlay/site/docs && test -s /w/overlay/site/docs/index.html
 
