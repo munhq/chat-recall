@@ -49,7 +49,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
+import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, hardMaxMb, shouldRestartForMemory, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -1028,6 +1028,9 @@ if (CODE_INDEX_ON) {
 // 30 s returns whatever sits above DEFAULT_RECLAIM_FILE_MB, so the peak tracks
 // the live heap. Report 14:57:24 showed 50 MB of heap and 537 MB of rss while
 // `memory.current` held 1.66 GB.
+const STARTED_AT = Date.now();
+let overBoundTicks = 0;
+
 function residentTick(): void {
   const dir = cgroupDir();
   const fileMb = dir ? memoryStatMb(dir, 'file') : null;
@@ -1036,8 +1039,18 @@ function residentTick(): void {
     daemonLog.info(`resident: returned the page cache above ${DEFAULT_RECLAIM_FILE_MB}MB (file=${fileMb}MB)`);
   }
   releaseMemory();
+  // The hard bound (issue #16). `memory.reclaim` returns file pages only; the
+  // anonymous memory of a long-lived isolate stays, so two ticks above the bound
+  // in a row end this process and the unit starts a clean one.
+  const used = usedMb(rssMb());
+  const maxMb = hardMaxMb();
+  overBoundTicks = used > maxMb ? overBoundTicks + 1 : 0;
+  if (shouldRestartForMemory(used, maxMb, overBoundTicks, Date.now() - STARTED_AT)) {
+    daemonLog.info(`resident: memory at ${used}MB stays above the ${maxMb}MB hard bound — exiting for a clean start`);
+    process.exit(0);
+  }
 }
-setInterval(residentTick, 30_000).unref();
+setInterval(residentTick, 10_000).unref();
 setTimeout(residentTick, 45_000);
 
 // ── CLI self-update: keep the daemon current with the logged-in server ──────
