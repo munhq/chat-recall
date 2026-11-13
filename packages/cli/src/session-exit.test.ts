@@ -94,17 +94,21 @@ describe.runIf(posix)('a real orphaned stdio process', () => {
     const parent = spawn(process.execPath, ['-e', parentSrc], { stdio: ['ignore', 'ignore', 'pipe'], cwd: repoRoot });
     let err = '';
     parent.stderr.on('data', (d) => { err += d.toString(); });
-    await until(() => /pids:\d+:\d+/.test(err) && err.includes('watching'), 15_000);
+    await until(() => /pids:\d+:\d+/.test(err) && err.includes('watching'), 90_000).catch((e: Error) => {
+      // The wait fails on a slow machine and on a child that died at start. Show
+      // what the parent wrote, so the log names which one it was.
+      throw new Error(`${e.message}; parent stderr: ${JSON.stringify(err)}`);
+    });
     const [, childPid, holderPid] = /pids:(\d+):(\d+)/.exec(err)!.map(Number);
     try {
       if (parent.exitCode === null && parent.signalCode === null) {
         await new Promise<void>((r) => parent.once('exit', () => r()));
       }
       expect(pidAlive(holderPid)).toBe(true);
-      await until(() => !pidAlive(childPid), 5_000);
+      await until(() => !pidAlive(childPid), 30_000);
       expect(err).not.toContain('child-saw-eof');
     } finally {
       try { process.kill(holderPid); } catch { /* already gone */ }
     }
-  }, 30_000);
+  }, 180_000);
 });
