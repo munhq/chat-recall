@@ -1,11 +1,16 @@
+# Changelog
+
+All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
+
+## [0.7.46] — 2026-11-13
+
+### Fixed
+- **The sync walk paused before its first session, so the daemon used up to a full core and shipped nothing through the walk.** Measured on 2026-11-13 on 0.7.44: the idle daemon held 535 to 580 MB, the bound was 512 MB, and the check ran before the first session of each walk. The journal repeated `walk paused at the memory bound (used=584MB) after 1 of 15 session(s)` every 13 seconds, and the process used 73 to 98 percent of a core on the listing, the garbage collection and the cgroup reclaim of each tick. A pass now measures the memory that it adds above its starting size (`CHAT_RECALL_WATCH_GROWTH_MAX_MB`, default 256) and stops at the absolute bound (`CHAT_RECALL_WATCH_RSS_MAX_MB`, default 896, below the unit's `MemoryHigh=1G`). Each pass builds at least one session or workspace before it can pause. The code-intelligence pass uses the same budget.
+
 ## [0.7.45] — 2026-11-13
 
 ### Fixed
 - **One OpenCode session build held 1.5 GiB of anonymous memory for 20 s.** Measured on 2026-11-13 at 12:11: the build of one OpenCode session (a dump of its rows from a 1.09 GB SQLite file) raised anon from 473 MB to 1533 MB and back to 497 MB RSS, while the rest of the walk stayed under 512 MB. `exportRawSession` now stays inside `DEFAULT_DUMP_MAX_BYTES` (64 MiB): rows past the budget are skipped and one `truncated` line says how many, so the dump is short in a way a reader can see. `CHAT_RECALL_OPENCODE_DUMP_MAX_BYTES` overrides the budget.
-
-# Changelog
-
-All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
 ## [0.7.44] — 2026-11-13
 

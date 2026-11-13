@@ -27,8 +27,14 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Resident-size bound of the daemon, in MiB. */
-export const DEFAULT_RSS_MAX_MB = 512;
+/**
+ * Absolute bound of the daemon, in MiB. The systemd unit throttles at
+ * MemoryHigh=1G, so a pass stops before the cgroup reaches it.
+ */
+export const DEFAULT_RSS_MAX_MB = 896;
+
+/** Memory that one pass may add above the size it started at, in MiB. */
+export const DEFAULT_GROWTH_MAX_MB = 256;
 
 /** Resident size of this process, in MiB. */
 export function rssMb(): number {
@@ -41,6 +47,14 @@ export function memoryLimitMb(env: Record<string, string | undefined> = process.
   if (!raw) return DEFAULT_RSS_MAX_MB;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_RSS_MAX_MB;
+}
+
+/** The growth bound of one pass from the environment. A bad or absent value gives the default. */
+export function growthLimitMb(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.CHAT_RECALL_WATCH_GROWTH_MAX_MB;
+  if (!raw) return DEFAULT_GROWTH_MAX_MB;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : DEFAULT_GROWTH_MAX_MB;
 }
 
 /** True when the process is at or above the bound. */
@@ -120,4 +134,39 @@ export function cgroupCurrentMb(dir: string | null = cgroupDir()): number | null
  */
 export function usedMb(rss = rssMb(), cgroup = cgroupCurrentMb()): number {
   return cgroup !== null && cgroup > rss ? cgroup : rss;
+}
+
+/** What one pass may use: the size at its start, the growth it may add, and the absolute bound. */
+export interface MemoryBudget {
+  baselineMb: number;
+  growthMb: number;
+  hardMb: number;
+}
+
+/**
+ * Take the budget of a pass at its start.
+ *
+ * A daemon that idles at 560 MB must still do work. The pass measures what it
+ * ADDS above the size it started at, so the idle size of the daemon does not
+ * decide whether a pass can run. The absolute bound still stops a pass that
+ * starts high and grows.
+ */
+export function startBudget(
+  used: number = usedMb(),
+  env: Record<string, string | undefined> = process.env,
+): MemoryBudget {
+  return { baselineMb: used, growthMb: growthLimitMb(env), hardMb: memoryLimitMb(env) };
+}
+
+/**
+ * True when a pass must pause before its next unit of work.
+ *
+ * `unitsDone` is the number of sessions or workspaces the pass has built so far.
+ * A pass builds at least one unit: a pass that pauses before its first unit does
+ * no work, and the next tick meets the same size and pauses again, so the work
+ * never advances and every tick pays for the listing and the release.
+ */
+export function shouldPause(used: number, budget: MemoryBudget, unitsDone: number): boolean {
+  if (unitsDone <= 0) return false;
+  return used >= budget.hardMb || used - budget.baselineMb >= budget.growthMb;
 }

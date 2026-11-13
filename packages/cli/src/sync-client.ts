@@ -31,7 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
-import { isOverMemoryLimit, memoryLimitMb, reclaimCgroup, releaseMemory, usedMb } from './memory-guard.js';
+import { reclaimCgroup, releaseMemory, shouldPause, startBudget, usedMb } from './memory-guard.js';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { targetToken, type SecretWhere } from '@chat-recall/engine/core/stored-token.js';
@@ -1910,6 +1910,8 @@ const refs = listAvailableBackends().flatMap((b) => {
   reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false, first: firstWalk });
   walkProgressForUpload = { done: 0, total: slice.length, complete: false };
   let traceN = 0;
+  const memBudget = startBudget();
+  let sessionsBuilt = 0;
   // ── KEEP THE EVENT LOOP ALIVE ───────────────────────────────────────────
   //
   // THIS IS WHY THE COLLECTOR LOOKED DEAD. Every `await` in this loop resolves
@@ -1964,10 +1966,10 @@ const refs = listAvailableBackends().flatMap((b) => {
     // it stops the walk instead of the process: the ledger holds what shipped,
     // and the next tick continues with the unacked sessions first.
     const usedNow = usedMb();
-    if (isOverMemoryLimit(usedNow, memoryLimitMb())) {
+    if (shouldPause(usedNow, memBudget, sessionsBuilt)) {
       releaseMemory();
       reclaimCgroup();
-      console.error(`[sync] walk paused at the memory bound (used=${usedNow}MB) after ${considered} of ${slice.length} session(s) — the next tick continues`);
+      console.error(`[sync] walk paused at the memory bound (used=${usedNow}MB, started at ${memBudget.baselineMb}MB) after ${sessionsBuilt} build(s) and ${considered - 1} of ${slice.length} session(s) — the next tick continues`);
       break;
     }
     // complete is `considered === slice.length`, not a constant false.
@@ -1984,6 +1986,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
     if (mode === 'skip') { skipped++; continue; }
+    sessionsBuilt++;
     const layout = backendFor(ref)?.sourceLayout?.(ref.prefixedId) ?? '';
     if (layout) shippedLayout.set(ref.prefixedId, layout); else shippedLayout.delete(ref.prefixedId);
     trace?.(`build (${mode}) ${ref.prefixedId} · ${(sessionFileBytes(ref) / 1048576).toFixed(1)}MB`);
