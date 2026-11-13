@@ -95,6 +95,61 @@
       ]
     },
     {
+      "name": "packages/engine:test",
+      "setup": "npm ci -w packages/cli -w packages/engine --include-workspace-root --no-audit --no-fund",
+      "command": "npx vitest run packages/engine",
+      "paths": [
+        "packages/engine/**",
+        "packages/cli/package.json",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vitest.setup.ts",
+        "vitest.global-setup.ts"
+      ],
+      "timeoutMinutes": 30
+    },
+    {
+      "name": "packages/cli:test",
+      "setup": "npm ci -w packages/cli -w packages/engine --include-workspace-root --no-audit --no-fund && npm run build:public",
+      "command": "npx vitest run packages/cli",
+      "paths": [
+        "packages/cli/**",
+        "packages/engine/**",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vitest.setup.ts",
+        "vitest.global-setup.ts",
+        "scripts/build-plugin.mjs"
+      ],
+      "timeoutMinutes": 30
+    },
+    {
+      "name": "packages/server:test",
+      "setup": "npm ci --no-audit --no-fund",
+      "command": "npx vitest run packages/server",
+      "paths": [
+        "packages/server/**",
+        "packages/engine/**",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vitest.setup.ts",
+        "vitest.global-setup.ts"
+      ],
+      "secrets": {
+        "NODE_AUTH_TOKEN": "npmtoken"
+      },
+      "timeoutMinutes": 30
+    },
+    {
       "name": "modules",
       "setup": "npm ci --no-audit --no-fund",
       "command": "npx marketing-kit modules .",
