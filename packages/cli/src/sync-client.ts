@@ -48,6 +48,8 @@ import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js'
 import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { walkSessionLimit, orderRefsForWalk, mayTombstone } from './walk-budget.js';
+import { tombstoneMode, planTombstones, describeTombstonePlan } from './tombstone-rule.js';
+import { probeSessionSource } from './session-source-probe.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
@@ -2407,17 +2409,19 @@ const refs = listAvailableBackends().flatMap((b) => {
   // The server keeps a tombstone for good, so only a walk that listed and visited
   // every local session may send them (see `mayTombstone`).
   if (ledger && mayTombstone({ changedWalk, listed: refs.length, sliceSize: slice.length, paused: walkPaused })) {
-    const tombstones: Array<{ session_id: string; deleted_at: number }> = [];
-    for (const [sessionId] of ledger) {
-      if (!localSessionIds.has(sessionId)) {
-        tombstones.push({ session_id: sessionId, deleted_at: Date.now() });
-      }
-    }
-    if (tombstones.length > 0) {
-      await post({ tombstones });
+    const mode = tombstoneMode();
+    const plan = mode === 'off' ? { ids: [], refused: null } : planTombstones({
+      ledgerIds: ledger.keys(),
+      visited: localSessionIds,
+      probe: probeSessionSource,
+    });
+    if (plan.ids.length > 0) console.error(describeTombstonePlan(plan, mode));
+    if (mode === 'act' && plan.refused === null && plan.ids.length > 0) {
+      const deletedAt = Date.now();
+      await post({ tombstones: plan.ids.map((session_id) => ({ session_id, deleted_at: deletedAt })) });
       // Remove tombstoned ids from the ledger so we don't keep shipping them.
       const data = getLedgerData(base);
-      for (const t of tombstones) delete data[t.session_id];
+      for (const id of plan.ids) delete data[id];
       persistLedgerData(base, data);
     }
   }
