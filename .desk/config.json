@@ -21,13 +21,13 @@
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-base",
-      "at": 580,
+      "at": 583,
       "subpath": "workflows/buck-base"
     },
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-node",
-      "at": 580,
+      "at": 583,
       "subpath": "workflows/buck-node"
     }
   ],
@@ -141,11 +141,12 @@
     },
     {
       "name": "modules",
-      "setup": "sh scripts/ci-install.sh",
-      "command": "npx marketing-kit modules .",
+      "command": "sh .desk/workflows/buck-base/scripts/buck-run.sh build //:modules",
       "paths": [
-        "package.json",
+        ".buckconfig",
+        "BUCK",
         "package-lock.json",
+        "package.json",
         "packages/*/package.json",
         "packages/server/src/auth/**",
         "packages/server/src/routes/mcp.ts",
