@@ -639,6 +639,22 @@ export function markFullResync(server: string, sessionId: string): void {
   persist(data);
 }
 
+/**
+ * Delete the rows of many sessions with one write, so the next walk classifies
+ * each as never synced. On disk before this returns.
+ */
+export function forgetSessions(server: string, sessionIds: readonly string[]): number {
+  const data = load();
+  const forServer = data[server];
+  if (!forServer) return 0;
+  let removed = 0;
+  for (const id of sessionIds) {
+    if (id in forServer) { delete forServer[id]; removed++; }
+  }
+  if (removed > 0) { persist(data); flushLedger(); }
+  return removed;
+}
+
 // ── Tail-sync mode classification ────────────────────────────────────────────
 // See docs/SYNC-INCREMENTAL.md. The freshness gate decides, per session, whether
 // this tick should SKIP (already covered), APPEND (ship only the new tail from

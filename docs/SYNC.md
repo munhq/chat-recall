@@ -115,6 +115,24 @@ sent. `CHAT_RECALL_TOMBSTONES` picks what happens to the rest: `report` (the
 default) logs the count and the first five ids, `act` sends the tombstones and
 `off` does nothing. The rule is in `packages/cli/src/tombstone-rule.ts`.
 
+## The ledger against the server
+For four days the ledger marked 4,000 sessions as synced while the server held
+479, and nothing compared the two. At the first walk of a process, and once a
+day after that, the collector asks `GET /api/status/sessions` for the id and
+mtime of every session the server stores, plus the ids that carry a tombstone
+(the server refuses those). The answer is about 1 MB for 12,000 sessions.
+
+A ledger row whose session the server does not list is cleared, newest session
+first and at most 2,000 rows per run. The walk that follows sends those sessions
+inside its usual bounds (`CHAT_RECALL_SYNC_WALK_MAX`, the memory bound). A failed
+request is logged, leaves the ledger as it was and does not stop the walk.
+`CHAT_RECALL_LEDGER_RECONCILE` takes `act` (default), `report` (log the count and
+the first five ids, change nothing) or `off`.
+
+`chat-recall verify --deep` prints the sessions that the ledger marks as synced
+and the server lacks. `--repair` clears their rows, and `chat-recall sync` sends
+them. The rule is in `packages/cli/src/ledger-reconcile.ts`.
+
 A walk is also bounded by count: `CHAT_RECALL_SYNC_WALK_MAX` (default `2000`)
 sessions per walk, with unacked sessions first. A restart reads
 `~/.chat-recall/walk-state.json`: when the last successful walk is younger than
