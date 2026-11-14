@@ -2,16 +2,6 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
-## [0.7.52] — 2026-11-14
-
-### Fixed
-- **A tombstone is sent only for a session whose source is confirmed missing.** On 2026-11-12 one collector sent 11,977 tombstones for sessions whose files were on disk, because the walk had not listed them. After a complete walk the collector now asks the backend of each ledger session that the walk did not visit whether the source exists. A backend that is not available (a folder that is not mounted) gives no answer, and a batch of more than 50 sessions that is also more than 5% of the ledger is not sent. `CHAT_RECALL_TOMBSTONES` is `report` by default: the collector logs the count and the first five ids. `act` sends them (`packages/cli/src/tombstone-rule.ts`).
-- **The server refuses a tombstone batch of more than 50 sessions and more than 5% of the tenant's sessions, and a newer file brings a tombstoned session back.** The route answers `409` with `tombstone_batch_too_large` and writes nothing. A push whose mtime is newer than the tombstone lifts it and stores the session (`CHAT_RECALL_TOMBSTONE_MAX_SHARE`).
-- **The collector compares its ledger with the server and sends the sessions that the server lacks.** The ledger marked 4,000 sessions as synced while the server held 479, for four days. At the first walk of a process and once a day, one request to `/api/status/sessions` returns the stored ids, and the collector clears the ledger rows of the sessions that are missing, newest first, at most 2,000 per run. `chat-recall verify --deep` lists them and `--repair` clears their rows (`CHAT_RECALL_LEDGER_RECONCILE`).
-
-### Changed
-- **A tick lists only the sessions that changed, and the full listing runs once a day.** The Claude listing reads one `mtime` for each transcript and builds a session ref only for a file at or above the cutoff, where it built 12,000 refs (about 100 MB) for every tick. The heartbeat, an applied intent and a restart walk the changed sessions until the daily full walk is due.
-
 ## [0.7.51] — 2026-11-14
 
 ### Fixed
