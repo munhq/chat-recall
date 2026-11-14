@@ -21,13 +21,13 @@
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-base",
-      "at": 575,
+      "at": 580,
       "subpath": "workflows/buck-base"
     },
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-node",
-      "at": 575,
+      "at": 580,
       "subpath": "workflows/buck-node"
     }
   ],
@@ -35,8 +35,6 @@
     {
       "name": "selfhost",
       "image": "ghcr.io/munhq/chat-recall",
-      "dockerfile": "docker/Dockerfile.server",
-      "context": ".",
       "changeArg": "GIT_SHA",
       "secrets": [
         "npmtoken"
@@ -45,7 +43,34 @@
         "latest",
         "main"
       ],
-      "timeoutMinutes": 45
+      "timeoutMinutes": 45,
+      "base": "mirror.gcr.io/library/node:24-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496",
+      "build": "sh scripts/image-selfhost.sh",
+      "workdir": "/app",
+      "cmd": [
+        "node",
+        "packages/server/dist/server.js"
+      ],
+      "env": {
+        "NODE_ENV": "production",
+        "HOST": "0.0.0.0",
+        "PORT": "5000",
+        "CHAT_RECALL_SERVER_MODE": "server",
+        "CHAT_RECALL_DATA_DIR": "/data",
+        "STATIC_DIR": "/app/client",
+        "BUILD_STAMP_FILE": "/app/.build-stamp"
+      },
+      "paths": [
+        ".buckconfig",
+        "BUCK",
+        "README.md",
+        "package-lock.json",
+        "package.json",
+        "packages/**",
+        "scripts/image-selfhost.sh",
+        "tsconfig.base.json",
+        "tsconfig.json"
+      ]
     },
     {
       "name": "cloud",
@@ -73,6 +98,28 @@
     {
       "name": "root",
       "command": "sh .desk/workflows/buck-base/scripts/buck-run.sh build //:check",
+      "secrets": {
+        "NODE_AUTH_TOKEN": "npmtoken"
+      },
+      "timeoutMinutes": 30,
+      "paths": [
+        "packages/**",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vitest.setup.ts",
+        "vitest.global-setup.ts",
+        "scripts/**",
+        "BUCK",
+        ".buckconfig",
+        ".desk/config.json"
+      ]
+    },
+    {
+      "name": "selfhost",
+      "command": "sh .desk/workflows/buck-base/scripts/buck-run.sh build //:selfhost-image",
       "secrets": {
         "NODE_AUTH_TOKEN": "npmtoken"
       },
