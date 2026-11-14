@@ -96,6 +96,25 @@ The collector treats both answers as a request to wait, not as a fault:
   pause; counting it would silence a healthy collector exactly while the server
   recovers.
 
+## When a session is tombstoned
+The server keeps a tombstone for a session and refuses the session afterwards.
+On 2026-11-12 one walk sent 11,977 tombstones for sessions that were on disk,
+because the walk did not list them, and the server stored 479 of 12,199 sessions
+afterwards.
+
+After a complete walk the collector takes each ledger session that the walk did
+not visit and asks the backend that owns it (`getBackendForId`) for the source:
+
+- the backend finds the source: nothing is sent;
+- the backend is available and finds no source: the session is a candidate;
+- no backend owns the id, the backend is not available (a folder that is not
+  mounted, a database that cannot be read) or the lookup throws: nothing is sent.
+
+A batch of more than 50 candidates that is also more than 5% of the ledger is not
+sent. `CHAT_RECALL_TOMBSTONES` picks what happens to the rest: `report` (the
+default) logs the count and the first five ids, `act` sends the tombstones and
+`off` does nothing. The rule is in `packages/cli/src/tombstone-rule.ts`.
+
 A walk is also bounded by count: `CHAT_RECALL_SYNC_WALK_MAX` (default `2000`)
 sessions per walk, with unacked sessions first. A restart reads
 `~/.chat-recall/walk-state.json`: when the last successful walk is younger than
