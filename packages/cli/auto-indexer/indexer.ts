@@ -142,8 +142,11 @@ async function shipToServer(trigger: string): Promise<void> {
     // 'changed' while the last successful walk is recent: re-listing every
     // session at every start is what walked 12,224 sessions again and again and
     // reached the 2 GiB memory cap that killed this unit (issue #16).
-    const recentSuccess = !shouldWalkFull({ lastSuccessAt: lastSuccessfulWalkAt(), now: Date.now() });
-    const scope = trigger === 'file-change' || (trigger === 'startup' && recentSuccess) ? 'changed' : 'full';
+    // The full listing runs once a day (FULL_WALK_INTERVAL_MS). Every other tick
+    // lists the sessions that changed, so the heartbeat and an applied intent no
+    // longer build 12,000 refs each time (issue #22).
+    const fullDue = shouldWalkFull({ lastSuccessAt: lastSuccessfulWalkAt(), now: Date.now() });
+    const scope = trigger === 'file-change' || !fullDue ? 'changed' : 'full';
     const result = await syncIncremental({ scope });
     if (isSyncSkip(result)) {
       // 'lock-held' is routine writer election (an MCP session's sync tick
