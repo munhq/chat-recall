@@ -149,4 +149,14 @@ them. The rule is in `packages/cli/src/ledger-reconcile.ts`.
 A walk is also bounded by count: `CHAT_RECALL_SYNC_WALK_MAX` (default `2000`)
 sessions per walk, with unacked sessions first. A restart reads
 `~/.chat-recall/walk-state.json`: when the last successful walk is younger than
-six hours, the startup walk covers only changed sessions.
+24 hours, the startup walk covers only changed sessions.
+
+## What a tick lists
+The watch daemon lists every session once a day (`FULL_WALK_INTERVAL_MS`). Every
+other tick (a file change, the 15-minute heartbeat, an applied intent, a restart)
+lists the sessions that changed since the last walk, with 15 minutes of overlap.
+For Claude the listing reads one directory entry and one file `mtime` for each
+transcript, and builds a session ref only for a session with a file at or above
+the cutoff. A tick for one changed file no longer builds 12,000 refs, which cost
+about 100 MB. A session whose upload failed and whose file is older than the
+window is sent again by the daily full listing.

@@ -24,7 +24,7 @@
 export const DEFAULT_WALK_MAX_SESSIONS = 2000;
 
 /** A full walk is due again after this long without a success. */
-export const FULL_WALK_INTERVAL_MS = 6 * 60 * 60_000;
+export const FULL_WALK_INTERVAL_MS = 24 * 60 * 60_000;
 
 /**
  * The cap for one walk. A bound that a typo can disable is not a bound, so an

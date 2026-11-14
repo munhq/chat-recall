@@ -155,10 +155,16 @@ export class ClaudeBackend implements ToolBackend {
     const filter = opts.projectFilter?.toLowerCase();
     const byId = new Map<string, SessionRef>();
 
+    // A listing with a cutoff builds a ref only for a session that has a file at
+    // or above it. Building all 12,000 refs and dropping the old ones afterwards
+    // cost about 100 MB for each tick of the watch daemon (issue #22).
+    const roots = claudeProjectDirs();
+    const fresh = cutoff > 0 ? this.sessionIdsChangedSince(roots, cutoff) : null;
+
     // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
     // same set the indexer scans, so index and sync stay consistent.
-    for (const root of claudeProjectDirs()) {
-      this.collectSessionsFromRoot(root, filter, byId, opts.previews !== false);
+    for (const root of roots) {
+      this.collectSessionsFromRoot(root, filter, byId, opts.previews !== false, fresh);
     }
 
     // The cutoff applies to the session, so a session whose primary copy is old
@@ -178,11 +184,39 @@ export class ClaudeBackend implements ToolBackend {
    * handled both refs under one ledger row with two different mtimes, and the
    * row that shipped nothing stamped the other copy's mtime.
    */
+  /**
+   * The ids of the sessions that have a transcript file with an mtime at or above
+   * `cutoff`, in any home. One directory read per project and one stat per file,
+   * with no file content read and no ref built. A session with a copy in two
+   * homes is in the set when either copy is new, which is the rule the cutoff
+   * of `listSessions` applies to the merged session.
+   */
+  private sessionIdsChangedSince(roots: string[], cutoff: number): Set<string> {
+    const ids = new Set<string>();
+    for (const root of roots) {
+      if (!existsSync(root)) continue;
+      let projects;
+      try { projects = readdirSync(root, { withFileTypes: true }); } catch { continue; }
+      for (const proj of projects) {
+        if (!proj.isDirectory()) continue;
+        const projPath = join(root, proj.name);
+        let files: string[];
+        try { files = readdirSync(projPath); } catch { continue; }
+        for (const f of files) {
+          if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
+          try { if (statSync(join(projPath, f)).mtimeMs >= cutoff) ids.add(basename(f, '.jsonl')); } catch { /* gone since the listing */ }
+        }
+      }
+    }
+    return ids;
+  }
+
   private collectSessionsFromRoot(
     root: string,
     filter: string | undefined,
     byId: Map<string, SessionRef>,
     previews: boolean,
+    fresh: ReadonlySet<string> | null = null,
   ): void {
     const add = (ref: SessionRef): void => {
       const prior = byId.get(ref.rawId);
@@ -219,6 +253,7 @@ export class ClaudeBackend implements ToolBackend {
             messageCount?: number;
           }>;
           for (const entry of entries) {
+            if (fresh && !fresh.has(entry.sessionId)) { indexed.add(entry.sessionId); continue; }
             if (!entry.fullPath || !existsSync(entry.fullPath)) continue;
             indexed.add(entry.sessionId);
             add({
@@ -246,6 +281,7 @@ export class ClaudeBackend implements ToolBackend {
         if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
         const sessionId = basename(f, '.jsonl');
         if (indexed.has(sessionId)) continue;
+        if (fresh && !fresh.has(sessionId)) continue;
         const fullPath = join(projPath, f);
         let stat;
         try { stat = statSync(fullPath); } catch { continue; }
