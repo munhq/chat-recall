@@ -2136,6 +2136,33 @@ program
         }
       }
 
+      // Sessions the ledger marks as synced and the server does not list. The
+      // size comparison above skips them: it only looks at sessions with an archive.
+      try {
+        const { fetchServerSessions, planReconcile } = await import('./ledger-reconcile.js');
+        const { getSyncedRows } = await import('./sync-ledger.js');
+        const list = await fetchServerSessions(t.serverUrl, t.token);
+        const plan = planReconcile({ ledger: getSyncedRows(t.serverUrl), serverIds: list.ids, deletedIds: list.deleted, limit: Infinity });
+        if (plan.missing.length === 0) {
+          console.log(chalk.green('  ✓ the server lists every session the ledger marks as synced'));
+        } else {
+          exitCode = 2;
+          console.log(chalk.red(`  ✗ ${plan.missing.length} session(s) are in the ledger and not on the server:`));
+          for (const id of plan.missing.slice(0, 25)) console.log(`      ${id}`);
+          if (plan.missing.length > 25) console.log(chalk.dim(`      …and ${plan.missing.length - 25} more`));
+          if (opts.repair) {
+            const { forgetSessions } = await import('./sync-ledger.js');
+            const n = forgetSessions(t.serverUrl, plan.missing);
+            console.log(chalk.green(`  ↻ cleared ${n} ledger row(s) — run \`chat-recall sync\` to send them`));
+          } else {
+            console.log(chalk.dim('  Re-run with --repair to clear their ledger rows and send them.'));
+          }
+        }
+      } catch (e) {
+        console.error(chalk.red(`  could not list the sessions of ${t.serverUrl}: ${e instanceof Error ? e.message : e}`));
+        exitCode = 1;
+      }
+
       if (opts.repair && report.stranded.length > 0) {
         const n = forceFullResync(t.serverUrl, report.stranded.map((f) => f.sessionId));
         console.log(chalk.green(`  ↻ cleared ${n} ledger cursor(s) — run \`chat-recall sync\` to re-ship`));

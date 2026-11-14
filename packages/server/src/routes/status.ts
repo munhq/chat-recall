@@ -118,6 +118,33 @@ router.get('/archives', async (_req, res) => {
   }
 });
 
+/**
+ * GET /api/status/sessions — every session this tenant stores, as id and mtime.
+ *
+ * A collector compares its ledger with this list and queues the sessions that
+ * the server lacks (issue #21). /api/status/archives lists only sessions that
+ * have a raw archive, so a session stored without one would look missing there.
+ * Ids and mtimes only, about 100 bytes per session. `deleted` lists the ids that
+ * carry a tombstone: the server refuses them, so a collector must not queue them.
+ */
+router.get('/sessions', async (_req, res) => {
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      const rows = await store.listAllSessionsForPrecompute();
+      const tombstones = await store.listTombstones();
+      res.json({
+        count: rows.length,
+        sessions: rows.map((r) => ({ id: r.id, mtime: Number(r.mtime) || 0 })),
+        deleted: tombstones.map((t) => t.session_id),
+      });
+    } finally { await store.close(); }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'session listing failed' });
+  }
+});
+
 // GET /api/status
 router.get('/', async (req, res) => {
   try {

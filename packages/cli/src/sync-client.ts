@@ -50,6 +50,7 @@ import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { walkSessionLimit, orderRefsForWalk, mayTombstone } from './walk-budget.js';
 import { tombstoneMode, planTombstones, describeTombstonePlan } from './tombstone-rule.js';
 import { probeSessionSource } from './session-source-probe.js';
+import { reconcileLedgerIfDue } from './ledger-reconcile.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
@@ -1558,6 +1559,9 @@ const refs = listAvailableBackends().flatMap((b) => {
     };
   };
   const base = cred.serverUrl.replace(/\/$/, '');
+  // Clear the rows of sessions that the server lacks before the ledger is read,
+  // so this walk sends them (bounded by the walk cap, newest first).
+  if (opts.useLedger) await reconcileLedgerIfDue(base, cred.token);
   const ledger = opts.useLedger ? getSyncedRows(base) : null;
   const convBatch = makeBatcher('conversations', 25, false, (rows) => {
     // Server acked this batch — record exactly these sessions at exactly
