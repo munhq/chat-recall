@@ -17,6 +17,18 @@
     {
       "repo": "munhq/web-standards",
       "path": "web-standards"
+    },
+    {
+      "repo": "munhq/desk",
+      "path": ".desk/workflows/buck-base",
+      "at": 575,
+      "subpath": "workflows/buck-base"
+    },
+    {
+      "repo": "munhq/desk",
+      "path": ".desk/workflows/buck-node",
+      "at": 575,
+      "subpath": "workflows/buck-node"
     }
   ],
   "images": [
@@ -59,148 +71,14 @@
   ],
   "validation": [
     {
-      "name": "packages/cli:syntax",
-      "command": "find . -name node_modules -prune -o \\( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \\) -print0 | xargs -0 -r -n1 node --check",
-      "cwd": "packages/cli",
-      "stage": "land",
-      "paths": [
-        "packages/cli/**/*.js",
-        "packages/cli/**/*.mjs",
-        "packages/cli/**/*.cjs",
-        "packages/cli/package.json"
-      ]
-    },
-    {
-      "name": "packages/engine:syntax",
-      "command": "find . -name node_modules -prune -o \\( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \\) -print0 | xargs -0 -r -n1 node --check",
-      "cwd": "packages/engine",
-      "stage": "land",
-      "paths": [
-        "packages/engine/**/*.js",
-        "packages/engine/**/*.mjs",
-        "packages/engine/**/*.cjs",
-        "packages/engine/package.json"
-      ]
-    },
-    {
-      "name": "packages/server:syntax",
-      "command": "find . -name node_modules -prune -o \\( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \\) -print0 | xargs -0 -r -n1 node --check",
-      "cwd": "packages/server",
-      "stage": "land",
-      "paths": [
-        "packages/server/**/*.js",
-        "packages/server/**/*.mjs",
-        "packages/server/**/*.cjs",
-        "packages/server/package.json"
-      ]
-    },
-    {
-      "name": "packages/engine:test-1of2",
-      "setup": "sh scripts/ci-install.sh -w packages/cli -w packages/engine --include-workspace-root",
-      "command": "npx vitest run packages/engine --maxWorkers=2 --testTimeout=60000 --shard=1/2",
-      "paths": [
-        "packages/engine/**",
-        "packages/cli/package.json",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.base.json",
-        "tsconfig.json",
-        "vitest.config.ts",
-        "vitest.setup.ts",
-        "vitest.global-setup.ts",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
-      "timeoutMinutes": 30
-    },
-    {
-      "name": "packages/engine:test-2of2",
-      "setup": "sh scripts/ci-install.sh -w packages/cli -w packages/engine --include-workspace-root",
-      "command": "npx vitest run packages/engine --maxWorkers=2 --testTimeout=60000 --shard=2/2",
-      "paths": [
-        "packages/engine/**",
-        "packages/cli/package.json",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.base.json",
-        "tsconfig.json",
-        "vitest.config.ts",
-        "vitest.setup.ts",
-        "vitest.global-setup.ts",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
-      "timeoutMinutes": 30
-    },
-    {
-      "name": "packages/cli:test-1of2",
-      "setup": "sh scripts/ci-install.sh -w packages/cli -w packages/engine --include-workspace-root && npm run build:public",
-      "command": "npx vitest run packages/cli --maxWorkers=2 --testTimeout=60000 --shard=1/2",
-      "paths": [
-        "packages/cli/**",
-        "packages/engine/**",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.base.json",
-        "tsconfig.json",
-        "vitest.config.ts",
-        "vitest.setup.ts",
-        "vitest.global-setup.ts",
-        "scripts/build-plugin.mjs",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
-      "timeoutMinutes": 30
-    },
-    {
-      "name": "packages/cli:test-2of2",
-      "setup": "sh scripts/ci-install.sh -w packages/cli -w packages/engine --include-workspace-root && npm run build:public",
-      "command": "npx vitest run packages/cli --maxWorkers=2 --testTimeout=60000 --shard=2/2",
-      "paths": [
-        "packages/cli/**",
-        "packages/engine/**",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.base.json",
-        "tsconfig.json",
-        "vitest.config.ts",
-        "vitest.setup.ts",
-        "vitest.global-setup.ts",
-        "scripts/build-plugin.mjs",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
-      "timeoutMinutes": 30
-    },
-    {
-      "name": "packages/server:test-1of2",
-      "setup": "sh scripts/ci-install.sh",
-      "command": "npx vitest run packages/server --maxWorkers=2 --testTimeout=60000 --shard=1/2",
-      "paths": [
-        "packages/server/**",
-        "packages/engine/**",
-        "package.json",
-        "package-lock.json",
-        "tsconfig.base.json",
-        "tsconfig.json",
-        "vitest.config.ts",
-        "vitest.setup.ts",
-        "vitest.global-setup.ts",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
+      "name": "root",
+      "command": "sh .desk/workflows/buck-base/scripts/buck-run.sh build //:check",
       "secrets": {
         "NODE_AUTH_TOKEN": "npmtoken"
       },
-      "timeoutMinutes": 30
-    },
-    {
-      "name": "packages/server:test-2of2",
-      "setup": "sh scripts/ci-install.sh",
-      "command": "npx vitest run packages/server --maxWorkers=2 --testTimeout=60000 --shard=2/2",
+      "timeoutMinutes": 30,
       "paths": [
-        "packages/server/**",
-        "packages/engine/**",
+        "packages/**",
         "package.json",
         "package-lock.json",
         "tsconfig.base.json",
@@ -208,13 +86,11 @@
         "vitest.config.ts",
         "vitest.setup.ts",
         "vitest.global-setup.ts",
-        ".desk/config.json",
-        "scripts/ci-install.sh"
-      ],
-      "secrets": {
-        "NODE_AUTH_TOKEN": "npmtoken"
-      },
-      "timeoutMinutes": 30
+        "scripts/**",
+        "BUCK",
+        ".buckconfig",
+        ".desk/config.json"
+      ]
     },
     {
       "name": "modules",
