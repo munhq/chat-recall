@@ -73,6 +73,7 @@ Set on the **server** container, not the CLI. See the quick-start header of
 | `SECRET_RESCAN_LIMIT` | Sessions per re-scan run (default `2000`, freshest first). |
 | `SECRET_RESCAN_EXCLUDE_TENANTS` | Comma-separated tenants to skip (default `synccheck`). |
 | `CHAT_RECALL_INGEST_MAX_BODY_BYTES` | Largest decompressed body the append route accepts, in bytes (default `16 * 1024 * 1024`). A larger body gets `413` with `{"code":"body_too_large"}`. |
+| `CHAT_RECALL_TOMBSTONE_MAX_SHARE` | Largest share of a tenant's stored sessions that one tombstone batch may hold (default `0.05`). A batch of more than 50 sessions above the share gets `409` with `{"code":"tombstone_batch_too_large"}` and nothing is deleted. A value that is not a number from 0 to 1 keeps the default. See [SYNC.md](SYNC.md). |
 | `CHAT_RECALL_INGEST_MAX_INFLIGHT` | Appends one pod may hold at the same time (default `2`). When the count is reached the route answers `429` with `Retry-After: 2`. |
 | `CHAT_RECALL_INGEST_MAX_INFLIGHT_BYTES` | Total body bytes one pod may hold at the same time (default `8 * 1024 * 1024`). One body larger than this budget runs alone, so two large bodies never overlap. |
 | `RAW_ARCHIVE_S3_BUCKET` | Keeps the gzipped session archive in an S3-compatible bucket instead of the `raw_sessions.gz` column. Unset (the default) stores it in Postgres, which is what a self-host with no bucket does. On the hosted database that column was 1232 MB of 3564 MB, all of it TOAST, and only one read path touches it. |

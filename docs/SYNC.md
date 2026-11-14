@@ -115,6 +115,19 @@ sent. `CHAT_RECALL_TOMBSTONES` picks what happens to the rest: `report` (the
 default) logs the count and the first five ids, `act` sends the tombstones and
 `off` does nothing. The rule is in `packages/cli/src/tombstone-rule.ts`.
 
+### What the server does with a tombstone
+- **A large batch is refused.** A request whose tombstones are more than 50
+  sessions and more than `CHAT_RECALL_TOMBSTONE_MAX_SHARE` (default 5%) of the
+  sessions the tenant stores gets `409` with `{"code":"tombstone_batch_too_large"}`.
+  The request writes nothing, and the server logs the tenant, the count and the
+  share.
+- **A newer file brings the session back.** The server keeps the tombstone with
+  its time. A push of a tombstoned session whose mtime is newer than that time
+  lifts the tombstone and stores the session. A push with the same or an older
+  mtime is answered `200` and stored nowhere, as before.
+
+The rule is in `packages/server/src/routes/tombstone-guard.ts`.
+
 ## The ledger against the server
 For four days the ledger marked 4,000 sessions as synced while the server held
 479, and nothing compared the two. At the first walk of a process, and once a

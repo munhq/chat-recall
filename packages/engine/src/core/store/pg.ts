@@ -1876,6 +1876,16 @@ export class PgStore implements StorageDriver {
     for (const r of rows) out.add(r.session_id);
     return out;
   }
+  async tombstonedAmongAt(sessionIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await this.q(
+      `SELECT session_id, deleted_at FROM session_tombstones WHERE tenant=$1 AND session_id = ANY($2)`,
+      [this.t, ids]);
+    for (const r of rows) out.set(r.session_id, Number(r.deleted_at));
+    return out;
+  }
   async removeTombstone(sessionId: string): Promise<void> {
     await this.q(`DELETE FROM session_tombstones WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
   }

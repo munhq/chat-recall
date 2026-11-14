@@ -37,6 +37,7 @@
  */
 
 import express from 'express';
+import { tombstoneBatchTooLarge, TombstoneBatchRefused, splitTombstoned } from './tombstone-guard.js';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
@@ -862,6 +863,14 @@ router.post('/', async (req, res) => {
           // a request this file holds to 15 (docs/SYNC-BATCH-WRITES.md §4).
           const tombIds = tombstones.map((t) => t.session_id).filter(Boolean);
           if (tombIds.length > 0) {
+            // A batch that is a large share of the tenant's sessions is a wrong
+            // batch (2026-11-12: 11,977 of 12,199). Throwing here rolls the
+            // transaction back, so nothing of this request is written.
+            const stored = Number((await store.getStats() as Record<string, number>).session || 0);
+            if (tombstoneBatchTooLarge({ batch: tombIds.length, stored })) {
+              log.warn({ tenant: agent.tenant, batch: tombIds.length, stored, share: stored > 0 ? tombIds.length / stored : null }, 'tombstone batch refused');
+              throw new TombstoneBatchRefused(tombIds.length, stored);
+            }
             await store.purgeSessionsMany(tombIds);
             await store.addTombstonesMany(tombIds);
             dead += tombIds.length;
@@ -869,7 +878,10 @@ router.post('/', async (req, res) => {
           // Only this payload's sessions are ever asked about, so only they are
           // read. The tombstones written just above are already committed, so a
           // session deleted and re-sent in the SAME request still reads as dead.
-          const deadSet = await store.tombstonedAmong(conversations.map((c) => c.session_id));
+          // A push with a newer mtime than the tombstone lifts it and is stored.
+          const { dead: deadSet, lift } = splitTombstoned(
+            conversations, await store.tombstonedAmongAt(conversations.map((c) => c.session_id)));
+          for (const id of lift) await store.removeTombstone(id);
 
           // PREFETCHED, before the loop. Both of these were read once per session
           // inside it — `getCachedContentStale` twice. One query each for the
@@ -1175,6 +1187,9 @@ router.post('/', async (req, res) => {
       ...(ingestConcurrency ? { limits: { ingestConcurrencyPerTenant: ingestConcurrency } } : {}),
     });
   } catch (e) {
+    if (e instanceof TombstoneBatchRefused) {
+      return res.status(409).json({ error: e.message, code: e.code, batch: e.batch, stored: e.stored });
+    }
     log.error({ err: e }, 'sync ingest error');
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   } finally {
