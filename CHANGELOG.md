@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.51] — 2026-11-14
+
+### Fixed
+- **A capped or paused walk tombstoned sessions that still exist, and the server then ignored them for good.** Measured on 2026-11-14 on the production database: `session_tombstones` held 11,977 rows for one tenant dated 2026-11-12, the day the 2,000-session walk cap shipped, and the server stored 580 of that machine's 12,199 sessions. After a full walk the collector sent a tombstone for every ledger session that the walk had not visited. A walk that carried a slice of the list, or paused at the memory bound, visited a few thousand sessions and tombstoned the rest. The server never accepts a session again after its tombstone, so each later push answered 200 and stored nothing, and `recall_show` answered `Session not found`. Only a walk that listed and visited every local session sends tombstones now (`mayTombstone` in `walk-budget.ts`).
+
 ## [0.7.50] — 2026-11-13
 
 ### Fixed
