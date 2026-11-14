@@ -72,3 +72,18 @@ export function shouldWalkFull(opts: {
   if (lastSuccessAt > now) return true;
   return now - lastSuccessAt >= interval;
 }
+
+/**
+ * True when a walk may tombstone the sessions that it did not visit.
+ *
+ * A session that is in the ledger and was not visited counts as deleted only
+ * when the walk listed every local session and visited every one of them. A walk
+ * that carries a slice of the list (the cap of `walkSessionLimit()`), or that
+ * paused at the memory bound, leaves unvisited sessions that still exist.
+ * Measured on 2026-11-12: the first capped walk after the upgrade sent 11,977
+ * tombstones for sessions that were on disk, and the server never accepts a
+ * session again after its tombstone.
+ */
+export function mayTombstone(walk: { changedWalk: boolean; listed: number; sliceSize: number; paused: boolean }): boolean {
+  return !walk.changedWalk && !walk.paused && walk.sliceSize >= walk.listed;
+}

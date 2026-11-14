@@ -9,7 +9,7 @@
  */
 import { describe, test, expect } from 'vitest';
 import {
-  walkSessionLimit, orderRefsForWalk, shouldWalkFull,
+  walkSessionLimit, orderRefsForWalk, shouldWalkFull, mayTombstone,
   DEFAULT_WALK_MAX_SESSIONS, FULL_WALK_INTERVAL_MS,
 } from './walk-budget.js';
 
@@ -93,5 +93,24 @@ describe('shouldWalkFull', () => {
 
   test('a stamp in the future is not trusted', () => {
     expect(shouldWalkFull({ lastSuccessAt: now + 60_000, now })).toBe(true);
+  });
+});
+
+describe('mayTombstone', () => {
+  test('a full walk that visited every session may tombstone', () => {
+    expect(mayTombstone({ changedWalk: false, listed: 500, sliceSize: 500, paused: false })).toBe(true);
+  });
+
+  test('a walk capped below the list sends no tombstone', () => {
+    // 12,199 local sessions and a cap of 2,000: the other 10,199 still exist.
+    expect(mayTombstone({ changedWalk: false, listed: 12199, sliceSize: 2000, paused: false })).toBe(false);
+  });
+
+  test('a walk paused at the memory bound sends no tombstone', () => {
+    expect(mayTombstone({ changedWalk: false, listed: 500, sliceSize: 500, paused: true })).toBe(false);
+  });
+
+  test('a changed walk sends no tombstone', () => {
+    expect(mayTombstone({ changedWalk: true, listed: 40, sliceSize: 40, paused: false })).toBe(false);
   });
 });
