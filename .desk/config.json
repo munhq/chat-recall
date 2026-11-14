@@ -21,13 +21,13 @@
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-base",
-      "at": 583,
+      "at": 594,
       "subpath": "workflows/buck-base"
     },
     {
       "repo": "munhq/desk",
       "path": ".desk/workflows/buck-node",
-      "at": 583,
+      "at": 594,
       "subpath": "workflows/buck-node"
     }
   ],
@@ -75,13 +75,6 @@
     {
       "name": "cloud",
       "image": "ghcr.io/munhq/chat-recall-cloud",
-      "dockerfile": "docker/Dockerfile.server",
-      "context": ".",
-      "target": "cloud",
-      "args": {
-        "VITE_CLOUD": "1",
-        "OPENAI_APPS_CHALLENGE": "hC6GpWiSrnfYr34L0vC8otCzbMzCJXoX7ZgXHlEbbbw"
-      },
       "changeArg": "GIT_SHA",
       "secrets": [
         "npmtoken",
@@ -91,7 +84,39 @@
       "tags": [
         "main"
       ],
-      "timeoutMinutes": 45
+      "timeoutMinutes": 45,
+      "base": "mirror.gcr.io/library/node:24-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496",
+      "build": "sh scripts/image-cloud.sh",
+      "workdir": "/app",
+      "cmd": [
+        "node",
+        "packages/server/dist/server.js"
+      ],
+      "env": {
+        "NODE_ENV": "production",
+        "HOST": "0.0.0.0",
+        "PORT": "5000",
+        "CHAT_RECALL_SERVER_MODE": "server",
+        "CHAT_RECALL_DATA_DIR": "/data",
+        "STATIC_DIR": "/app/client",
+        "BUILD_STAMP_FILE": "/app/.build-stamp"
+      },
+      "paths": [
+        ".buckconfig",
+        "BUCK",
+        "README.md",
+        "docs/**",
+        "package-lock.json",
+        "package.json",
+        "packages/**",
+        "scripts/dump-reference.mjs",
+        "scripts/image-cloud.sh",
+        "scripts/mounts-hash.sh",
+        "site-src/**",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "web-standards/bin/**"
+      ]
     }
   ],
   "validation": [
@@ -157,6 +182,26 @@
         "NODE_AUTH_TOKEN": "npmtoken"
       },
       "timeoutMinutes": 15
+    },
+    {
+      "name": "cloud",
+      "command": "sh .desk/workflows/buck-base/scripts/buck-run.sh build $(sh scripts/mounts-hash.sh) //:cloud-image",
+      "secrets": {
+        "NODE_AUTH_TOKEN": "npmtoken",
+        "CHAT_RECALL_PRIVATE_NAMES": "privatenames",
+        "VITE_GLITCHTIP_DSN": "glitchtipdsn"
+      },
+      "timeoutMinutes": 40,
+      "paths": [
+        "packages/**",
+        "site-src/**",
+        "web-standards/bin/**",
+        "docs/**",
+        "README.md",
+        "BUCK",
+        ".buckconfig",
+        ".desk/config.json"
+      ]
     }
   ],
   "preLand": [

@@ -117,6 +117,84 @@ action(
     cmd = "O=`realpath -m $OUT` && P=`realpath $DEP_prod` && E=`realpath $DEP_engine` && S=`realpath $DEP_server` && C=`realpath $DEP_client` && L=`realpath $DEP_cli` && cd $SRCDIR && A=$O/app && mkdir -p $A/packages/engine $A/packages/server/scripts $A/migrate $A/install && cp package.json package-lock.json $A/ && cp packages/engine/package.json $A/packages/engine/ && cp packages/server/package.json $A/packages/server/ && cp -R $P/node_modules $A/node_modules && cp -R $P/packages/server/node_modules $A/packages/server/node_modules && cp -R $E $A/packages/engine/dist && cp -R $S/server $A/packages/server/dist && cp -R $C $A/client && cp packages/server/cloud/migrate.mjs $A/migrate/migrate.mjs && cp -R packages/server/cloud/migrations $A/migrate/migrations && cp packages/server/scripts/import-*-users.mjs $A/packages/server/scripts/ && cp -R $L/install/. $A/install/",
 )
 
+# ── The cloud image (docker/Dockerfile.server, target `cloud`) ─────────────────────────────────────────────────────────────────
+# The self-host image, with the web client built for the cloud and the site and the docs of chatrecall.dev on top (the stage `site`).
+# The private repository munhq/chat-recall-site is mounted at site-src/ and munhq/web-standards at web-standards/ (`checkouts` of
+# .desk/config.json). Each has a BUCK file of its own, so each is a package of its own and a rule of this package cannot name its
+# files: the site action reads the two folders from the project tree, and scripts/mounts-hash.sh gives their content hash as
+# `-c desk.site_hash` and `-c desk.ws_hash`, which are in the key of the action. The site actions run on the machine of the build, which has the secrets of the run in its environment: the list
+# of the private names (CHAT_RECALL_PRIVATE_NAMES, which only makes the generator refuse a page, so the output does not depend on its
+# value) and the key of the client (VITE_GLITCHTIP_DSN). They are no part of an action or of its key. Chromium is in the base of the runner.
+TOOLCHAIN = {"DESK_TOOLCHAIN": read_root_config("desk", "toolchain", "")}
+
+# The MCP tool and CLI references of the docs come from the built engine and CLI.
+node_action(
+    name = "reference_json",
+    srcs = ENGINE + CLI + TSCONFIGS + ["package.json", "scripts/dump-reference.mjs"],
+    cmd = "npx tsc -b packages/engine && npm run build --workspace=chat-recall && mkdir -p $B/out && node scripts/dump-reference.mjs $B/out/reference.json",
+    directory = True,
+    result = "mkdir -p $O && cp $B/out/reference.json $O/reference.json",
+    priority = 4,
+)
+
+# The web client built for the cloud: VITE_CLOUD is on, and the key of the client comes from the environment of the machine.
+node_action(
+    name = "client_dist_cloud",
+    srcs = CLIENT + ["packages/engine/package.json"],
+    deps = {"engine": ":engine_dist"},
+    node_modules_target = ":client_modules",
+    root = "packages/server/client",
+    copy_modules = True,
+    directory = True,
+    local_only = True,
+    env = {"VITE_CLOUD": "1"},
+    cmd = "mkdir -p node_modules/@chat-recall/engine && cp $B/packages/engine/package.json node_modules/@chat-recall/engine/package.json && cp -R $D_engine node_modules/@chat-recall/engine/dist && npm run build",
+    result = "mkdir -p $O && cp -R dist/. $O/",
+    priority = 4,
+)
+
+PRODUCT_FILES = [
+    "README.md",
+    "packages/server/client/src/index.css",
+    "packages/server/client/src/fonts.css",
+    "packages/cli/package.json",
+    "packages/cli/src/mcp.ts",
+    "packages/engine/src/mcp/tools.ts",
+    "packages/engine/src/core/live-session-scan.ts",
+    "packages/server/src/util/entitlements.ts",
+    "packages/server/src/util/billing.ts",
+    "packages/server/src/routes/licence.ts",
+]
+
+# The site and the docs: the generator, the gates of the site workflow (SEO audit, pricing parity, external links, the social cards
+# against their template, a docs build that stops on a broken link), and the overlay that goes on the client.
+action(
+    name = "site_overlay",
+    srcs = glob(["docs/**", "packages/server/client/public/fonts/**"]) + PRODUCT_FILES,
+    deps = {"reference": ":reference_json"},
+    out = "site_overlay",
+    directory = True,
+    local_only = True,
+    env = dict(
+        TOOLCHAIN,
+        OPENAI_APPS_CHALLENGE = "hC6GpWiSrnfYr34L0vC8otCzbMzCJXoX7ZgXHlEbbbw",
+        SITE_HASH = read_root_config("desk", "site_hash", ""),
+        WS_HASH = read_root_config("desk", "ws_hash", ""),
+    ),
+    priority = 4,
+    cmd = "P=$PWD && O=`realpath -m $OUT` && R=`realpath $DEP_reference` && B=`mktemp -d -p ${DESK_ACTION_TMP:-/tmp}` && cp -RL $SRCDIR/. $B/ && chmod -R u+w $B && W=$B/w && mkdir -p $W/product/packages/server/client/public $W/product/packages/server/client/src $W/product/packages/cli/src $W/product/packages/engine/src/mcp $W/product/packages/engine/src/core $W/product/packages/server/src/util $W/product/packages/server/src/routes && cd $B && cp README.md $W/product/README.md && cp -R docs $W/product/docs && cp -R packages/server/client/public/fonts $W/product/packages/server/client/public/fonts && cp packages/server/client/src/index.css packages/server/client/src/fonts.css $W/product/packages/server/client/src/ && cp packages/cli/package.json $W/product/packages/cli/ && cp packages/cli/src/mcp.ts $W/product/packages/cli/src/ && cp packages/engine/src/mcp/tools.ts $W/product/packages/engine/src/mcp/ && cp packages/engine/src/core/live-session-scan.ts $W/product/packages/engine/src/core/ && cp packages/server/src/util/entitlements.ts packages/server/src/util/billing.ts $W/product/packages/server/src/util/ && cp packages/server/src/routes/licence.ts $W/product/packages/server/src/routes/ && mkdir -p $W/web-standards && cp -R $P/site-src $W/site-src && cp -R $P/web-standards/bin $W/web-standards/bin && rm -rf $W/site-src/node_modules $W/site-src/docs-site/node_modules && chmod -R u+w $W && mkdir -p $B/home && printf '#!/bin/sh\\nexport TMPDIR=/tmp\\nexec chromium --no-sandbox \"$@\"\\n' > $B/chrome && chmod 755 $B/chrome && cd $W && (cd site-src && npm ci --no-audit --no-fund --loglevel=error) && (cd site-src/docs-site && npm ci --no-audit --no-fund --loglevel=error) && CLIENT_DIR=$W/product/packages/server/client DIST_DIR=$W/overlay/site REQUIRE_LEGAL=1 node site-src/build-marketing.mjs && test -s overlay/site/terms/index.html && test -s overlay/site/privacy/index.html && node web-standards/bin/seo-audit.mjs --dist overlay/site --config site-src/seo.config.json && node site-src/check-parity.mjs product && node site-src/check-links.mjs --dist overlay/site && (cd site-src && HOME=$B/home CHROME=$B/chrome CLIENT_DIR=$W/product/packages/server/client node render-cards.mjs --check) && cp $R/reference.json product/reference.json && (cd site-src/docs-site && PRODUCT_DIR=$W/product npm run build && cp -r build $W/overlay/site/docs) && test -s overlay/site/docs/index.html && mkdir -p $O && cp -R overlay/site/. $O/",
+)
+
+# The root of the cloud image layer: the self-host root, with the cloud client and the overlay of the site in /app/client.
+action(
+    name = "cloud-image",
+    srcs = [],
+    deps = {"base": ":selfhost-image", "client": ":client_dist_cloud", "site": ":site_overlay"},
+    out = "cloud-image",
+    directory = True,
+    cmd = "O=`realpath -m $OUT` && B=`realpath $DEP_base` && C=`realpath $DEP_client` && S=`realpath $DEP_site` && mkdir -p $O && cp -R $B/. $O/ && chmod -R u+w $O && rm -rf $O/app/client && mkdir -p $O/app/client && cp -R $C/. $O/app/client/ && chmod -R u+w $O/app/client && cp -R $S/. $O/app/client/ && chmod -R u+w $O/app/client",
+)
+
 filegroup(name = "check", srcs = CHECKS)
 
 # `marketing-kit modules` runs on the installed packages, as a cached action (munhq/desk#244): the check `modules` builds it.
