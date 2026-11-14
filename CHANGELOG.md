@@ -2,7 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
-## [0.7.52] — 2026-11-14
+## [0.7.53] — 2026-11-14
+
+The fixes below were first tagged 0.7.52. That tag points at a change that was reverted before it reached `main`, and npm never received it.
 
 ### Fixed
 - **A tombstone is sent only for a session whose source is confirmed missing.** On 2026-11-12 one collector sent 11,977 tombstones for sessions whose files were on disk, because the walk had not listed them. After a complete walk the collector now asks the backend of each ledger session that the walk did not visit whether the source exists. A backend that is not available (a folder that is not mounted) gives no answer, and a batch of more than 50 sessions that is also more than 5% of the ledger is not sent. `CHAT_RECALL_TOMBSTONES` is `report` by default: the collector logs the count and the first five ids. `act` sends them (`packages/cli/src/tombstone-rule.ts`).
