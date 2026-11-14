@@ -118,3 +118,6 @@ action(
 )
 
 filegroup(name = "check", srcs = CHECKS)
+
+# `marketing-kit modules` runs on the installed packages, as a cached action (munhq/desk#244): the check `modules` builds it.
+node_action(name = "modules", srcs = SOURCES, cmd = "npx marketing-kit modules .", priority = 1)
