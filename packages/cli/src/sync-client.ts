@@ -47,7 +47,7 @@ import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
-import { walkSessionLimit, orderRefsForWalk } from './walk-budget.js';
+import { walkSessionLimit, orderRefsForWalk, mayTombstone } from './walk-budget.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
@@ -1912,6 +1912,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   let traceN = 0;
   const memBudget = startBudget();
   let sessionsBuilt = 0;
+  let walkPaused = false;
   // ── KEEP THE EVENT LOOP ALIVE ───────────────────────────────────────────
   //
   // THIS IS WHY THE COLLECTOR LOOKED DEAD. Every `await` in this loop resolves
@@ -1969,6 +1970,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     if (shouldPause(usedNow, memBudget, sessionsBuilt)) {
       releaseMemory();
       reclaimCgroup();
+      walkPaused = true;
       console.error(`[sync] walk paused at the memory bound (used=${usedNow}MB, started at ${memBudget.baselineMb}MB) after ${sessionsBuilt} build(s) and ${considered - 1} of ${slice.length} session(s) — the next tick continues`);
       break;
     }
@@ -2402,7 +2404,9 @@ const refs = listAvailableBackends().flatMap((b) => {
   //    lists only recent sessions, so "in ledger but not walked" means
   //    "old and unchanged", NOT "deleted" — tombstoning there would wipe
   //    every quiet session from the server.
-  if (ledger && !changedWalk) {
+  // The server keeps a tombstone for good, so only a walk that listed and visited
+  // every local session may send them (see `mayTombstone`).
+  if (ledger && mayTombstone({ changedWalk, listed: refs.length, sliceSize: slice.length, paused: walkPaused })) {
     const tombstones: Array<{ session_id: string; deleted_at: number }> = [];
     for (const [sessionId] of ledger) {
       if (!localSessionIds.has(sessionId)) {
