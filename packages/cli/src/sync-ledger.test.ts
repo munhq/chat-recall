@@ -19,6 +19,15 @@ afterAll(() => {
 });
 
 describe('sync-ledger (JSON watermark)', () => {
+  test('a row marked empty keeps the flag until the session is acked again', async () => {
+    const { markSynced, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    markSynced('https://e.example', [{ id: 'stub', mtime: 100, empty: true }]);
+    _resetLedgerCacheForTests();
+    expect(getSyncedRows('https://e.example').get('stub')?.E).toBe(1);
+    markSynced('https://e.example', [{ id: 'stub', mtime: 200 }]);
+    expect(getSyncedRows('https://e.example').get('stub')?.E).toBeUndefined();
+  });
+
   test('markSynced → getSyncedMtimes round-trips per server', async () => {
     const { markSynced, getSyncedMtimes } = await import('./sync-ledger.js');
     markSynced('https://a.example', [{ id: 's1', mtime: 1000.7 }, { id: 's2', mtime: 2000 }]);

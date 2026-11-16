@@ -2132,7 +2132,8 @@ const refs = listAvailableBackends().flatMap((b) => {
     // even if the transcript bytes are unchanged.
     const ackRow = ledger?.get(ref.prefixedId);
     const priorContentHash = ackRow && ackRow.v >= extractorVersionForId(ref.prefixedId) ? ackRow.h : undefined;
-    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal, priorContentHash });
+    let emptyVerdict = false;
+    const built = await buildConversationSync(ref, mtime, { onEmpty: () => { emptyVerdict = true; }, mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal, priorContentHash });
     if (built && 'unchanged' in built) {
       // Content byte-identical to the last FULL sync to this target (mtime bumped
       // / resume rewrite / OpenCode summary bump). Nothing to re-ship, re-extract
@@ -2170,7 +2171,7 @@ const refs = listAvailableBackends().flatMap((b) => {
       // heartbeat (4GB+ heap peak, 12-minute walks, heap-OOM crash loops).
       // A real content change bumps mtime and re-evaluates.
       if (ledger) {
-        try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime }]); }
+        try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime, ...(emptyVerdict ? { empty: true } : {}) }]); }
         catch { /* ledger is local bookkeeping — never fail a sync over it */ }
       }
       skipped++;
@@ -2662,6 +2663,9 @@ export async function buildConversationSync(
      *  over a directory). When provided, skip the per-session subprocess scan
      *  and use these instead — built-in regex + tenant rules still run inline. */
     precomputedExternal?: ScanFinding[];
+    /** Called when the build gives null because the content has nothing to ship
+     *  (no readable message, or one of chat-recall's own prompts). */
+    onEmpty?: () => void;
     /** The content hash this target last FULL-synced (ledger `h`). When the
      *  freshly-exported transcript hashes equal to it, the whole build is
      *  redundant — we bail immediately with { unchanged, srcHash } so the caller
@@ -2696,6 +2700,7 @@ export async function buildConversationSync(
   // runs (normal-size sessions) it also yields the fullest raw container, which
   // the secret scan + raw archive below reuse instead of re-exporting.
   let transcript: { messages: any[]; subagents: any[]; payloadCap?: number } | null = null;
+  let parsedEmpty = false;
   let fullestContainer: RawContainer | null = null;
   if (oversized) {
     const backend = getBackendForId(ref.prefixedId);
@@ -2863,13 +2868,17 @@ export async function buildConversationSync(
       try {
         const t = await parseTranscript(ref.prefixedId, { payloadCap: SYNC_PAYLOAD_CAP });
         if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
+        else if (t) parsedEmpty = true;   // the file was read and holds no message
       } catch { /* unparseable */ }
     }
   }
-  if (!transcript) return null;
+  if (!transcript) {
+    if (parsedEmpty) opts.onEmpty?.();
+    return null;
+  }
 
   const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
-  if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) return null;
+  if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) { opts.onEmpty?.(); return null; }
 
   // Skip chat-recall's OWN LLM invocations that the AI CLI logged as sessions —
   // summary generation and health-check pings. On this machine ~half of all
@@ -2877,7 +2886,7 @@ export async function buildConversationSync(
   // conversation list. Anchored to the first user message so a real chat that
   // merely quotes the prompt is not dropped.
   const firstUser = textMessages.find(isPersonMessage);
-  if (isInternalToolPrompt(firstUser?.content)) return null;
+  if (isInternalToolPrompt(firstUser?.content)) { opts.onEmpty?.(); return null; }
 
   // Trim payload bodies (tool inputs/results, thinking — raw replay never
   // ships), then redact every string. Counts are preserved exactly.

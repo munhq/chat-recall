@@ -36,7 +36,7 @@ export interface ReconcilePlan {
 }
 
 export function planReconcile(opts: {
-  ledger: ReadonlyMap<string, { m: number }>;
+  ledger: ReadonlyMap<string, { m: number; E?: 1 }>;
   serverIds: ReadonlySet<string>;
   deletedIds?: ReadonlySet<string>;
   limit?: number;
@@ -44,7 +44,8 @@ export function planReconcile(opts: {
   const limit = opts.limit ?? RECONCILE_MAX_PER_RUN;
   const missing: Array<[string, number]> = [];
   for (const [id, row] of opts.ledger) {
-    if (opts.serverIds.has(id) || opts.deletedIds?.has(id)) continue;
+    // A session with nothing to ship has no row on the server, and none is owed.
+    if (row.E || opts.serverIds.has(id) || opts.deletedIds?.has(id)) continue;
     missing.push([id, row.m]);
   }
   missing.sort((a, b) => b[1] - a[1]);
@@ -78,7 +79,7 @@ export interface ReconcileResult { mode: ReconcileMode; missing: number; cleared
 
 export interface ReconcileDeps {
   listServer?: (server: string, token: string) => Promise<ServerSessionList>;
-  ledgerRows?: (server: string) => ReadonlyMap<string, { m: number }>;
+  ledgerRows?: (server: string) => ReadonlyMap<string, { m: number; E?: 1 }>;
   forget?: (server: string, ids: string[]) => void;
   log?: (line: string) => void;
 }

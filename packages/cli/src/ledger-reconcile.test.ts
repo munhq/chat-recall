@@ -16,6 +16,13 @@ const list = (ids: string[], deleted: string[] = []): ServerSessionList => ({ id
 beforeEach(() => _resetReconcileClockForTests());
 
 describe('planReconcile', () => {
+  test('a session whose build gave nothing to ship is not owed to the server', () => {
+    const ledger = new Map<string, { m: number; E?: 1 }>([['stub', { m: 500, E: 1 }], ['real', { m: 100 }]]);
+    const plan = planReconcile({ ledger, serverIds: new Set() });
+    expect(plan.missing).toEqual(['real']);
+    expect(plan.queued).toEqual(['real']);
+  });
+
   test('a session in the ledger and not on the server is queued, newest first', () => {
     const plan = planReconcile({
       ledger: rows([['old', 100], ['new', 300], ['mid', 200], ['held', 400]]),

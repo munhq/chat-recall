@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.62] — 2026-11-16
+### Fixed
+- **A session with nothing to ship is no longer counted as missing from the server.** A session that holds only a `/clear` has no message a person can read, so its build gives nothing to ship and the server holds no row for it. The ledger check listed 1,262 such sessions as "in the ledger and not on the server" (`chat-recall verify --deep --since-hours 6`) and, at every start of the daemon, cleared their ledger rows and built them again. The walk now marks the ledger row of such a session with `E`, and the ledger check and `verify` leave marked rows out. A change to the file clears the mark (`sync-empty-verdict.test.ts`, `ledger-reconcile.test.ts`).
 ## [0.7.61] — 2026-11-16
 ### Fixed
 - **An OpenCode session over the ceiling is sized in SQLite and read one row at a time.** The dump of a 49 MB OpenCode session was built whole, scanned whole, and the transcript parse loaded every part row with `.all()` before the tool states were cut. The dump size is now summed by SQLite, the secret scan reads the rows in pieces of 1 MB with the line numbers of the dump, and the parse reads each row with `.iterate()` and cuts the tool state when its row is read. Peak resident memory of the build of that session fell from 527 MB to 274 MB (263 MB with the 384 MB heap cap of the service). The scan pieces of a Claude session are 1 MB instead of 8 MB (`opencode-stream.test.ts`, `session-file-scan.test.ts`).

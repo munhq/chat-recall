@@ -69,6 +69,11 @@ export interface SyncedRow {
   /** The backend's `sourceLayout` when `o` was captured, for a session whose
    *  copies are read joined end to end. Absent for a session with one copy. */
   L?: string;
+  /** The build of this content gave nothing to ship: no message a person can
+   *  read (a `/clear` and nothing else) or one of chat-recall's own prompts.
+   *  The server holds no row for it, so the ledger check does not count it
+   *  as missing. A later ack of the session drops the flag. */
+  E?: 1;
 }
 /** On disk a row is the {m,v[,f,o,s]} shape OR a legacy bare mtime number. */
 type LedgerEntry = SyncedRow | number;
@@ -443,6 +448,8 @@ export function markSynced(
     chunkFinal?: boolean;
     /** This ack is the head of a chunked full sync. */
     chunkedHead?: boolean;
+    /** The build of this content gave nothing to ship. */
+    empty?: boolean;
   }>,
 ): void {
   if (rows.length === 0) return;
@@ -483,6 +490,7 @@ export function markSynced(
     else if (prev?.k && !completesChunked && !(cursorFromCaller && r.full)) base.k = 1;
     const layout = cursorFromCaller ? r.layout : prev?.L;
     if (layout) base.L = layout;
+    if (r.empty) base.E = 1;
     forServer[r.id] = base;
   }
   persist(data);
