@@ -1156,6 +1156,29 @@ const httpServer = app.listen(PORT, HOST, () => {
     log.info('self-heal sweep enabled (server mode)');
   }
 
+  // Tail compaction (issue #27): merge the segments of an idle session back into
+  // its base, one session at a time, so reads stay cheap.
+  if (isServerMode() && runWorkers) {
+    const COMPACT_MS = 10 * 60 * 1000;
+    let compactInFlight = false;
+    const compactPass = async (): Promise<void> => {
+      if (compactInFlight) return;
+      compactInFlight = true;
+      try {
+        const { compactTailsAllTenants } = await import('./services/tail-compaction.js');
+        const r = await compactTailsAllTenants();
+        if (r.sessions > 0 || r.failed > 0) log.info(r, 'tail compaction pass');
+      } catch (err) {
+        log.error({ err }, 'tail compaction pass failed');
+      } finally {
+        compactInFlight = false;
+      }
+    };
+    setTimeout(() => { void compactPass(); }, 60_000).unref();
+    setInterval(() => { void compactPass(); }, COMPACT_MS).unref();
+    log.info('tail compaction enabled (server mode)');
+  }
+
   // Secret re-scan: run TODAY's rules over text we ALREADY store. Detection
   // has to happen client-side (we never receive unredacted text), so the one
   // gap that leaves is a device whose redactor missed something — the secret is

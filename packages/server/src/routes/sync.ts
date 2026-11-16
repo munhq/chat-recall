@@ -39,7 +39,7 @@
 import express from 'express';
 import { tombstoneBatchTooLarge, TombstoneBatchRefused, splitTombstoned } from './tombstone-guard.js';
 import { summariseIngestBatch } from './ingest-log.js';
-import type { TailState } from '@chat-recall/engine/core/store/session-tails.js';
+import { markerTail, TAIL_SEGMENT_TARGET_BYTES, type TailState, type TailBody } from '@chat-recall/engine/core/store/session-tails.js';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
@@ -214,10 +214,21 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
         const numbered = numberTail([{ line: state.lastLine } as EnvelopeMessage], tailMsgs, cv.base_line);
         const lastLine = numbered.length > 0 ? (numbered[numbered.length - 1].line ?? state.lastLine) : state.lastLine;
-        sessionTailBatch.push({
-          sessionId: cv.session_id, seq: state.seq + 1, mtime,
-          tail: { v: PARSER_VERSION, base: state.o, o: cv.from_offset ?? state.o, lastLine, messages: numbered },
-        });
+        // A small newest segment takes this tail, so a session that appends every few
+        // seconds adds one row for each 256 KB and not one for each append.
+        let seq = state.seq + 1;
+        let base = state.o;
+        let messages: unknown[] = numbered;
+        if (state.seq >= 1 && state.bytes < TAIL_SEGMENT_TARGET_BYTES) {
+          const open = await store.getSessionTailBody(cv.session_id, state.seq);
+          if (open && Array.isArray(open.messages)) {
+            seq = state.seq;
+            base = open.base;
+            messages = [...open.messages, ...numbered];
+          }
+        }
+        const segment: TailBody = { v: PARSER_VERSION, base, o: cv.from_offset ?? state.o, lastLine, messages };
+        sessionTailBatch.push({ sessionId: cv.session_id, seq, mtime, tail: segment });
         const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
         if (textSource.length > 0) {
           const maxIdx = priorChunkIdx.get(cv.session_id) ?? 0;
@@ -545,13 +556,19 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
     // backends (0/undefined otherwise — those never append).
     const syncedOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
     // Collected, not written — flushed in one statement after the loop.
+    // The state of the tail is written with the base of an append-only session
+    // (`o` above 0), so its first append finds it and reads no envelope.
+    const lastLineOf = (msgs: Array<{ line?: number }>): number => (msgs.length > 0 ? (msgs[msgs.length - 1].line ?? msgs.length) : 0);
     if (envelope) {
       cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }) });
+      if (syncedOffset > 0) sessionTailBatch.push({ sessionId: cv.session_id, seq: 0, mtime, tail: markerTail(PARSER_VERSION, syncedOffset, lastLineOf(envelope.messages as Array<{ line?: number }>)) });
     } else if (turns.length > 0) {
+      const messages = envelopeFromTurns(turns);
       cachedContentBatch.push({
         id: cv.session_id, sourceType: 'session', mtime,
-        content: JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
+        content: JSON.stringify({ v: PARSER_VERSION, messages, subagents: [], o: syncedOffset }),
       });
+      if (syncedOffset > 0) sessionTailBatch.push({ sessionId: cv.session_id, seq: 0, mtime, tail: markerTail(PARSER_VERSION, syncedOffset, lastLineOf(messages as Array<{ line?: number }>)) });
     }
     tally.conv++;
 }
@@ -790,6 +807,17 @@ router.post('/', async (req, res) => {
   const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
   const fields = arr<SyncFieldRow>(req.body?.fields);
   const inventory = parseInventory(req.body?.inventory);
+
+  // A request names at most this many sessions. The bound is on the count because
+  // the body size says little about the work: 36 appended sessions in 291 KB ended
+  // a pod (issue #27). The collector sends 10 or fewer.
+  const maxConversations = Number(process.env.CHAT_RECALL_INGEST_MAX_CONVERSATIONS) || 100;
+  if (conversations.length > maxConversations) {
+    return res.status(413).json({
+      error: `a request may name at most ${maxConversations} sessions`, code: 'too_many_conversations',
+      limit: maxConversations, received: conversations.length,
+    });
+  }
 
   // Ingest backpressure: bound concurrent ingestion (per-tenant + global) and
   // cost the batch by row count, shedding with 429 + Retry-After (which the

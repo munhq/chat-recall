@@ -353,6 +353,21 @@ export interface StorageDriver {
    * envelope does not end like an envelope gets no entry.
    */
   seedSessionTailStates(sessionIds: string[], version?: number): Promise<Map<string, import('./session-tails.js').TailState>>;
+  /**
+   * One page of a session's messages from its base and segments, without building
+   * the merged envelope. `limit` 0 returns every message; `minMtime` keeps out a
+   * row older than that. Null when there is no envelope.
+   */
+  getSessionPage(id: string, opts: { offset: number; limit: number; minMtime?: number }): Promise<import('./session-tails.js').EnvelopePage | null>;
+  /** The body of one segment, or null when it does not exist or cannot be read. */
+  getSessionTailBody(sessionId: string, seq: number): Promise<import('./session-tails.js').TailBody | null>;
+  /** Sessions whose segments passed a limit and have been idle, largest first. */
+  sessionsNeedingCompaction(opts?: { limit?: number; maxSegments?: number; maxBytes?: number; idleMs?: number }): Promise<string[]>;
+  /**
+   * Merge a session's base and segments into a new base, drop the segments and
+   * leave the marker. One session at a time. Null when there was nothing to merge.
+   */
+  compactSessionTails(sessionId: string, version?: number): Promise<{ segments: number; messages: number } | null>;
   /** Write tail segments, outside an ingest batch. */
   appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: import('./session-tails.js').TailBody }>): Promise<void>;
   /** Which of these ids already have a metadata row — one query for a batch. */

@@ -31,7 +31,7 @@ import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
-import { TAIL_SOURCE_TYPE, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, peekEnvelopeTail, markerTail, type TailBody, type TailState } from './session-tails.js';
+import { TAIL_SOURCE_TYPE, TAIL_INLINE_MAX_BYTES, TAIL_COMPACT_MAX_SEGMENTS, TAIL_COMPACT_MAX_BYTES, TAIL_COMPACT_IDLE_MS, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, pageEnvelope, peekEnvelopeTail, markerTail, type EnvelopePage, type TailBody, type TailState } from './session-tails.js';
 import { embedPolicy, trivialSessionPredicateSql } from './embed-policy.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -878,6 +878,21 @@ export class PgStore implements StorageDriver {
   }
 
   /**
+   * One page of a session's messages, from its base and segments. The merged
+   * envelope is not built or turned back into text, so the work is one parse of
+   * the base and of the segments. `minMtime` keeps a row that is older out.
+   */
+  async getSessionPage(id: string, opts: { offset: number; limit: number; minMtime?: number }): Promise<EnvelopePage | null> {
+    const row = await this.one(
+      `SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session' AND mtime>=$3`,
+      [this.t, id, intMs(opts.minMtime ?? 0)]);
+    if (!row) return null;
+    const base = await readCachedBody(row);
+    if (!base) return null;
+    return pageEnvelope(base, (await this.tailBodies([id])).get(id) ?? [], opts.offset, opts.limit, Number(row.mtime));
+  }
+
+  /**
    * The bodies of the tail segments of these sessions, in sequence order.
    *
    * A segment row is invisible to a member (its id is not the id of a
@@ -942,7 +957,7 @@ export class PgStore implements StorageDriver {
       const peek = base ? peekEnvelopeTail(base) : null;
       if (!peek) continue;
       await this.appendSessionTails([{ sessionId: id, seq: 0, mtime: Number(row.mtime), tail: markerTail(version, peek.o, peek.lastLine) }]);
-      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine });
+      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine, bytes: 0 });
     }
     return out;
   }
@@ -956,10 +971,86 @@ export class PgStore implements StorageDriver {
     await runUnrestricted(() => this.tx((client) => this.writeSessionTails(client, rows)));
   }
 
+  /** Serialises the writers of one session's segments: an append and a compaction never overlap. */
+  private async lockSessionTails(client: any, sessionIds: string[]): Promise<void> {
+    for (const id of [...new Set(sessionIds)].sort()) {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${this.t}:${id}`]);
+    }
+  }
+
   private async writeSessionTails(client: any, rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>): Promise<void> {
+    await this.lockSessionTails(client, rows.map((r) => r.sessionId));
     await this.writeCachedContent(client, rows.map((r) => ({
       id: tailRowId(r.sessionId, r.seq), sourceType: TAIL_SOURCE_TYPE, mtime: r.mtime, content: JSON.stringify(r.tail),
     })));
+  }
+
+  /** The body of one segment, or null when it does not exist or cannot be read. */
+  async getSessionTailBody(sessionId: string, seq: number): Promise<TailBody | null> {
+    const row = await runUnrestricted(() => this.one(
+      `SELECT content_json, object_key FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`,
+      [this.t, tailRowId(sessionId, seq), TAIL_SOURCE_TYPE]));
+    const body = row ? await readCachedBody(row) : null;
+    if (!body) return null;
+    try { return JSON.parse(body) as TailBody; } catch { return null; }
+  }
+
+  /**
+   * Sessions whose segments passed a limit and that no append has touched for the
+   * idle time, largest first. An active session is left alone, so a compaction
+   * does not race the appends that are still arriving.
+   */
+  async sessionsNeedingCompaction(opts: { limit?: number; maxSegments?: number; maxBytes?: number; idleMs?: number } = {}): Promise<string[]> {
+    const rows = await runUnrestricted(() => this.q(
+      `SELECT left(id, -11) AS sid,
+              sum(CASE WHEN object_key <> '' THEN content_bytes ELSE octet_length(content_json) END) AS bytes
+         FROM content_cache
+        WHERE tenant=$1 AND source_type=$2
+        GROUP BY left(id, -11)
+       HAVING (count(*) > $3 OR sum(CASE WHEN object_key <> '' THEN content_bytes ELSE octet_length(content_json) END) > $4)
+          AND max(mtime) < $5
+        ORDER BY 2 DESC
+        LIMIT $6`,
+      [this.t, TAIL_SOURCE_TYPE, opts.maxSegments ?? TAIL_COMPACT_MAX_SEGMENTS, opts.maxBytes ?? TAIL_COMPACT_MAX_BYTES,
+        Date.now() - (opts.idleMs ?? TAIL_COMPACT_IDLE_MS), opts.limit ?? 20]));
+    return rows.map((r: any) => r.sid as string);
+  }
+
+  /**
+   * Merge a session's base and segments into a new base, drop the segments and
+   * leave the marker that carries the state. One session, in one transaction,
+   * under the lock that the appends take. Returns null when there was nothing to
+   * merge. Its memory is one envelope.
+   */
+  async compactSessionTails(sessionId: string, version = 6): Promise<{ segments: number; messages: number } | null> {
+    return runUnrestricted(() => this.tx(async (client: any) => {
+      await this.lockSessionTails(client, [sessionId]);
+      const tails = await client.query(
+        `SELECT id, content_json, object_key FROM content_cache
+          WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = $3 ORDER BY id`,
+        [this.t, TAIL_SOURCE_TYPE, sessionId]);
+      if (tails.rows.length < 2) return null;
+      const baseRow = await client.query(
+        `SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`,
+        [this.t, sessionId]);
+      if (baseRow.rows.length === 0) return null;
+      const base = await readCachedBody(baseRow.rows[0]);
+      if (!base) return null;
+      const bodies = await Promise.all(tails.rows.map((r: any) => readCachedBody(r)));
+      const parsed = tails.rows.map((r: any, i: number) => ({ p: parseTailRowId(r.id), body: bodies[i] }));
+      if (parsed.some((t: any) => !t.p || t.body === null)) return null;   // a segment cannot be read: leave the session as it is
+      const merged = mergeEnvelopeWithTails(base, parsed.map((t: any) => ({ seq: t.p.seq, body: t.body as string })));
+      let end = peekEnvelopeTail(merged);
+      if (!end) {
+        const env = JSON.parse(merged) as { messages?: Array<{ line?: number }>; o?: number };
+        const last = env.messages?.[env.messages.length - 1];
+        end = { o: typeof env.o === 'number' ? env.o : 0, lastLine: last?.line ?? 0 };
+      }
+      const mtime = Number(baseRow.rows[0].mtime);
+      await this.writeCachedContent(client, [{ id: sessionId, sourceType: 'session', mtime, content: merged }]);
+      await this.writeSessionTails(client, [{ sessionId, seq: 0, mtime, tail: markerTail(version, end.o, end.lastLine) }]);
+      return { segments: tails.rows.length, messages: (JSON.parse(merged) as { messages: unknown[] }).messages.length };
+    }));
   }
 
   /** Delete the segments of these sessions and name their objects, inside `client`'s transaction. */
@@ -1391,7 +1482,9 @@ export class PgStore implements StorageDriver {
     const objects = getObjectStore();
     let prepared = list.map((r) => {
       const body = applyChunkPrivacy(r.content);
-      if (!objects) return { r, body, contentJson: body, objectKey: '', hash: '', bytes: 0 };
+      // A small segment stays in its row: an object-store write for a few KB costs more than it saves.
+      const inline = r.sourceType === TAIL_SOURCE_TYPE && Buffer.byteLength(body, 'utf8') < TAIL_INLINE_MAX_BYTES;
+      if (!objects || inline) return { r, body, contentJson: body, objectKey: '', hash: '', bytes: 0 };
       const hash = contentDigest(body);
       return {
         r,
@@ -1410,7 +1503,7 @@ export class PgStore implements StorageDriver {
     // — the read path accepts either shape, so the conversation is kept.
     if (objects) {
       try {
-        await Promise.all(prepared.map((p) => objects.put(p.objectKey, gzipText(p.body))));
+        await Promise.all(prepared.filter((p) => p.objectKey).map((p) => objects.put(p.objectKey, gzipText(p.body))));
       } catch (e) {
         const { createLogger } = await import('../logger.js');
         createLogger('pg').warn({ err: e, rows: prepared.length }, 'content cache: object PUT failed, keeping bodies in Postgres');

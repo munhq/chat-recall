@@ -11,7 +11,7 @@
 
 import { MemoryStore } from '../memory-store.js';
 import { isEmptyBatch, emptyCounts, type IngestBatch, type IngestCounts, type IngestMetaWriter, type IngestSideWriters } from './ingest-batch.js';
-import { TAIL_SOURCE_TYPE, tailRowId, tailStateOf, mergeEnvelopeWithTails, peekEnvelopeTail, markerTail, type TailBody, type TailState } from './session-tails.js';
+import { TAIL_SOURCE_TYPE, tailRowId, tailStateOf, mergeEnvelopeWithTails, pageEnvelope, peekEnvelopeTail, markerTail, type EnvelopePage, type TailBody, type TailState } from './session-tails.js';
 
 import type { StorageDriver } from './driver.js';
 
@@ -122,9 +122,35 @@ export class SqliteStore implements StorageDriver {
       const peek = row?.content ? peekEnvelopeTail(row.content) : null;
       if (!row || !peek) continue;
       this.inner.setCachedContent(tailRowId(id, 0), TAIL_SOURCE_TYPE, row.mtime, JSON.stringify(markerTail(version, peek.o, peek.lastLine)));
-      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine });
+      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine, bytes: 0 });
     }
     return out;
+  }
+  async getSessionPage(id: string, opts: { offset: number; limit: number; minMtime?: number }): Promise<EnvelopePage | null> {
+    const row = this.inner.getCachedContentStale(id, 'session');
+    if (!row || !row.content || row.mtime < (opts.minMtime ?? 0)) return null;
+    return pageEnvelope(row.content, this.tailRows(id), opts.offset, opts.limit, row.mtime);
+  }
+  async getSessionTailBody(sessionId: string, seq: number): Promise<TailBody | null> {
+    const r = this.inner.getCachedContentStale(tailRowId(sessionId, seq), TAIL_SOURCE_TYPE);
+    if (!r || !r.content) return null;
+    try { return JSON.parse(r.content) as TailBody; } catch { return null; }
+  }
+  /** The test driver keeps no index of segments by size; compaction is called per session. */
+  async sessionsNeedingCompaction(): Promise<string[]> { return []; }
+  async compactSessionTails(sessionId: string, version = 6) {
+    const tails = this.tailRows(sessionId);
+    if (tails.length < 2) return null;
+    const row = this.inner.getCachedContentStale(sessionId, 'session');
+    if (!row || !row.content) return null;
+    const merged = mergeEnvelopeWithTails(row.content, tails);
+    const env = JSON.parse(merged) as { messages: Array<{ line?: number }>; o?: number };
+    const last = env.messages[env.messages.length - 1];
+    this.inner.setCachedContent(sessionId, 'session', row.mtime, merged);
+    this.dropTails(sessionId);
+    this.inner.setCachedContent(tailRowId(sessionId, 0), TAIL_SOURCE_TYPE, row.mtime,
+      JSON.stringify(markerTail(version, typeof env.o === 'number' ? env.o : 0, last?.line ?? 0)));
+    return { segments: tails.length, messages: env.messages.length };
   }
   async appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>) {
     for (const r of rows) this.inner.setCachedContent(tailRowId(r.sessionId, r.seq), TAIL_SOURCE_TYPE, r.mtime, JSON.stringify(r.tail));

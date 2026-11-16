@@ -1698,7 +1698,13 @@ const refs = listAvailableBackends().flatMap((b) => {
 
   let appendBatch: Array<Record<string, unknown>> = [];
   let appendBatchBytes = 0;
-  const APPEND_BATCH_SIZE = 50;
+  // One request touches this many sessions at most. The server did work for each
+  // session of a batch at the same time, and 36 appended sessions in one request
+  // of 291 KB ended a pod on 2026-11-16 (issue #27).
+  const APPEND_BATCH_SIZE = (() => {
+    const n = Number(process.env.CHAT_RECALL_APPEND_BATCH_MAX);
+    return Number.isInteger(n) && n > 0 ? n : 10;
+  })();
   // Chunks of a chunked session are up to SYNC_CHUNK_BYTES each, so the batch
   // is bounded by bytes as well as by count.
   const APPEND_BATCH_MAX_BYTES = SYNC_CHUNK_BYTES;

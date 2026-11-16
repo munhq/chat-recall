@@ -31,7 +31,19 @@ export interface TailState {
   seq: number;
   o: number;
   lastLine: number;
+  /** Size of the newest segment's body in bytes. */
+  bytes: number;
 }
+
+/** A segment below this size takes the next append instead of a new segment, so a
+ *  session that appends every few seconds adds one row for each 256 KB of tail. */
+export const TAIL_SEGMENT_TARGET_BYTES = 256 * 1024;
+/** A segment body below this size is kept in the row, with no object-store write. */
+export const TAIL_INLINE_MAX_BYTES = 32 * 1024;
+/** A session is compacted when its segments pass either limit and none is newer than the idle time. */
+export const TAIL_COMPACT_MAX_SEGMENTS = 16;
+export const TAIL_COMPACT_MAX_BYTES = 2 * 1024 * 1024;
+export const TAIL_COMPACT_IDLE_MS = 5 * 60_000;
 
 export function tailRowId(sessionId: string, seq: number): string {
   return `${sessionId}#${String(seq).padStart(SEQ_WIDTH, '0')}`;
@@ -51,7 +63,7 @@ export function tailStateOf(seq: number, body: string): TailState | null {
   try {
     const t = JSON.parse(body) as Partial<TailBody>;
     if (typeof t.o !== 'number' || typeof t.lastLine !== 'number') return null;
-    return { seq, o: t.o, lastLine: t.lastLine };
+    return { seq, o: t.o, lastLine: t.lastLine, bytes: Buffer.byteLength(body, 'utf8') };
   } catch {
     return null;
   }
@@ -108,4 +120,56 @@ export function mergeEnvelopeWithTails(base: string, tails: ReadonlyArray<{ seq:
   } catch {
     return base;
   }
+}
+
+export interface EnvelopePage {
+  v: number | undefined;
+  total: number;
+  messages: unknown[];
+  subagents: unknown[];
+  mtime: number;
+}
+
+/**
+ * One page of messages from a stored envelope and its segments, without building
+ * the merged envelope or writing it back to text. `limit` 0 means every message.
+ * A segment that cannot be read leaves the base alone, as `mergeEnvelopeWithTails`
+ * does. Returns null when the base is not an envelope.
+ */
+export function pageEnvelope(
+  base: string,
+  tails: ReadonlyArray<{ seq: number; body: string }>,
+  offset: number,
+  limit: number,
+  mtime: number,
+): EnvelopePage | null {
+  let env: { v?: number; messages?: unknown[]; subagents?: unknown[] };
+  try { env = JSON.parse(base); } catch { return null; }
+  if (!env || !Array.isArray(env.messages)) return null;
+  const parts: unknown[][] = [env.messages];
+  let subagents = env.subagents;
+  try {
+    for (const { body } of [...tails].sort((a, b) => a.seq - b.seq)) {
+      const t = JSON.parse(body) as Partial<TailBody>;
+      if (!Array.isArray(t.messages)) throw new Error('segment without messages');
+      parts.push(t.messages);
+      if (Array.isArray(t.subagents) && t.subagents.length > 0) subagents = t.subagents;
+    }
+  } catch {
+    parts.length = 1;
+    subagents = env.subagents;
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const from = Math.max(0, offset);
+  const to = limit === 0 ? total : Math.min(total, from + limit);
+  const messages: unknown[] = [];
+  let at = 0;
+  for (const part of parts) {
+    const lo = Math.max(from - at, 0);
+    const hi = Math.min(to - at, part.length);
+    for (let i = lo; i < hi; i++) messages.push(part[i]);
+    at += part.length;
+    if (at >= to) break;
+  }
+  return { v: env.v, total, messages, subagents: subagents ?? [], mtime };
 }

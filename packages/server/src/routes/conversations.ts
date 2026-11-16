@@ -1640,29 +1640,22 @@ router.get('/:id', async (req, res) => {
       // entries from older buggy parsers are ignored instead of served.
       const PARSER_VERSION = 6;
       if (mtime > 0) {
-        const cached = await store.getCachedContent(id, 'session', mtime);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            if (parsed && parsed.v === PARSER_VERSION && Array.isArray(parsed.messages)) {
-              const etag = buildETag([id, 'messages', mtime, PARSER_VERSION, offset, limit]);
-              if (maybeSendNotModified(req, res, etag)) return;
-              const total = parsed.messages.length;
-              const slice = limit === 0 ? parsed.messages : parsed.messages.slice(offset, offset + limit);
-              return res.json({
-                sessionId: id,
-                messages: slice,
-                subagents: parsed.subagents ?? [],
-                count: slice.length,
-                total,
-                offset,
-                hasMore: limit !== 0 && offset + slice.length < total,
-                fromCache: true,
-              });
-            }
-          } catch {
-            // fall through and reparse
-          }
+        // One page from the base and its tail segments: the merged envelope is not
+        // built and not turned back into text for a request that wants a slice.
+        const page = await store.getSessionPage(id, { offset, limit, minMtime: mtime });
+        if (page && page.v === PARSER_VERSION) {
+          const etag = buildETag([id, 'messages', mtime, PARSER_VERSION, offset, limit]);
+          if (maybeSendNotModified(req, res, etag)) return;
+          return res.json({
+            sessionId: id,
+            messages: page.messages,
+            subagents: page.subagents,
+            count: page.messages.length,
+            total: page.total,
+            offset,
+            hasMore: limit !== 0 && offset + page.messages.length < page.total,
+            fromCache: true,
+          });
         }
       }
 
@@ -1675,26 +1668,19 @@ router.get('/:id', async (req, res) => {
         // Prefer the LATEST envelope even when its mtime lags the metadata
         // row (mid-backfill, or an active session that grew since the last
         // sync). A complete snapshot beats the text-only chunk fallback.
-        const stale = await store.getCachedContentStale(id, 'session');
-        if (stale) {
-          try {
-            const parsed = JSON.parse(stale.content);
-            if (parsed && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
-              const total = parsed.messages.length;
-              const slice = limit === 0 ? parsed.messages : parsed.messages.slice(offset, offset + limit);
-              return res.json({
-                sessionId: id,
-                messages: slice,
-                subagents: parsed.subagents ?? [],
-                count: slice.length,
-                total,
-                offset,
-                hasMore: limit !== 0 && offset + slice.length < total,
-                fromCache: true,
-                snapshotMtime: stale.mtime,
-              });
-            }
-          } catch { /* corrupt row — fall through to chunks */ }
+        const stale = await store.getSessionPage(id, { offset, limit });
+        if (stale && stale.total > 0) {
+          return res.json({
+            sessionId: id,
+            messages: stale.messages,
+            subagents: stale.subagents,
+            count: stale.messages.length,
+            total: stale.total,
+            offset,
+            hasMore: limit !== 0 && offset + stale.messages.length < stale.total,
+            fromCache: true,
+            snapshotMtime: stale.mtime,
+          });
         }
         const chunks = await store.listChunksByItem('session', id);
         if (chunks.length === 0) {
