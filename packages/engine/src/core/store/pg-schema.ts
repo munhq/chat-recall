@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS content_cache (
 ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS object_key    TEXT   NOT NULL DEFAULT '';
 ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS content_hash  TEXT   NOT NULL DEFAULT '';
 ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS content_bytes BIGINT NOT NULL DEFAULT 0;
+-- #29: the number of messages the row holds (a base or a tail segment), so a page
+-- read picks the rows that cover its window from the counts and reads only those
+-- bodies. -1 means not counted: the row was written before the column existed.
+ALTER TABLE content_cache ADD COLUMN IF NOT EXISTS msg_count INTEGER NOT NULL DEFAULT -1;
 
 CREATE TABLE IF NOT EXISTS kv_store (
   tenant      TEXT NOT NULL DEFAULT 'default',

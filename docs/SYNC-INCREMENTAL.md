@@ -251,6 +251,15 @@ The server now keeps a tail as a segment:
   into a new base when it has more than 16 segments or 2 MB of them and no append
   came in the last five minutes. It works on one session at a time, under the lock
   that the appends take.
+- **Pages.** A compaction of a session of more than about 512 KB of messages writes
+  it as pages: the base keeps no messages, and each page is a segment of up to 512 KB
+  with its own message count (`content_cache.msg_count`; -1 means not counted, for a
+  row written before the column). A base of more than 2 MB that still holds its
+  messages is paged the same way. `getSessionPage` adds up the counts, chooses the rows
+  that cover the window and reads only those: for the first five messages of a session
+  of 3,000 it reads the base and one page. A session with an uncounted row is read
+  whole. A segment of 256 KB or more is closed, so the pages of a compaction are not
+  counted when the worker decides whether a session needs a compaction.
 - **Limits.** A request names at most `CHAT_RECALL_INGEST_MAX_CONVERSATIONS` (100)
   sessions, and the collector names at most `CHAT_RECALL_APPEND_BATCH_MAX` (10).
 

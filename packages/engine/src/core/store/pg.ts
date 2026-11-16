@@ -31,7 +31,7 @@ import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
-import { TAIL_SOURCE_TYPE, TAIL_INLINE_MAX_BYTES, TAIL_COMPACT_MAX_SEGMENTS, TAIL_COMPACT_MAX_BYTES, TAIL_COMPACT_IDLE_MS, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, pageEnvelope, peekEnvelopeTail, markerTail, type EnvelopePage, type TailBody, type TailState } from './session-tails.js';
+import { TAIL_SOURCE_TYPE, TAIL_INLINE_MAX_BYTES, TAIL_COMPACT_MAX_SEGMENTS, TAIL_COMPACT_MAX_BYTES, TAIL_COMPACT_IDLE_MS, TAIL_SEGMENT_TARGET_BYTES, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, pageEnvelope, peekEnvelopeTail, markerTail, planPageRead, splitIntoPages, TAIL_REPAGE_MIN_BASE_BYTES, type EnvelopePage, type TailBody, type TailState } from './session-tails.js';
 import { embedPolicy, trivialSessionPredicateSql } from './embed-policy.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -878,18 +878,61 @@ export class PgStore implements StorageDriver {
   }
 
   /**
-   * One page of a session's messages, from its base and segments. The merged
-   * envelope is not built or turned back into text, so the work is one parse of
-   * the base and of the segments. `minMtime` keeps a row that is older out.
+   * One page of a session's messages, from its base and segments. Every row
+   * carries its message count, so the rows that cover the window are chosen from
+   * the counts and only their bodies are read. A session that has a row with no
+   * count (written before the column) is read whole, as before. `minMtime` keeps a
+   * row that is older out.
    */
   async getSessionPage(id: string, opts: { offset: number; limit: number; minMtime?: number }): Promise<EnvelopePage | null> {
-    const row = await this.one(
-      `SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session' AND mtime>=$3`,
+    const baseRow = await this.one(
+      `SELECT mtime, msg_count FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session' AND mtime>=$3`,
       [this.t, id, intMs(opts.minMtime ?? 0)]);
+    if (!baseRow) return null;
+    const tailRows = await runUnrestricted(() => this.q(
+      `SELECT id, msg_count FROM content_cache WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = $3 ORDER BY id`,
+      [this.t, TAIL_SOURCE_TYPE, id]));
+    const counts = [Number(baseRow.msg_count), ...tailRows.map((r: any) => Number(r.msg_count))];
+    if (counts.some((c) => c < 0)) return this.getSessionPageWhole(id, opts, Number(baseRow.mtime));
+
+    const plan = planPageRead(counts, opts.offset, opts.limit);
+    const total = counts.reduce((n, c) => n + c, 0);
+    // The base always, for its version and its subagents: after a compaction it holds no messages.
+    const wanted = new Set<number>([0, ...plan.map((p) => p.part)]);
+    const ids = [...wanted].map((part) => (part === 0 ? id : tailRows[part - 1].id as string));
+    const rows = await runUnrestricted(() => this.q(
+      `SELECT id, source_type, content_json, object_key FROM content_cache
+        WHERE tenant=$1 AND id = ANY($2) AND source_type IN ('session', $3)`,
+      [this.t, ids, TAIL_SOURCE_TYPE]));
+    const bodies = new Map<string, string | null>();
+    await Promise.all(rows.map(async (r: any) => { bodies.set(r.id as string, await readCachedBody(r)); }));
+    const baseBody = bodies.get(id);
+    if (!baseBody) return null;
+    let env: { v?: number; messages?: unknown[]; subagents?: unknown[] };
+    try { env = JSON.parse(baseBody); } catch { return null; }
+    if (!env || !Array.isArray(env.messages)) return null;
+    const messages: unknown[] = [];
+    for (const { part, from, to } of plan) {
+      let list: unknown[];
+      if (part === 0) list = env.messages;
+      else {
+        const body = bodies.get(tailRows[part - 1].id as string);
+        if (!body) return this.getSessionPageWhole(id, opts, Number(baseRow.mtime));
+        try { list = (JSON.parse(body) as TailBody).messages; } catch { return this.getSessionPageWhole(id, opts, Number(baseRow.mtime)); }
+      }
+      for (let i = from; i < to; i++) messages.push(list[i]);
+    }
+    return { v: env.v, total, messages, subagents: env.subagents ?? [], mtime: Number(baseRow.mtime) };
+  }
+
+  /** The page of a session whose rows are not all counted: base and segments are read and parsed whole. */
+  private async getSessionPageWhole(id: string, opts: { offset: number; limit: number }, mtime: number): Promise<EnvelopePage | null> {
+    const row = await this.one(
+      `SELECT content_json, object_key FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, id]);
     if (!row) return null;
     const base = await readCachedBody(row);
     if (!base) return null;
-    return pageEnvelope(base, (await this.tailBodies([id])).get(id) ?? [], opts.offset, opts.limit, Number(row.mtime));
+    return pageEnvelope(base, (await this.tailBodies([id])).get(id) ?? [], opts.offset, opts.limit, mtime);
   }
 
   /**
@@ -990,6 +1033,7 @@ export class PgStore implements StorageDriver {
       await this.lockSessionTails(client, rows.map((r) => r.sessionId));
       await this.writeCachedContent(client, rows.map((r) => ({
         id: tailRowId(r.sessionId, r.seq), sourceType: TAIL_SOURCE_TYPE, mtime: r.mtime, content: JSON.stringify(r.tail),
+        messageCount: r.tail.messages.length,
       })));
     }));
   }
@@ -1026,19 +1070,33 @@ export class PgStore implements StorageDriver {
   }
 
   async sessionsNeedingCompaction(opts: { limit?: number; maxSegments?: number; maxBytes?: number; idleMs?: number } = {}): Promise<string[]> {
+    // Only small segments count: a segment of 256 KB or more is closed (an append starts
+    // the next one), and the pages of a compaction are such segments. Counting them would
+    // list a paged session again after every pass.
+    const size = `(CASE WHEN object_key <> '' THEN content_bytes ELSE octet_length(content_json) END)`;
     const rows = await runUnrestricted(() => this.q(
-      `SELECT left(id, -11) AS sid,
-              sum(CASE WHEN object_key <> '' THEN content_bytes ELSE octet_length(content_json) END) AS bytes
+      `SELECT left(id, -11) AS sid, sum(${size}) FILTER (WHERE ${size} < $7) AS bytes
          FROM content_cache
         WHERE tenant=$1 AND source_type=$2
         GROUP BY left(id, -11)
-       HAVING (count(*) > $3 OR sum(CASE WHEN object_key <> '' THEN content_bytes ELSE octet_length(content_json) END) > $4)
+       HAVING (count(*) FILTER (WHERE ${size} < $7) > $3 OR sum(${size}) FILTER (WHERE ${size} < $7) > $4)
           AND max(mtime) < $5
-        ORDER BY 2 DESC
+        ORDER BY 2 DESC NULLS LAST
         LIMIT $6`,
       [this.t, TAIL_SOURCE_TYPE, opts.maxSegments ?? TAIL_COMPACT_MAX_SEGMENTS, opts.maxBytes ?? TAIL_COMPACT_MAX_BYTES,
-        Date.now() - (opts.idleMs ?? TAIL_COMPACT_IDLE_MS), opts.limit ?? 20]));
-    return rows.map((r: any) => r.sid as string);
+        Date.now() - (opts.idleMs ?? TAIL_COMPACT_IDLE_MS), opts.limit ?? 20, TAIL_SEGMENT_TARGET_BYTES]));
+    const ids = rows.map((r: any) => r.sid as string);
+    // A base of many messages that is not paged yet, with no append for the idle time.
+    const room = (opts.limit ?? 20) - ids.length;
+    if (room > 0) {
+      const big = await runUnrestricted(() => this.q(
+        `SELECT id FROM content_cache
+          WHERE tenant=$1 AND source_type='session' AND msg_count <> 0 AND content_bytes > $2 AND mtime < $3
+          ORDER BY content_bytes DESC LIMIT $4`,
+        [this.t, TAIL_REPAGE_MIN_BASE_BYTES, Date.now() - (opts.idleMs ?? TAIL_COMPACT_IDLE_MS), room]));
+      for (const r of big) if (!ids.includes(r.id)) ids.push(r.id as string);
+    }
+    return ids;
   }
 
   /**
@@ -1047,34 +1105,48 @@ export class PgStore implements StorageDriver {
    * under the lock that the appends take. Returns null when there was nothing to
    * merge. Its memory is one envelope.
    */
-  async compactSessionTails(sessionId: string, version = 6): Promise<{ segments: number; messages: number } | null> {
+  async compactSessionTails(sessionId: string, version = 6): Promise<{ segments: number; messages: number; pages?: number } | null> {
     return runUnrestricted(() => this.tx(async (client: any) => {
       await this.lockSessionTails(client, [sessionId]);
       const tails = await client.query(
         `SELECT id, content_json, object_key FROM content_cache
           WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = $3 ORDER BY id`,
         [this.t, TAIL_SOURCE_TYPE, sessionId]);
-      if (tails.rows.length < 2) return null;
       const baseRow = await client.query(
-        `SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`,
+        `SELECT content_json, object_key, mtime, msg_count, content_bytes FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`,
         [this.t, sessionId]);
       if (baseRow.rows.length === 0) return null;
+      // Nothing to merge, unless the base is a large conversation that still holds its messages: that one is paged.
+      const holdsMessages = Number(baseRow.rows[0].msg_count) !== 0;
+      const largeBase = holdsMessages && Number(baseRow.rows[0].content_bytes) > TAIL_REPAGE_MIN_BASE_BYTES;
+      if (tails.rows.length < 2 && !largeBase) return null;
       const base = await readCachedBody(baseRow.rows[0]);
       if (!base) return null;
       const bodies = await Promise.all(tails.rows.map((r: any) => readCachedBody(r)));
       const parsed = tails.rows.map((r: any, i: number) => ({ p: parseTailRowId(r.id), body: bodies[i] }));
       if (parsed.some((t: any) => !t.p || t.body === null)) return null;   // a segment cannot be read: leave the session as it is
       const merged = mergeEnvelopeWithTails(base, parsed.map((t: any) => ({ seq: t.p.seq, body: t.body as string })));
-      let end = peekEnvelopeTail(merged);
-      if (!end) {
-        const env = JSON.parse(merged) as { messages?: Array<{ line?: number }>; o?: number };
-        const last = env.messages?.[env.messages.length - 1];
-        end = { o: typeof env.o === 'number' ? env.o : 0, lastLine: last?.line ?? 0 };
-      }
+      const env = JSON.parse(merged) as { v?: number; messages: Array<{ line?: number }>; subagents?: unknown[]; o?: number };
       const mtime = Number(baseRow.rows[0].mtime);
-      await this.writeCachedContent(client, [{ id: sessionId, sourceType: 'session', mtime, content: merged }]);
-      await this.writeSessionTails(client, [{ sessionId, seq: 0, mtime, tail: markerTail(version, end.o, end.lastLine) }]);
-      return { segments: tails.rows.length, messages: (JSON.parse(merged) as { messages: unknown[] }).messages.length };
+      const o = typeof env.o === 'number' ? env.o : 0;
+      const lastLineOf = (msgs: Array<{ line?: number }>): number => (msgs.length > 0 ? (msgs[msgs.length - 1].line ?? 0) : 0);
+      const pages = splitIntoPages(env.messages);
+      let messageCount = env.messages.length;
+      if (pages.length > 1) {
+        // A session of many messages is stored as pages: the base keeps no messages and
+        // each page is a segment of about 512 KB with its own count, so a page read of
+        // the session reads one page and not the whole conversation.
+        await this.writeCachedContent(client, [{ id: sessionId, sourceType: 'session', mtime, content: JSON.stringify({ ...env, messages: [], o }), messageCount: 0 }]);
+        const segments = pages.map((page, i) => ({
+          sessionId, seq: i + 1, mtime,
+          tail: { v: env.v ?? version, base: o, o, lastLine: lastLineOf(page), messages: page } as TailBody,
+        }));
+        await this.writeSessionTails(client, [{ sessionId, seq: 0, mtime, tail: markerTail(version, o, lastLineOf(env.messages)) }, ...segments]);
+      } else {
+        await this.writeCachedContent(client, [{ id: sessionId, sourceType: 'session', mtime, content: merged, messageCount }]);
+        await this.writeSessionTails(client, [{ sessionId, seq: 0, mtime, tail: markerTail(version, o, lastLineOf(env.messages)) }]);
+      }
+      return { segments: tails.rows.length, messages: env.messages.length, ...(pages.length > 1 ? { pages: pages.length } : {}) };
     }));
   }
 
@@ -1499,7 +1571,7 @@ export class PgStore implements StorageDriver {
     return rows.length;
   }
 
-  private async writeCachedContent(client: any, rows: Array<{ id: string; sourceType: string; mtime: number; content: string }>): Promise<void> {
+  private async writeCachedContent(client: any, rows: Array<{ id: string; sourceType: string; mtime: number; content: string; messageCount?: number }>): Promise<void> {
     const byKey = new Map<string, typeof rows[number]>();
     for (const r of rows) byKey.set(`${r.sourceType}\u0000${r.id}`, r);
     const list = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
@@ -1554,15 +1626,16 @@ export class PgStore implements StorageDriver {
     }
 
     await bulkInsert(client, 'content_cache',
-      ['tenant', 'id', 'source_type', 'content_json', 'object_key', 'content_hash', 'content_bytes', 'mtime'],
-      prepared.map((p) => [this.t, p.r.id, p.r.sourceType, p.contentJson, p.objectKey, p.hash, p.bytes, intMs(p.r.mtime)]),
+      ['tenant', 'id', 'source_type', 'content_json', 'object_key', 'content_hash', 'content_bytes', 'mtime', 'msg_count'],
+      prepared.map((p) => [this.t, p.r.id, p.r.sourceType, p.contentJson, p.objectKey, p.hash, p.bytes, intMs(p.r.mtime), p.r.messageCount ?? -1]),
       `ON CONFLICT (tenant,id,source_type) DO UPDATE
           SET content_json=excluded.content_json, object_key=excluded.object_key,
               content_hash=excluded.content_hash, content_bytes=excluded.content_bytes,
-              mtime=excluded.mtime
+              mtime=excluded.mtime, msg_count=excluded.msg_count
         WHERE content_cache.content_json IS DISTINCT FROM excluded.content_json
            OR content_cache.object_key   IS DISTINCT FROM excluded.object_key
-           OR content_cache.mtime        IS DISTINCT FROM excluded.mtime`);
+           OR content_cache.mtime        IS DISTINCT FROM excluded.mtime
+           OR content_cache.msg_count    IS DISTINCT FROM excluded.msg_count`);
 
     // An updated body lives under a new hash key; the old object is named by no
     // row after the commit, so delete it then. An unchanged body keeps the same

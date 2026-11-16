@@ -173,3 +173,43 @@ export function pageEnvelope(
   }
   return { v: env.v, total, messages, subagents: subagents ?? [], mtime };
 }
+
+/** A page of messages written by a compaction holds at most this many bytes of JSON. */
+export const TAIL_PAGE_TARGET_BYTES = 512 * 1024;
+/** A base of more than this many bytes that still holds its messages is split into pages. */
+export const TAIL_REPAGE_MIN_BASE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Which parts of a session a window of messages touches. `counts` is the number of
+ * messages of each part in reading order (the base, then the segments). Each entry
+ * of the answer names a part and the range to take from it. `limit` 0 means all.
+ */
+export function planPageRead(counts: readonly number[], offset: number, limit: number): Array<{ part: number; from: number; to: number }> {
+  const total = counts.reduce((n, c) => n + c, 0);
+  const lo = Math.max(0, offset);
+  const hi = limit === 0 ? total : Math.min(total, lo + limit);
+  const out: Array<{ part: number; from: number; to: number }> = [];
+  let at = 0;
+  counts.forEach((c, part) => {
+    const from = Math.max(lo - at, 0);
+    const to = Math.min(hi - at, c);
+    if (to > from) out.push({ part, from, to });
+    at += c;
+  });
+  return out;
+}
+
+/** Split messages into pages of at most `targetBytes` of JSON each (a message larger than that is a page of its own). */
+export function splitIntoPages<T>(messages: readonly T[], targetBytes: number = TAIL_PAGE_TARGET_BYTES): T[][] {
+  const pages: T[][] = [];
+  let page: T[] = [];
+  let bytes = 0;
+  for (const m of messages) {
+    const size = JSON.stringify(m).length + 1;
+    if (page.length > 0 && bytes + size > targetBytes) { pages.push(page); page = []; bytes = 0; }
+    page.push(m);
+    bytes += size;
+  }
+  if (page.length > 0) pages.push(page);
+  return pages;
+}

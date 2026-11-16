@@ -326,7 +326,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         const mergedMsgs = [...prevMsgs, ...numberTail(prevMsgs, tailMsgs, cv.base_line)];
         // Advance the synced-through offset to where this tail ends.
         const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
-        cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
+        cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged), messageCount: mergedMsgs.length });
         // The marker that makes the next append of this session a segment: no
         // messages, the offset and the last line the merged envelope ends at.
         sessionTailBatch.push({
@@ -570,13 +570,14 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
     // (`o` above 0), so its first append finds it and reads no envelope.
     const lastLineOf = (msgs: Array<{ line?: number }>): number => (msgs.length > 0 ? (msgs[msgs.length - 1].line ?? msgs.length) : 0);
     if (envelope) {
-      cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }) });
+      cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify({ ...envelope, o: syncedOffset }), messageCount: envelope.messages.length });
       if (syncedOffset > 0) sessionTailBatch.push({ sessionId: cv.session_id, seq: 0, mtime, tail: markerTail(PARSER_VERSION, syncedOffset, lastLineOf(envelope.messages as Array<{ line?: number }>)) });
     } else if (turns.length > 0) {
       const messages = envelopeFromTurns(turns);
       cachedContentBatch.push({
         id: cv.session_id, sourceType: 'session', mtime,
         content: JSON.stringify({ v: PARSER_VERSION, messages, subagents: [], o: syncedOffset }),
+        messageCount: messages.length,
       });
       if (syncedOffset > 0) sessionTailBatch.push({ sessionId: cv.session_id, seq: 0, mtime, tail: markerTail(PARSER_VERSION, syncedOffset, lastLineOf(messages as Array<{ line?: number }>)) });
     }

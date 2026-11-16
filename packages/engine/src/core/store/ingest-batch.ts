@@ -65,7 +65,7 @@ export interface IngestBatch {
   chunks?: MemoryChunk[];
   /** Tail chunks only — appended, never replacing the head's. */
   appendChunks?: MemoryChunk[];
-  cachedContent?: Array<{ id: string; sourceType: string; mtime: number; content: string }>;
+  cachedContent?: Array<{ id: string; sourceType: string; mtime: number; content: string; messageCount?: number }>;
   /** Tail segments of stored envelopes (issue #27). Written after `cachedContent`. */
   sessionTails?: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>;
   sessionMeta?: IngestSessionMeta[];
