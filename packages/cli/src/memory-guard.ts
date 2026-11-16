@@ -218,3 +218,17 @@ export function shouldPause(used: number, budget: MemoryBudget, unitsDone: numbe
   if (unitsDone <= 0) return false;
   return used >= budget.hardMb || used - budget.baselineMb >= budget.growthMb;
 }
+
+/** The daemon pings the systemd watchdog at most this often. */
+export const WATCHDOG_PING_EVERY_MS = 60_000;
+
+/**
+ * Should the daemon send a watchdog ping now? Only under a unit that set a
+ * watchdog (systemd puts `WATCHDOG_USEC` in the environment), and not more often
+ * than `WATCHDOG_PING_EVERY_MS`. The interval is well inside the unit's 300 s.
+ */
+export function shouldPingWatchdog(env: NodeJS.ProcessEnv, now: number, lastPingAt: number): boolean {
+  const usec = Number(env.WATCHDOG_USEC);
+  if (!Number.isFinite(usec) || usec <= 0) return false;
+  return now - lastPingAt >= WATCHDOG_PING_EVERY_MS;
+}

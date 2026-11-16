@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_RSS_MAX_MB, cgroupCurrentMb, cgroupDir, isOverMemoryLimit, memoryLimitMb, memoryStatMb, reclaimCgroup, releaseMemory, usedMb } from './memory-guard.js';
+import { shouldPingWatchdog, WATCHDOG_PING_EVERY_MS, DEFAULT_RSS_MAX_MB, cgroupCurrentMb, cgroupDir, isOverMemoryLimit, memoryLimitMb, memoryStatMb, reclaimCgroup, releaseMemory, usedMb } from './memory-guard.js';
 
 /**
  * The bound (issue #16).
@@ -169,5 +169,20 @@ describe('reclaimCgroup', () => {
       expect(cgroupDir(file)).toBe('/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/x.service');
     } finally { rmSync(dir, { recursive: true, force: true }); }
     expect(cgroupDir(join(dir, 'absent'))).toBe(null);
+  });
+});
+
+describe('shouldPingWatchdog', () => {
+  it('stays quiet when the unit set no watchdog', () => {
+    expect(shouldPingWatchdog({}, 1_000_000, 0)).toBe(false);
+    expect(shouldPingWatchdog({ WATCHDOG_USEC: '0' }, 1_000_000, 0)).toBe(false);
+    expect(shouldPingWatchdog({ WATCHDOG_USEC: 'abc' }, 1_000_000, 0)).toBe(false);
+  });
+
+  it('pings under a watchdog, and at most once a minute', () => {
+    const env = { WATCHDOG_USEC: '300000000' };
+    expect(shouldPingWatchdog(env, 1_000_000, 0)).toBe(true);
+    expect(shouldPingWatchdog(env, 1_000_000 + WATCHDOG_PING_EVERY_MS - 1, 1_000_000)).toBe(false);
+    expect(shouldPingWatchdog(env, 1_000_000 + WATCHDOG_PING_EVERY_MS, 1_000_000)).toBe(true);
   });
 });

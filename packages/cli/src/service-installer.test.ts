@@ -130,6 +130,9 @@ describe('unit sections', () => {
   test('the memory caps are in [Service], where systemd reads those', () => {
     expect(inService).toContain('MemoryMax=2G');
     expect(inService).toContain('MemoryHigh=1G');
+    // A daemon throttled above MemoryHigh cannot end itself, so systemd restarts one that stops pinging.
+    expect(inService).toContain('WatchdogSec=300');
+    expect(inService).toContain('NotifyAccess=all');
     expect(inUnit).not.toContain('Memory');
   });
 

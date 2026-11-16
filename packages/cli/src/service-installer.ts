@@ -200,6 +200,12 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // peak was 2.1 GB RSS against a 1536 MB heap cap, so only a cgroup limit
     // bounds the external half.
     'MemoryAccounting=yes', 'MemoryHigh=1G', 'MemoryMax=2G',
+    // A watchdog, because the hard memory bound runs on the daemon's own thread.
+    // On 2026-11-16 the process held 1.7 GB in state D (`mem_cgroup_handle_over_high`),
+    // throttled by MemoryHigh above, and could not run the tick that ends it. A
+    // daemon that does not ping for five minutes is restarted from outside.
+    // `systemd-notify` is a child process of the daemon, so NotifyAccess covers it.
+    'WatchdogSec=300', 'NotifyAccess=all',
     // systemd-oomd kills the cgroup with the most reclaim activity once the
     // user slice passes its memory-pressure limit. A daemon that peaks at its
     // own MemoryHigh reclaims constantly, so it was the first cgroup chosen:

@@ -47,9 +47,10 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // server. Everything else this daemon used to import (stores, embedder,
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
+import { spawn } from 'node:child_process';
 import { syncIncremental, isSyncSkip, lastFullWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
-import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, hardMaxMb, shouldRestartForMemory, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
+import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, hardMaxMb, shouldRestartForMemory, shouldPingWatchdog, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
@@ -1034,12 +1035,21 @@ if (CODE_INDEX_ON) {
 const STARTED_AT = Date.now();
 let overBoundTicks = 0;
 
+let lastWatchdogPingAt = 0;
 function residentTick(): void {
+  // A ping from this tick means the main thread still runs. If it stops, systemd
+  // restarts the daemon (WatchdogSec in the unit).
+  if (shouldPingWatchdog(process.env, Date.now(), lastWatchdogPingAt)) {
+    lastWatchdogPingAt = Date.now();
+    try { spawn('systemd-notify', ['WATCHDOG=1'], { stdio: 'ignore' }).on('error', () => { /* no systemd-notify: nothing to ping */ }).unref(); } catch { /* the unit's watchdog decides */ }
+  }
   const dir = cgroupDir();
   const fileMb = dir ? memoryStatMb(dir, 'file') : null;
   if (shouldReclaim(fileMb)) {
     reclaimCgroup(DEFAULT_RECLAIM_FILE_MB);
-    daemonLog.info(`resident: returned the page cache above ${DEFAULT_RECLAIM_FILE_MB}MB (file=${fileMb}MB)`);
+    const mem = process.memoryUsage();
+    const mb = (n: number): number => Math.round(n / 1048576);
+    daemonLog.info(`resident: returned the page cache above ${DEFAULT_RECLAIM_FILE_MB}MB (file=${fileMb}MB; rss=${mb(mem.rss)}MB heap=${mb(mem.heapUsed)}MB external=${mb(mem.external)}MB arrayBuffers=${mb(mem.arrayBuffers)}MB)`);
   }
   releaseMemory();
   // The hard bound (issue #16). `memory.reclaim` returns file pages only; the

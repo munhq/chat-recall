@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.57] — 2026-11-16
+
+### Fixed
+- **A watch daemon that stops answering is restarted by systemd.** On 2026-11-16 the daemon held 1.7 GB in state `D` (`mem_cgroup_handle_over_high`), throttled by `MemoryHigh`, and could not run the tick that ends it at 720 MB. The unit has `WatchdogSec=300` and `NotifyAccess=all` now, and the resident tick sends `WATCHDOG=1` with `systemd-notify` once a minute when systemd set a watchdog (`shouldPingWatchdog` in `memory-guard.ts`). The reclaim line of the log names `rss`, `heap`, `external` and `arrayBuffers`, so a jump of memory names its owner.
+
 ## [0.7.56] — 2026-11-16
 
 ### Fixed
