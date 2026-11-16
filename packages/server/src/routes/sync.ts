@@ -38,6 +38,7 @@
 
 import express from 'express';
 import { tombstoneBatchTooLarge, TombstoneBatchRefused, splitTombstoned } from './tombstone-guard.js';
+import { summariseIngestBatch } from './ingest-log.js';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
@@ -790,6 +791,9 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // First line of the request, before any read: a pod that is killed during
+    // the work leaves this as the last line that names the batch (issue #27).
+    log.info({ ingest: summariseIngestBatch({ conversations, bodyBytes: batchBytes, tenant: agent.tenant }) }, 'ingest batch');
     const result = await runWithTenant(agent.tenant, () => runWithAuthor({ sub: agent!.userSub, device: agent!.deviceId }, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
