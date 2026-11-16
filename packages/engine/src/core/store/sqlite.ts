@@ -87,7 +87,12 @@ export class SqliteStore implements StorageDriver {
     if (!r || a[1] !== 'session' || !r.content) return r;
     return { ...r, content: mergeEnvelopeWithTails(r.content, this.tailRows(a[0])) };
   }
-  async setCachedContent(...a: Args<'setCachedContent'>) { return this.inner.setCachedContent(...a); }
+  async setCachedContent(...a: Args<'setCachedContent'>) {
+    const r = this.inner.setCachedContent(...a);
+    // A new base replaces what the old base and its segments held, as in the Postgres store.
+    if (a[1] === 'session') this.dropTails(a[0]);
+    return r;
+  }
 
   // ── tail segments (issue #27) ──
   // Segments are rows of the same content cache under the id of
