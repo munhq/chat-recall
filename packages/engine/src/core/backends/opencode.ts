@@ -556,6 +556,42 @@ export class OpencodeBackend implements ToolBackend {
   ): SessionCommitsResult {
     return getSessionCommits(this.toPrefixedId(id), files, startMs, endMs, bufferMinutes);
   }
+  /** The bytes of the dump of a session, summed in SQLite: no row is read into the process. */
+  rawSessionBytes(id: string): number {
+    const dbPath = this.dbPath();
+    if (!existsSync(dbPath)) return 0;
+    const realId = this.toRawId(id);
+    const db = openOpencodeDbOrThrow(dbPath);
+    try {
+      const row = db.prepare(`
+        SELECT COALESCE(SUM(LENGTH(CAST(p.data AS BLOB)) + LENGTH(CAST(m.data AS BLOB))), 0) AS bytes
+        FROM part p JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
+        WHERE p.session_id = ?
+      `).get(realId, realId) as { bytes: number } | undefined;
+      return Number(row?.bytes ?? 0);
+    } catch { return 0; } finally { db.close(); }
+  }
+
+  /** The lines of the dump, one row at a time. Every line ends with a newline. */
+  *iterateRawSessionLines(id: string): Iterable<string> {
+    const dbPath = this.dbPath();
+    if (!existsSync(dbPath)) return;
+    const realId = this.toRawId(id);
+    const db = openOpencodeDbOrThrow(dbPath);
+    try {
+      const session = db.prepare(`SELECT * FROM session WHERE id = ?`).get(realId);
+      if (!session) return;
+      yield `${JSON.stringify({ kind: 'session', row: session })}\n`;
+      const rows = db.prepare(`
+        SELECT m.id AS message_id, m.data AS message_data, p.id AS part_id, p.data AS part_data, p.time_created
+        FROM part p JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
+        WHERE p.session_id = ?
+        ORDER BY p.time_created ASC, p.id ASC
+      `);
+      for (const r of rows.iterate(realId, realId)) yield `${JSON.stringify({ kind: 'part', row: r })}\n`;
+    } finally { db.close(); }
+  }
+
   exportRawSession(id: string): RawSessionExport | null {
     // DB-based tool: a deterministic JSONL dump of this session's rows —
     // one line per row, stable ordering — so the archive is independent of

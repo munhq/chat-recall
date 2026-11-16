@@ -120,11 +120,12 @@ async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOpti
   }
 
   if (tool === 'opencode') {
-    const messages = await parseOpenCodeTranscript(sessionId);
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
+    const messages = await parseOpenCodeTranscript(sessionId, cut);
     if (messages.length === 0) return null;
-    const subagents = await parseOpenCodeSubagents(sessionId);
+    const subagents = await parseOpenCodeSubagents(sessionId, cut);
     const loc = getBackend('opencode').findSession(sessionId);
-    return { messages, subagents, mtime: loc?.mtime || 0 };
+    return { messages, subagents, mtime: loc?.mtime || 0, ...(opts.payloadCap ? { payloadCap: opts.payloadCap } : {}) };
   }
 
   if (tool === 'codex') {

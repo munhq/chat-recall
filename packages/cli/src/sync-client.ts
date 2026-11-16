@@ -219,7 +219,7 @@ let walkProgressForUpload: { done: number; total: number; complete: boolean } | 
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
 import { reportWalkProgress, readCollectorHealth, updateCollectorHealth } from '@chat-recall/engine/core/collector-health.js';
 import { withSessionReadCache , withSessionScanScope, resolveSessionContentGroups } from '@chat-recall/engine/core/live-session-scan.js';
-import { scanSessionGroupsChunked, sessionGroupsBytes } from './session-file-scan.js';
+import { scanSessionGroupsChunked, scanLinesChunked, sessionGroupsBytes } from './session-file-scan.js';
 import { writeArchiveFile, uploadArchiveFile, type ArchiveSource, type ArchiveFile } from './raw-archive-parts.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
@@ -2729,7 +2729,10 @@ export async function buildConversationSync(
       // A Claude session is sized from its files on disk, before anything is read: the files of an
       // export over the ceiling are never held in memory together, so the export is not made.
       const streamGroups = ref.toolId === 'claude' ? resolveSessionContentGroups(ref.rawId) : [];
-      const streamedBytes = sessionGroupsBytes(streamGroups);
+      const streamsLines = ref.toolId !== 'claude' && !!backend.rawSessionBytes && !!backend.iterateRawSessionLines;
+      const streamedBytes = ref.toolId === 'claude'
+        ? sessionGroupsBytes(streamGroups)
+        : (streamsLines ? backend.rawSessionBytes!(ref.prefixedId) : 0);
       const streamed = streamedBytes > FULL_BUILD_MAX_BYTES;
       const exp = streamed ? null : backend.exportRawSession(ref.prefixedId);
       // Content-identity gate: hash the raw export (mtime-independent) BEFORE the
@@ -2772,7 +2775,9 @@ export async function buildConversationSync(
         // (2026-11-16): the guard above said "no container copy", and then the code after the
         // parse exported the session again and built one.
         if (streamed) {
-          overCeilingFindings = await scanSessionGroupsChunked(ref.prefixedId, streamGroups, opts.tenantRules);
+          overCeilingFindings = ref.toolId === 'claude'
+            ? await scanSessionGroupsChunked(ref.prefixedId, streamGroups, opts.tenantRules)
+            : scanLinesChunked(ref.prefixedId, backend.iterateRawSessionLines!(ref.prefixedId), opts.tenantRules);
         } else if (exp) {
           overCeilingFindings = [];
           let lineBase = 0;

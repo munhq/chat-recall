@@ -23,7 +23,7 @@ export interface SessionFileFinding {
 }
 
 /** Bytes of a piece. A line longer than a piece makes its own larger piece. */
-export const SCAN_PIECE_BYTES = 8 * 1024 * 1024;
+export const SCAN_PIECE_BYTES = 1024 * 1024;
 
 const NEWLINE = 0x0a;
 
@@ -107,5 +107,48 @@ export async function scanSessionGroupsChunked(
       lineBase += (text.match(/\n/g)?.length ?? 0) + 1;
     }
   }
+  return findings;
+}
+
+/**
+ * Secret findings for a capture a backend gives as lines (a database dump), one
+ * piece of lines at a time. Every line ends with a newline, so the line numbers
+ * are the positions of the lines in the capture.
+ */
+export function scanLinesChunked(
+  sessionId: string,
+  lines: Iterable<string>,
+  tenantRules?: Array<{ name: string; regex: string }>,
+  pieceBytes = SCAN_PIECE_BYTES,
+): SessionFileFinding[] {
+  const findings: SessionFileFinding[] = [];
+  let lineBase = 0;
+  let piece: string[] = [];
+  let bytes = 0;
+  const flush = () => {
+    if (piece.length === 0) return;
+    const text = piece.join('');
+    try {
+      for (const x of scanTextForFindings(text)) {
+        findings.push({ session_id: sessionId, detector: 'builtin', rule: x.rule, line: x.line + lineBase, preview: x.preview });
+      }
+    } catch { /* best-effort */ }
+    if (tenantRules && tenantRules.length > 0) {
+      try {
+        for (const x of scanTenantRules(text, tenantRules)) {
+          findings.push({ session_id: sessionId, detector: x.detector, rule: x.rule, line: x.line + lineBase, preview: x.preview });
+        }
+      } catch { /* best-effort */ }
+    }
+    lineBase += piece.length;
+    piece = [];
+    bytes = 0;
+  };
+  for (const line of lines) {
+    piece.push(line);
+    bytes += line.length;
+    if (bytes >= pieceBytes) flush();
+  }
+  flush();
   return findings;
 }

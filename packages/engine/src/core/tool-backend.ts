@@ -290,6 +290,13 @@ export interface ToolBackend {
    */
   exportRawSession(id: string): RawSessionExport | null;
 
+  /** Bytes the raw capture holds, known before any of it is read. Lets the
+   *  sync client decide that a session is too large to hold whole. */
+  rawSessionBytes?(id: string): number;
+  /** The raw capture as lines, read one at a time from the tool's storage, in
+   *  the order and with the line numbers `exportRawSession` gives. */
+  iterateRawSessionLines?(id: string): Iterable<string>;
+
   // ── Tail-sync (append-only transcripts) ─────────────────────────
   // See docs/SYNC-INCREMENTAL.md. Lets the sync client ship only the new tail
   // of a growing session instead of re-parsing + re-shipping the whole file.

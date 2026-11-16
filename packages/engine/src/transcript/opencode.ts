@@ -5,6 +5,7 @@
 import { openOpencodeDbOrThrow } from '../core/backends/opencode-v2.js';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
+import { capPayload } from './trim.js';
 
 const log = createLogger('transcript-opencode');
 
@@ -17,7 +18,7 @@ const log = createLogger('transcript-opencode');
  * the UI renders for Codex/Claude so the conversation viewer can show
  * collapsible sub-agent panels uniformly.
  */
-export async function parseOpenCodeSubagents(parentSessionId: string): Promise<Subagent[]> {
+export async function parseOpenCodeSubagents(parentSessionId: string, opts: OpenCodeParseOptions = {}): Promise<Subagent[]> {
   const { existsSync } = await import('fs');
   const { opencodeBackend } = await import('../core/backends/opencode.js');
 
@@ -38,7 +39,7 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
     for (const c of children) {
       const childId = `opencode_${c.id}`;
       let messages: Message[] = [];
-      try { messages = await parseOpenCodeTranscript(childId); }
+      try { messages = await parseOpenCodeTranscript(childId, opts); }
       catch (e) { log.error({ err: e, sessionId: c.id }, 'Failed to parse OpenCode sub-session'); }
       const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);
 
@@ -71,7 +72,12 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
 /**
  * Parse an OpenCode session from SQLite.
  */
-export async function parseOpenCodeTranscript(sessionId: string): Promise<Message[]> {
+export interface OpenCodeParseOptions {
+  /** Cut each tool state to this many characters as its row is read. */
+  payloadCap?: number;
+}
+
+export async function parseOpenCodeTranscript(sessionId: string, opts: OpenCodeParseOptions = {}): Promise<Message[]> {
   const { existsSync } = await import('fs');
   const { opencodeBackend } = await import('../core/backends/opencode.js');
 
@@ -83,20 +89,29 @@ export async function parseOpenCodeTranscript(sessionId: string): Promise<Messag
   const messages: Message[] = [];
 
   try {
+    // One row at a time: a row holds a whole tool output, so the rows of a large
+    // session are never all in memory together.
     const parts = db.prepare(`
       SELECT p.data, p.time_created, m.data as msg_data
       FROM part p
       JOIN (SELECT id, data FROM message WHERE session_id = ?) m ON p.message_id = m.id
       WHERE p.session_id = ?
       ORDER BY p.time_created ASC
-    `).all(realId, realId) as Array<{ data: string; time_created: number; msg_data: string }>;
+    `).iterate(realId, realId) as Iterable<{ data: string; time_created: number; msg_data: string }>;
 
+    const cap = opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v;
+    // The parts of one message carry the same message row, so its role is read once.
+    let lastMsgData = '';
+    let lastRole: 'user' | 'assistant' = 'assistant';
     let lineNum = 0;
     for (const part of parts) {
       try {
         const partData = JSON.parse(part.data);
-        const msgData = JSON.parse(part.msg_data);
-        const role: 'user' | 'assistant' = msgData.role === 'user' ? 'user' : 'assistant';
+        if (part.msg_data !== lastMsgData) {
+          lastRole = JSON.parse(part.msg_data).role === 'user' ? 'user' : 'assistant';
+          lastMsgData = part.msg_data;
+        }
+        const role = lastRole;
 
         if (partData.type === 'text' && partData.text?.trim()) {
           lineNum++;
@@ -107,7 +122,7 @@ export async function parseOpenCodeTranscript(sessionId: string): Promise<Messag
             line: lineNum,
             role: 'assistant',
             content: `Tool: ${partData.tool}`,
-            toolCalls: [{ name: partData.tool, input: partData.state || {} }],
+            toolCalls: [{ name: partData.tool, input: cap(partData.state || {}) }],
           });
         }
       } catch {}
