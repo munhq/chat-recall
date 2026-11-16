@@ -1091,7 +1091,7 @@ export class PgStore implements StorageDriver {
     if (room > 0) {
       const big = await runUnrestricted(() => this.q(
         `SELECT id FROM content_cache
-          WHERE tenant=$1 AND source_type='session' AND msg_count <> 0 AND content_bytes > $2 AND mtime < $3
+          WHERE tenant=$1 AND source_type='session' AND msg_count NOT IN (0, -2) AND content_bytes > $2 AND mtime < $3
           ORDER BY content_bytes DESC LIMIT $4`,
         [this.t, TAIL_REPAGE_MIN_BASE_BYTES, Date.now() - (opts.idleMs ?? TAIL_COMPACT_IDLE_MS), room]));
       for (const r of big) if (!ids.includes(r.id)) ids.push(r.id as string);
@@ -1117,7 +1117,7 @@ export class PgStore implements StorageDriver {
         [this.t, sessionId]);
       if (baseRow.rows.length === 0) return null;
       // Nothing to merge, unless the base is a large conversation that still holds its messages: that one is paged.
-      const holdsMessages = Number(baseRow.rows[0].msg_count) !== 0;
+      const holdsMessages = ![0, -2].includes(Number(baseRow.rows[0].msg_count));
       const largeBase = holdsMessages && Number(baseRow.rows[0].content_bytes) > TAIL_REPAGE_MIN_BASE_BYTES;
       if (tails.rows.length < 2 && !largeBase) return null;
       const base = await readCachedBody(baseRow.rows[0]);
@@ -1126,7 +1126,14 @@ export class PgStore implements StorageDriver {
       const parsed = tails.rows.map((r: any, i: number) => ({ p: parseTailRowId(r.id), body: bodies[i] }));
       if (parsed.some((t: any) => !t.p || t.body === null)) return null;   // a segment cannot be read: leave the session as it is
       const merged = mergeEnvelopeWithTails(base, parsed.map((t: any) => ({ seq: t.p.seq, body: t.body as string })));
-      const env = JSON.parse(merged) as { v?: number; messages: Array<{ line?: number }>; subagents?: unknown[]; o?: number };
+      const env = JSON.parse(merged) as { v?: number; messages: Array<{ line?: number }>; subagents?: unknown[]; o?: number; rebuild?: unknown };
+      // A staged rebuild lives in the base (see the chunked full sync): the appends that
+      // are still to come extend it, so the session is left as it is. -2 marks it, and
+      // the worker does not list it again.
+      if (env.rebuild !== undefined) {
+        await client.query(`UPDATE content_cache SET msg_count=-2 WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
+        return null;
+      }
       const mtime = Number(baseRow.rows[0].mtime);
       const o = typeof env.o === 'number' ? env.o : 0;
       const lastLineOf = (msgs: Array<{ line?: number }>): number => (msgs.length > 0 ? (msgs[msgs.length - 1].line ?? 0) : 0);

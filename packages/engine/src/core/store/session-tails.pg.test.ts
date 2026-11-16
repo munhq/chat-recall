@@ -265,6 +265,20 @@ const base = (n: number, o: number) => JSON.stringify({ v: 6, messages: Array.fr
     expect(page.messages.map((m: any) => m.line)).toEqual([2, 3, 4]);
   });
 
+  test('a session with a staged rebuild is left as it is and not listed again', async () => {
+    const id = 'tail-rebuild';
+    await session(id);
+    const staged = { v: 6, messages: Array.from({ length: 1200 }, (_, i) => msg(i + 1, 'z'.repeat(900))), subagents: [], o: 500, rebuild: { v: 6, messages: [msg(1)], subagents: [], o: 100 } };
+    await asAuthor(() => store.setCachedContent(id, 'session', 1000, JSON.stringify(staged)));
+    await admin.query(`UPDATE content_cache SET msg_count=-1, content_bytes=$3 WHERE tenant=$1 AND id=$2 AND source_type='session'`, [tenant, id, 5 * 1024 * 1024]);
+    expect(await store.sessionsNeedingCompaction({ limit: 50, idleMs: 0 })).toContain(id);
+    expect(await store.compactSessionTails(id)).toBeNull();
+    const kept = JSON.parse((await asAuthor(() => store.getCachedContentStale(id, 'session'))).content);
+    expect(kept.messages).toHaveLength(1200);
+    expect(kept.rebuild).toBeDefined();
+    expect(await store.sessionsNeedingCompaction({ limit: 50, idleMs: 0 })).not.toContain(id);
+  });
+
   test('a session without a stored conversation is listed for a resend', async () => {
     await session('tail-empty');
     const ids = await asAuthor(() => store.listSessionsWithoutContent());
