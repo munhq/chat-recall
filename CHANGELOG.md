@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.64] — 2026-11-16
+### Fixed
+- **The walk releases the heap and the file pages before it pauses at the memory bound.** The bound reads `memory.current` of the cgroup, which counts the page cache of the transcripts the walk reads. At 21:00 the walk read 390 MB of file pages in 20 seconds (rss 408 MB to 637 MB) and paused at `used=1338MB` after 168 builds, and the 31 pauses of the three hours before had the same shape. The walk now runs the garbage collector and `memory.reclaim` when the bound is reached, measures again, and pauses only when the memory is still above the bound (`memory-guard-relief.test.ts`).
 ## [0.7.63] — 2026-11-16
 ### Fixed
 - **A Codex rollout is read one line at a time and cut as it is read.** The parse read the whole rollout as one string and kept every tool input whole until the trim after the last line. It now reads each line with `readLines`, and cuts a tool input and a reasoning summary to 2,000 characters when its line is read, for the rollout and for its subagent rollouts (`codex-stream.test.ts`).

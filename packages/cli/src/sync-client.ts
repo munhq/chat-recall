@@ -31,7 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
-import { reclaimCgroup, releaseMemory, shouldPause, startBudget, usedMb } from './memory-guard.js';
+import { reclaimCgroup, releaseMemory, shouldPause, startBudget, usedAfterRelief, usedMb } from './memory-guard.js';
 import { isPersonMessage } from '@chat-recall/engine/core/claude-prompt-origin.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { targetToken, type SecretWhere } from '@chat-recall/engine/core/stored-token.js';
@@ -2031,7 +2031,8 @@ const refs = listAvailableBackends().flatMap((b) => {
     // unit was killed for it. The bound is the same one the code pass uses, and
     // it stops the walk instead of the process: the ledger holds what shipped,
     // and the next tick continues with the unacked sessions first.
-    const usedNow = usedMb();
+    let usedNow = usedMb();
+    if (shouldPause(usedNow, memBudget, sessionsBuilt)) usedNow = usedAfterRelief();
     if (shouldPause(usedNow, memBudget, sessionsBuilt)) {
       releaseMemory();
       reclaimCgroup();
