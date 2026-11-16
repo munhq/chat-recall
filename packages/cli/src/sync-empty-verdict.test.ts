@@ -54,6 +54,16 @@ async function buildOf(id: string, onEmpty?: () => void) {
   return buildConversationSync(ref as never, Math.floor(loc.mtime), { includeRaw: false, includeMeta: false, onEmpty });
 }
 
+describe('the verdict of a session that a parser cannot read as a conversation', () => {
+  test('a session id that no backend locates is not an empty verdict', async () => {
+    const { buildConversationSync } = await import('./sync-client.js');
+    let called = 0;
+    const ref = { toolId: 'claude' as const, rawId: 'ffffffff-ffff-ffff-ffff-ffffffffffff', prefixedId: 'ffffffff-ffff-ffff-ffff-ffffffffffff', projectPath: PROJECT, projectDir: PROJECT, fullPath: '', created: '', modified: '', mtime: 0, firstPrompt: '', messageCount: 0 };
+    expect(await buildConversationSync(ref as never, 0, { includeRaw: false, includeMeta: false, onEmpty: () => { called++; } })).toBeNull();
+    expect(called).toBe(0);
+  });
+});
+
 describe('the verdict of an empty session', () => {
   test('a session of one /clear builds to null and calls onEmpty', async () => {
     let called = 0;

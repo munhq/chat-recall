@@ -2879,6 +2879,8 @@ export async function buildConversationSync(
         const t = await parseTranscript(ref.prefixedId, { payloadCap: SYNC_PAYLOAD_CAP });
         if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
         else if (t) parsedEmpty = true;   // the file was read and holds no message
+        // A parser of a database or an event stream gives null for a session it located and found no message in.
+        else if (getBackendForId(ref.prefixedId)?.findSession(ref.rawId)) parsedEmpty = true;
       } catch { /* unparseable */ }
     }
   }

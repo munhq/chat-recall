@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.71] — 2026-11-17
+### Fixed
+- **A session that its parser reads as no conversation is not counted as missing from the server.** The parsers of OpenCode and of the tools with an event stream (Hermes) return nothing for a session they located and found no message in. The walk marked only a session that a parser returned empty, so the 112 Hermes sessions of this kind stayed in the list of the ledger check after every start of the daemon. The walk now marks a session that a backend locates and a parser returns nothing for (`sync-empty-verdict.test.ts`).
 ## [0.7.70] — 2026-11-17
 ### Fixed
 - **`chat-recall verify --deep` redacts with the rule pack of the server.** The sync redacts a session with the compiled-in rules and the pack of the server, and the check measured it with the compiled-in rules alone. A session that the pack redacts looked 764 bytes larger than its archive on the server and was listed as stranded; with the pack installed the same session is 249 bytes smaller than the archive. The check now fetches the pack before it measures.
