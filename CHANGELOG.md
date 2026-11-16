@@ -2,6 +2,10 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.65] — 2026-11-16
+### Fixed
+- **A `chat-recall sync` started from a terminal ships every session, not the first one.** The memory bound read `memory.current` of the cgroup of the process. A terminal sits in the cgroup of the whole login session, which holds every program of the user: the bound read 17,754 MB and 27,090 MB on 2026-11-16, passed the hard bound of 896 MB after one build, and the walk stopped with "the next tick continues" while the command had no next tick. Of two planted sessions one reached the server, and `scripts/exclusion-e2e.mjs` failed 5 checks in every run of the compose workflow. The bound now reads a cgroup only when it is a unit with a memory limit of its own, which is the daemon under systemd; for any other process it reads the resident size. The same script with the CLI of this version passes 35 of 35 checks (`memory-guard-own-cgroup.test.ts`).
+- **The test of the host of the machine writes the expected unit text as the unit file does.** A unit file doubles a backslash, so the path of a Windows machine is compared with doubled backslashes (`mcp-host.test.ts`).
 ## [0.7.64] — 2026-11-16
 ### Fixed
 - **The walk releases the heap and the file pages before it pauses at the memory bound.** The bound reads `memory.current` of the cgroup, which counts the page cache of the transcripts the walk reads. At 21:00 the walk read 390 MB of file pages in 20 seconds (rss 408 MB to 637 MB) and paused at `used=1338MB` after 168 builds, and the 31 pauses of the three hours before had the same shape. The walk now runs the garbage collector and `memory.reclaim` when the bound is reached, measures again, and pauses only when the memory is still above the bound (`memory-guard-relief.test.ts`).

@@ -44,8 +44,10 @@ describe('the host of the machine', () => {
       { name: 'chat-recall', command: '/usr/bin/node', args: [join(dist, 'mcp.js')], env: { NODE_OPTIONS: '--max-old-space-size=1024' } },
     ]);
     // The service runs the vendored program of the kit, not a command of chat-recall.
-    expect(machine.files.get(unit)).toContain(join(dist, 'vendor', 'mcp-kit', 'host-main.js'));
-    expect(machine.files.get(unit)).toContain(`"${config}"`);
+    // A unit file escapes a backslash, so a path of Windows is written with doubled backslashes.
+    const inUnit = (path: string) => path.replace(/\\/g, '\\\\');
+    expect(machine.files.get(unit)).toContain(inUnit(join(dist, 'vendor', 'mcp-kit', 'host-main.js')));
+    expect(machine.files.get(unit)).toContain(`"${inUnit(config)}"`);
     expect(got.written).toEqual([unit]);
   });
 

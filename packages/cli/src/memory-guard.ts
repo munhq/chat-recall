@@ -76,12 +76,35 @@ export function releaseMemory(gc: (() => void) | undefined = (globalThis as { gc
 }
 
 /** The cgroup v2 directory of this process, or null when it has none. */
-export function cgroupDir(cgroupFile = '/proc/self/cgroup'): string | null {
+export function cgroupDir(cgroupFile = '/proc/self/cgroup', root = '/sys/fs/cgroup'): string | null {
   let text: string;
   try { text = readFileSync(cgroupFile, 'utf8'); } catch { return null; }
   const line = text.split('\n').find((l) => l.startsWith('0::'));
   if (!line) return null;
-  return `/sys/fs/cgroup${line.slice(3).trim()}`;
+  return `${root}${line.slice(3).trim()}`;
+}
+
+/** True when the cgroup carries a memory limit of its own (`memory.max` or `memory.high` is a number). */
+export function cgroupHasLimit(dir: string): boolean {
+  for (const file of ['memory.max', 'memory.high']) {
+    try {
+      const n = Number(readFileSync(join(dir, file), 'utf8').trim());
+      if (Number.isFinite(n) && n > 0) return true;
+    } catch { /* not a file of this cgroup */ }
+  }
+  return false;
+}
+
+/**
+ * The cgroup this process answers for: the one of a unit that sets its own
+ * memory limit, which is the daemon under systemd. A process started from a
+ * terminal sits in the cgroup of the whole login session, which holds every
+ * other program of the user (17 GB on 2026-11-16), so its `memory.current` says
+ * nothing about this process and a walk that reads it pauses after one build.
+ */
+export function ownCgroupDir(cgroupFile = '/proc/self/cgroup', root = '/sys/fs/cgroup'): string | null {
+  const dir = cgroupDir(cgroupFile, root);
+  return dir && cgroupHasLimit(dir) ? dir : null;
 }
 
 /** One key of `memory.stat`, in MiB, or null when it cannot be read. */
@@ -105,7 +128,7 @@ export function memoryStatMb(dir: string, key: string): number | null {
  * the cgroup. A failure is not an error: the kernel reclaims under pressure
  * anyway, so this only makes the peak smaller sooner.
  */
-export function reclaimCgroup(keepFileMb = 64, dir: string | null = cgroupDir()): boolean {
+export function reclaimCgroup(keepFileMb = 64, dir: string | null = ownCgroupDir()): boolean {
   if (!dir) return false;
   const fileMb = memoryStatMb(dir, 'file');
   if (fileMb === null) return false;
@@ -163,7 +186,7 @@ export function shouldRestartForMemory(
 }
 
 /** `memory.current` of the cgroup in MiB, or null when it cannot be read. */
-export function cgroupCurrentMb(dir: string | null = cgroupDir()): number | null {
+export function cgroupCurrentMb(dir: string | null = ownCgroupDir()): number | null {
   if (!dir) return null;
   try {
     const n = Number(readFileSync(join(dir, 'memory.current'), 'utf8').trim());
