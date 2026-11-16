@@ -787,7 +787,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // 'changed' instead of listing all 12,224 sessions again (issue #16).
   if (agg) {
     for (const t of targets) {
-      if (!errors.some((e) => e.startsWith(`${t.serverUrl}:`))) noteWalkSuccess(t.serverUrl);
+      if (!errors.some((e) => e.startsWith(`${t.serverUrl}:`))) noteWalkSuccess(t.serverUrl, opts.walk !== 'changed');
     }
   }
   // After the walk: the connection is warm and the numbers are final. Never
@@ -819,16 +819,25 @@ function readWalkState(): Record<string, number> {
 export function requestFullWalk(serverUrl: string): void {
   try {
     const state = readWalkState();
-    state[serverUrl.replace(/\/+$/, '')] = 0;
+    state[FULL_KEY(serverUrl)] = 0;
     mkdirSync(getDataDir(), { recursive: true });
     writeFileSync(walkStatePath(), JSON.stringify(state));
   } catch { /* the stamp only tunes the NEXT walk */ }
 }
 
-function noteWalkSuccess(serverUrl: string): void {
+/** The key of the last FULL walk of a target. A walk of the changed sessions does not write it. */
+const FULL_KEY = (serverUrl: string): string => `${serverUrl.replace(/\/+$/, '')}#full`;
+
+function noteWalkSuccess(serverUrl: string, full: boolean): void {
   try {
     const state = readWalkState();
-    state[serverUrl.replace(/\/+$/, '')] = Date.now();
+    const now = Date.now();
+    state[serverUrl.replace(/\/+$/, '')] = now;
+    // Only a walk that listed every session makes the next full walk wait a day.
+    // Stamping the walks of changed sessions too kept the full walk from ever
+    // coming due while the daemon synced, so a session whose upload failed once
+    // and whose file was older than the window was never tried again.
+    if (full) state[FULL_KEY(serverUrl)] = now;
     mkdirSync(getDataDir(), { recursive: true });
     writeFileSync(walkStatePath(), JSON.stringify(state));
   } catch { /* the stamp only tunes the NEXT walk, so it must never fail a sync */ }
@@ -841,8 +850,20 @@ function noteWalkSuccess(serverUrl: string): void {
 export function lastSuccessfulWalkAt(serverUrl?: string): number {
   const state = readWalkState();
   const key = serverUrl?.replace(/\/+$/, '');
-  const stamps = key ? [state[key]] : Object.values(state);
+  const stamps = key ? [state[key]] : Object.entries(state).filter(([k]) => !k.endsWith('#full')).map(([, v]) => v);
   return stamps.reduce<number>((max, v) => Math.max(max, typeof v === 'number' ? v : 0), 0);
+}
+
+/**
+ * When did a FULL walk last succeed? 0 when none did, and 0 when a full walk was
+ * requested (`requestFullWalk`). With several targets it is the OLDEST of them: a
+ * target that has not had a full walk makes the next walk full.
+ */
+export function lastFullWalkAt(serverUrl?: string): number {
+  const state = readWalkState();
+  const keys = serverUrl ? [FULL_KEY(serverUrl)] : Object.keys(state).filter((k) => !k.endsWith('#full')).map(FULL_KEY);
+  if (keys.length === 0) return 0;
+  return Math.min(...keys.map((k) => (typeof state[k] === 'number' ? state[k] : 0)));
 }
 
 /** POST one derived-field batch, retrying the ingest gate's 429 (honoring

@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.56] — 2026-11-16
+
+### Fixed
+- **The full walk comes due once a day.** Since 0.7.53 the heartbeat walks the changed sessions and leaves the full walk to a daily stamp, and every successful walk wrote that stamp, including a walk of changed sessions. A daemon that synced all day never reached a full walk, so a session whose upload failed once and whose file was older than the window was never sent again, and the sessions that the ledger check cleared on 2026-11-16 (about 6,700 with a file on the machine) waited. Only a full walk writes the stamp of the full walk now (`#full` in `walk-state.json`), and a ledger check that clears rows asks for one.
+
 ## [0.7.55] — 2026-11-16
 
 ### Fixed

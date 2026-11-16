@@ -47,7 +47,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // server. Everything else this daemon used to import (stores, embedder,
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
-import { syncIncremental, isSyncSkip, lastSuccessfulWalkAt } from '../src/sync-client.js';
+import { syncIncremental, isSyncSkip, lastFullWalkAt } from '../src/sync-client.js';
 import { shouldWalkFull } from '../src/walk-budget.js';
 import { reclaimCgroup, releaseMemory, rssMb, shouldPause, startBudget, usedMb, shouldReclaim, hardMaxMb, shouldRestartForMemory, DEFAULT_RECLAIM_FILE_MB, cgroupDir, memoryStatMb } from '../src/memory-guard.js';
 import { fetchWithTimeout } from '../src/http.js';
@@ -145,7 +145,7 @@ async function shipToServer(trigger: string): Promise<void> {
     // The full listing runs once a day (FULL_WALK_INTERVAL_MS). Every other tick
     // lists the sessions that changed, so the heartbeat and an applied intent no
     // longer build 12,000 refs each time (issue #22).
-    const fullDue = shouldWalkFull({ lastSuccessAt: lastSuccessfulWalkAt(), now: Date.now() });
+    const fullDue = shouldWalkFull({ lastSuccessAt: lastFullWalkAt(), now: Date.now() });
     const scope = trigger === 'file-change' || !fullDue ? 'changed' : 'full';
     const result = await syncIncremental({ scope });
     if (isSyncSkip(result)) {

@@ -159,4 +159,7 @@ For Claude the listing reads one directory entry and one file `mtime` for each
 transcript, and builds a session ref only for a session with a file at or above
 the cutoff. A tick for one changed file no longer builds 12,000 refs, which cost
 about 100 MB. A session whose upload failed and whose file is older than the
-window is sent again by the daily full listing.
+window is sent again by the daily full listing. Only a full walk writes the stamp
+of that listing (`<server>#full` in `walk-state.json`): a walk of the changed sessions
+does not, so the full walk comes due once a day however much the daemon syncs. A
+ledger check that clears rows asks for a full walk on the next tick.
