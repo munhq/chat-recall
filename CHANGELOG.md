@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.66] — 2026-11-16
+### Fixed
+- **The daemon is no longer killed by its watchdog after the release of 0.7.64.** From 0.7.64 the walk ran the garbage collector and `memory.reclaim` at the memory bound and went on. On 2026-11-16 the unit was killed by the watchdog at 21:36 and at 21:44 (`Watchdog timeout (limit 5min)`, signal 6, 1.6 GB memory peak), after 80 minutes of 0.7.61 to 0.7.63 without a kill. The walk pauses at the bound again, as it did before 0.7.64 (the entry of 0.7.64 is withdrawn).
 ## [0.7.65] — 2026-11-16
 ### Fixed
 - **A `chat-recall sync` started from a terminal ships every session, not the first one.** The memory bound read `memory.current` of the cgroup of the process. A terminal sits in the cgroup of the whole login session, which holds every program of the user: the bound read 17,754 MB and 27,090 MB on 2026-11-16, passed the hard bound of 896 MB after one build, and the walk stopped with "the next tick continues" while the command had no next tick. Of two planted sessions one reached the server, and `scripts/exclusion-e2e.mjs` failed 5 checks in every run of the compose workflow. The bound now reads a cgroup only when it is a unit with a memory limit of its own, which is the daemon under systemd; for any other process it reads the resident size. The same script with the CLI of this version passes 35 of 35 checks (`memory-guard-own-cgroup.test.ts`).

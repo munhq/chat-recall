@@ -207,22 +207,6 @@ export function usedMb(rss = rssMb(), cgroup = cgroupCurrentMb()): number {
   return cgroup !== null && cgroup > rss ? cgroup : rss;
 }
 
-/**
- * The memory in use after the pass gave back what it can: the collected heap and
- * the file pages of the cgroup. A walk reads about 400 MB of transcripts in 20
- * seconds, and those pages count in `memory.current` until they are reclaimed,
- * so the pause is decided on the number after the release.
- */
-export function usedAfterRelief(
-  measure: () => number = usedMb,
-  release: () => boolean = releaseMemory,
-  reclaim: () => boolean = reclaimCgroup,
-): number {
-  release();
-  reclaim();
-  return measure();
-}
-
 /** What one pass may use: the size at its start, the growth it may add, and the absolute bound. */
 export interface MemoryBudget {
   baselineMb: number;
