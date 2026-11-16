@@ -62,6 +62,16 @@ import { growth } from '../util/growth.js';
 
 const log = createLogger('sync');
 
+/**
+ * One line with the memory of the process at a named stage of an ingest. A pod
+ * that is killed mid-request leaves the last stage it passed as its last line, so
+ * the stage that holds the memory is named (issue #27).
+ */
+function ingestStage(stage: string, tenant: string): void {
+  const m = process.memoryUsage();
+  log.info({ stage, tenant, rssMb: Math.round(m.rss / 1048576), heapUsedMb: Math.round(m.heapUsed / 1048576), externalMb: Math.round(m.external / 1048576), arrayBuffersMb: Math.round(m.arrayBuffers / 1048576) }, 'ingest stage');
+}
+
 
 /** What ingestConversation needs. Named, rather than closed over. */
 interface ConvContext {
@@ -968,7 +978,9 @@ router.post('/', async (req, res) => {
           // stored envelope is not read, so the batch holds the envelopes of the
           // full conversations alone (issue #27).
           const appendIds = conversations.filter((c) => c.append && c.final === undefined).map((c) => c.session_id).filter(Boolean);
+          ingestStage('before states', agent.tenant);
           const tailStates = await store.getSessionTailStates(appendIds);
+          ingestStage('after states', agent.tenant);
           // An appended session that has no state yet gets one from the end of its
           // stored envelope. Without it the first append of each session would
           // parse and rewrite the whole envelope, which is the work this avoids.
@@ -976,9 +988,12 @@ router.post('/', async (req, res) => {
           if (unseeded.length > 0) {
             for (const [id, s] of await store.seedSessionTailStates(unseeded, PARSER_VERSION)) tailStates.set(id, s);
           }
+          ingestStage('after seed', agent.tenant);
           const priorContent = await store.getCachedContentStaleMany('session', convIds.filter((id) => !tailStates.has(id)));
+          ingestStage('after prior content', agent.tenant);
           const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
           const priorArchive = await store.rawSessionMetaMany(convIds);
+          ingestStage('after prefetch', agent.tenant);
 
           const tally = { conv: 0, appendConv: 0, shrinkGuarded: 0 };
           for (const cv of conversations) {
@@ -990,6 +1005,7 @@ router.post('/', async (req, res) => {
             });
           }
           conv += tally.conv; appendConv += tally.appendConv; shrinkGuarded += tally.shrinkGuarded;
+          ingestStage('after loop', agent.tenant);
 
           // Non-session source items (plan/task/claude_md/skill/…): metadata
           // row + FTS chunks, same write path the local indexer uses.
@@ -1177,6 +1193,7 @@ router.post('/', async (req, res) => {
           // one connection, a fixed number of statements — whatever the batch
           // size.
           // docs/SYNC-BATCH-WRITES.md §4.
+          ingestStage('before write', agent.tenant);
           const written = await store.writeIngestBatch({
             items: itemBatch,
             chunks: chunkBatch,
@@ -1190,6 +1207,7 @@ router.post('/', async (req, res) => {
             links: linkBatch,
             ...sideBatch,
           }, metaCache, { outcomes: () => createOutcomeCache(), knowledgeGraph: () => createKnowledgeGraph() });
+          ingestStage('after write', agent.tenant);
           chunks += written.chunks;
           find += written.findings;
           der += written.computeOffered;
