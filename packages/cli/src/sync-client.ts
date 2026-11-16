@@ -2679,6 +2679,10 @@ export async function buildConversationSync(
   const oversized = sessionBuildBytes(ref) > FULL_BUILD_MAX_BYTES;
   let headOffsetEnd = 0;
   let oversizedFindings: BuiltConversation['findings'] | null = null;
+  // An export over the ceiling (a session whose main file is small but whose subagent files are
+  // not) is scanned file by file where it is read, and never built into a container.
+  let exportOverCeiling = false;
+  let overCeilingFindings: BuiltConversation['findings'] | null = null;
 
   // Parse the transcript live — this is the single canonical parse; the
   // envelope and the redacted text both come from it. When the shadow path
@@ -2750,6 +2754,30 @@ export async function buildConversationSync(
         });
         includeRaw = false;
         includeMeta = false;
+        exportOverCeiling = true;
+        // The secret scan reads one file of the export at a time. The container, the joined text
+        // and the copy for the scan worker below are what a 44 MB export grew to 838 MB with
+        // (2026-11-16): the guard above said "no container copy", and then the code after the
+        // parse exported the session again and built one.
+        overCeilingFindings = [];
+        let lineBase = 0;
+        for (const f of exp.files) {
+          const text = f.bytes.toString('utf8');
+          try {
+            for (const x of scanTextForFindings(text)) {
+              overCeilingFindings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: x.rule, line: x.line + lineBase, preview: x.preview });
+            }
+          } catch { /* best-effort */ }
+          if (opts.tenantRules && opts.tenantRules.length > 0) {
+            try {
+              for (const x of scanTenantRules(text, opts.tenantRules)) {
+                overCeilingFindings.push({ session_id: ref.prefixedId, detector: x.detector, rule: x.rule, line: x.line + lineBase, preview: x.preview });
+              }
+            } catch { /* best-effort */ }
+          }
+          // The container joins the files with a newline, so the next file starts one line after this one ends.
+          lineBase += (text.match(/\n/g)?.length ?? 0) + 1;
+        }
       }
       if (exp && !overCeiling) {
         try {
@@ -2889,7 +2917,7 @@ export async function buildConversationSync(
   // the secret scan and raw archive cover the RECOVERED full history, not the
   // truncated disk file. Only re-export when the shadow path didn't produce one.
   let container: RawContainer | null = fullestContainer;
-  if (!container && !oversized) {
+  if (!container && !oversized && !exportOverCeiling) {
     try {
       const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
       const exp = backend.exportRawSession(ref.prefixedId);
@@ -2983,6 +3011,7 @@ export async function buildConversationSync(
   // Oversized sessions: the whole file was scanned chunk by chunk above —
   // the container path never ran for them.
   if (oversizedFindings) findings.push(...oversizedFindings);
+  if (overCeilingFindings) findings.push(...overCeilingFindings);
 
   // High-precision default: drop fuzzy/low-precision detector findings
   // (generic-api-key, Box, URI, …) before shipping so the Security view isn't

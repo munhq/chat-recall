@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.59] — 2026-11-16
+
+### Fixed
+- **A session whose export is over the ceiling is no longer built into a container after it was declared too large for one.** The build said "no container copy" for an export over `CHAT_RECALL_FULL_BUILD_MAX_MB` (a session with a small main file and large subagent files), and then exported the session a second time, built the container, joined its text and copied it to the scan worker. On 2026-11-16 a 44 MB export took the daemon from 156 MB to 838 MB in 13 seconds, past its hard bound, and the daemon ended and restarted on the same session in every full walk, which stopped the resend of about 6,700 sessions. The secret scan reads one file of such an export at a time with the line numbers of the container scan (`sync-over-ceiling.test.ts`). The same build peaks at 345 MB and takes 4 seconds; the 50 MB and the 27 MB sessions peak at 370 MB and 328 MB.
+
 ## [0.7.58] — 2026-11-16
 
 ### Fixed
