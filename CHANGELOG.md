@@ -2,6 +2,10 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.69] — 2026-11-16
+### Fixed
+- **A session repaired with `verify --repair` is walked first.** The repair deletes `m`, `o`, `s` and `h` of the ledger row and keeps the row for the coverage of its fields. The walk ordered a session by whether its row existed, so a repaired session went behind the unacknowledged ones, outside the slice of 2,000 sessions of the walk, and its cursor stayed cleared: `96491dcf` and `6ec051d9` were not sent in 80 minutes. The order now reads the acknowledged mtime (`walk-budget.test.ts`).
+- **The memory of a cut transcript is bounded.** Each tool input, tool result and thinking body is cut to 2,000 characters. After a transcript has kept 48 million characters of them, the later ones are cut to 200 characters. One budget covers the main file and the subagent files of a session, for Claude, Codex and OpenCode. A transcript under the budget is cut as before (`claude-stream.test.ts`).
 ## [0.7.68] — 2026-11-16
 ### Fixed
 - **`chat-recall verify --deep` leaves out a session that is sent without a raw archive.** A session whose files add up to more than `CHAT_RECALL_FULL_BUILD_MAX_MB` is sent without a raw archive, so no archive of it can reach the size of its local container. `verify` listed 4 such sessions (25.7 MB to 46.5 MB of files) as stranded, `--repair` cleared their cursors and the next sync sent them again with the same result. The deep check now sizes a session from its files on disk and leaves it out when it is over the ceiling, which also stops it from exporting the whole session into memory (it held 744 MB during a run).

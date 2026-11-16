@@ -9,7 +9,7 @@
  */
 import { describe, test, expect } from 'vitest';
 import {
-  walkSessionLimit, orderRefsForWalk, shouldWalkFull, mayTombstone,
+  walkSessionLimit, orderRefsForWalk, hasAckedMtime, shouldWalkFull, mayTombstone,
   DEFAULT_WALK_MAX_SESSIONS, FULL_WALK_INTERVAL_MS,
 } from './walk-budget.js';
 
@@ -31,6 +31,13 @@ describe('walkSessionLimit', () => {
 });
 
 describe('orderRefsForWalk', () => {
+  test('a repaired session, whose row lost its mtime, goes with the unacknowledged sessions', () => {
+    const ledger = new Map<string, { m?: number }>([['old', { m: 100 }], ['repaired', {}], ['new', { m: 300 }]]);
+    const input = [{ prefixedId: 'old' }, { prefixedId: 'repaired' }, { prefixedId: 'new' }, { prefixedId: 'unseen' }];
+    expect(orderRefsForWalk(input, (id) => hasAckedMtime(ledger.get(id))).map((r) => r.prefixedId))
+      .toEqual(['repaired', 'unseen', 'old', 'new']);
+  });
+
   test('unacknowledged sessions come first and the order inside each group holds', () => {
     const input = refs(6);
     const acked = new Set(['session-0', 'session-1', 'session-4']);

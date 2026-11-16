@@ -20,10 +20,10 @@ import { parseClaudeTranscript, parseClaudeTranscriptText, parseClaudeSubagents 
 import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 import { canonicalEventsToMessages } from './from-events.js';
-import { capPayload, SYNC_PAYLOAD_CAP } from './trim.js';
+import { capPayload, budgetedCut, SYNC_PAYLOAD_CAP } from './trim.js';
 
 export * from './types.js';
-export { capPayload, SYNC_PAYLOAD_CAP } from './trim.js';
+export { capPayload, budgetedCut, SYNC_PAYLOAD_CAP, SYNC_PAYLOAD_BUDGET, SYNC_PAYLOAD_CAP_TIGHT } from './trim.js';
 export {
   buildRawContainer, containerSrcHash, gzipContainer, gzipContainerStreamed, gunzipContainer, mapContainerText, RAW_PARSE_MAX_BYTES,
   repairRedactedJsonl, repairContainer, redactJsonLine, redactContainer,
@@ -54,6 +54,8 @@ export interface ParseTranscriptOptions {
   /** Cut each payload body to this many characters while the file is read, so
    *  the parse holds the cut transcript and never the full payloads. */
   payloadCap?: number;
+  /** Characters of cut payloads kept before the later payloads are cut shorter. */
+  payloadBudget?: number;
 }
 
 /** Parse a session (any tool, prefixed or bare id) into the canonical shape.
@@ -88,7 +90,7 @@ async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOpti
     const primaryPath = mainGroup.paths[0];
     const merged = readSessionGroupText(mainGroup);
 
-    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap, cut: budgetedCut(opts.payloadCap, opts.payloadBudget) } : {};
     const [tail, allSubagents] = await Promise.all([
       Promise.resolve(parseClaudeTranscriptText(merged.text, cut)),
       parseClaudeSubagents(primaryPath, cut),
@@ -120,7 +122,7 @@ async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOpti
   }
 
   if (tool === 'opencode') {
-    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap, cut: budgetedCut(opts.payloadCap, opts.payloadBudget) } : {};
     const messages = await parseOpenCodeTranscript(sessionId, cut);
     if (messages.length === 0) return null;
     const subagents = await parseOpenCodeSubagents(sessionId, cut);
@@ -131,7 +133,7 @@ async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOpti
   if (tool === 'codex') {
     const loc = getBackend('codex').findSession(sessionId);
     if (!loc) return null;
-    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap, cut: budgetedCut(opts.payloadCap, opts.payloadBudget) } : {};
     const [messages, subagents] = await Promise.all([
       parseCodexTranscript(loc.path, cut),
       parseCodexSubagents(loc.path, cut),

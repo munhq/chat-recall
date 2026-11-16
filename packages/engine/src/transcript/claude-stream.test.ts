@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { parseClaudeTranscriptText, parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
-import { capPayload, SYNC_PAYLOAD_CAP } from './trim.js';
+import { capPayload, budgetedCut, SYNC_PAYLOAD_CAP, SYNC_PAYLOAD_CAP_TIGHT } from './trim.js';
 import { trimTranscriptForSync } from './index.js';
 import type { TranscriptMessage } from './types.js';
 
@@ -177,5 +177,36 @@ describe('files and subagents', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('budgetedCut', () => {
+  test('cuts to the cap until the payloads kept reach the budget, then to the tight cap', () => {
+    const cut = budgetedCut(2000, 5000, 200);
+    const sizes = Array.from({ length: 6 }, () => (cut('x'.repeat(10_000)) as string).length);
+    // 2,000 characters and the suffix, three times (6,051 kept), then 200 characters and the suffix.
+    expect(sizes.slice(0, 3).every((n) => n > 2000 && n < 2100)).toBe(true);
+    expect(sizes.slice(3).every((n) => n > 200 && n < 300)).toBe(true);
+  });
+
+  test('is shared by the lines of one parse, so the payloads of a session stay inside the budget', () => {
+    const recs: unknown[] = [];
+    for (let i = 0; i < 400; i++) {
+      recs.push({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `t${i}`, name: 'Read', input: {} }] } });
+      recs.push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'r'.repeat(50_000) }] } });
+    }
+    const body = recs.map((r) => JSON.stringify(r)).join('\n');
+    const messages = parseClaudeTranscriptText(body, { payloadCap: SYNC_PAYLOAD_CAP, cut: budgetedCut(SYNC_PAYLOAD_CAP, 200_000, SYNC_PAYLOAD_CAP_TIGHT) });
+    const lengths = messages.map((m) => String(m.toolCalls?.[0].result ?? '').length);
+    const total = lengths.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(200_000 + 400 * 300);
+    expect(Math.max(...lengths)).toBeLessThan(2100);
+    expect(lengths.at(-1)).toBeLessThan(300);
+  });
+
+  test('a transcript under the budget is cut as it was with the plain cap', () => {
+    const text = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }, { type: 'tool_use', id: 'a', name: 'B', input: { c: 'x'.repeat(9000) } }] } });
+    expect(wire(parseClaudeTranscriptText(text, { payloadCap: SYNC_PAYLOAD_CAP, cut: budgetedCut(SYNC_PAYLOAD_CAP) })))
+      .toEqual(wire(parseClaudeTranscriptText(text, { payloadCap: SYNC_PAYLOAD_CAP })));
   });
 });

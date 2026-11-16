@@ -55,6 +55,8 @@ export interface ClaudeParseOptions {
    *  full payloads, so its memory follows the size of the output and not the
    *  size of the file. */
   payloadCap?: number;
+  /** The cut to apply to each payload. It wins over `payloadCap` and carries the budget of a whole session. */
+  cut?: (v: unknown) => unknown;
 }
 
 export async function parseClaudeTranscript(sessionPath: string, opts: ClaudeParseOptions = {}): Promise<Message[]> {
@@ -63,7 +65,7 @@ export async function parseClaudeTranscript(sessionPath: string, opts: ClaudePar
 
 /** Same parse over in-memory text — what the server runs on archived raw. */
 export function parseClaudeTranscriptText(text: string, opts: ClaudeParseOptions = {}): Message[] {
-  const builder = new MessageBuilder(opts.payloadCap);
+  const builder = new MessageBuilder(opts.payloadCap, opts.cut);
   let lineNumber = 0;
   for (const line of text.split('\n')) {
     lineNumber++;
@@ -77,7 +79,7 @@ export function parseClaudeTranscriptText(text: string, opts: ClaudeParseOptions
 
 async function parseMessagesFromFile(sessionPath: string, opts: ClaudeParseOptions): Promise<Message[]> {
   const file = await open(sessionPath);
-  const builder = new MessageBuilder(opts.payloadCap);
+  const builder = new MessageBuilder(opts.payloadCap, opts.cut);
   try {
     let lineNumber = 0;
     for await (const line of file.readLines()) {
@@ -119,8 +121,8 @@ class MessageBuilder {
   /** The last result of each tool_use id. */
   private readonly results = new Map<string, { content: unknown; isError: boolean }>();
 
-  constructor(payloadCap?: number) {
-    this.cap = payloadCap ? (v) => capPayload(v, payloadCap) : (v) => v;
+  constructor(payloadCap?: number, cut?: (v: unknown) => unknown) {
+    this.cap = cut ?? (payloadCap ? (v) => capPayload(v, payloadCap) : (v) => v);
   }
 
   add(line: number, obj: any): void {

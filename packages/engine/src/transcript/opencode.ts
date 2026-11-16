@@ -75,6 +75,8 @@ export async function parseOpenCodeSubagents(parentSessionId: string, opts: Open
 export interface OpenCodeParseOptions {
   /** Cut each tool state to this many characters as its row is read. */
   payloadCap?: number;
+  /** The cut to apply to each payload. It wins over `payloadCap` and carries the budget of a whole session. */
+  cut?: (v: unknown) => unknown;
 }
 
 export async function parseOpenCodeTranscript(sessionId: string, opts: OpenCodeParseOptions = {}): Promise<Message[]> {
@@ -99,7 +101,7 @@ export async function parseOpenCodeTranscript(sessionId: string, opts: OpenCodeP
       ORDER BY p.time_created ASC
     `).iterate(realId, realId) as Iterable<{ data: string; time_created: number; msg_data: string }>;
 
-    const cap = opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v;
+    const cap = opts.cut ?? (opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v);
     // The parts of one message carry the same message row, so its role is read once.
     let lastMsgData = '';
     let lastRole: 'user' | 'assistant' = 'assistant';

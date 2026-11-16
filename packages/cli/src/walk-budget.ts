@@ -39,6 +39,16 @@ export function walkSessionLimit(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /**
+ * Does the ledger row carry an acknowledged mtime? `verify --repair` deletes `m`, `o`, `s` and `h`
+ * and keeps the row for the coverage of its fields, so a repaired session has a row and no
+ * acknowledgement. It goes with the unacknowledged sessions, at the front of the walk: behind the
+ * others it falls outside the slice of the walk, and the repair never reaches the server.
+ */
+export function hasAckedMtime(row: { m?: number } | undefined): boolean {
+  return typeof row?.m === 'number' && row.m > 0;
+}
+
+/**
  * Put the sessions without an acknowledged row first, and keep the incoming
  * order inside both groups. Without this the cap would always carry the same
  * first N sessions and the corpus past N would never move.

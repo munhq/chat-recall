@@ -16,6 +16,36 @@ function detach(s: string): string {
   return JSON.parse(JSON.stringify(s)) as string;
 }
 
+/** Characters of cut payloads one transcript keeps before every later payload is cut to `SYNC_PAYLOAD_CAP_TIGHT`. */
+export const SYNC_PAYLOAD_BUDGET = 48 * 1024 * 1024;
+export const SYNC_PAYLOAD_CAP_TIGHT = 200;
+
+/** Characters a cut payload holds, as the wire counts them. */
+function payloadLength(v: unknown): number {
+  if (v === undefined || v === null) return 0;
+  if (typeof v === 'string') return v.length;
+  try { return JSON.stringify(v)?.length ?? 0; } catch { return 0; }
+}
+
+/**
+ * A cut that keeps the memory of a transcript bounded. Each payload is cut to `capChars` until the
+ * payloads kept add up to `budgetChars`; the payloads after that are cut to `tightChars`. A session
+ * of 300 MB holds about the same number of payload characters as one of 100 MB, whatever its size.
+ * One cut is made for a whole session and shared by its main file and its subagent files.
+ */
+export function budgetedCut(
+  capChars: number,
+  budgetChars = SYNC_PAYLOAD_BUDGET,
+  tightChars = SYNC_PAYLOAD_CAP_TIGHT,
+): (v: unknown) => unknown {
+  let kept = 0;
+  return (v) => {
+    const out = capPayload(v, kept >= budgetChars ? Math.min(tightChars, capChars) : capChars);
+    kept += payloadLength(out);
+    return out;
+  };
+}
+
 /** Characters one payload keeps on the sync wire. */
 export const SYNC_PAYLOAD_CAP = 2000;
 

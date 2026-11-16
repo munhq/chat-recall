@@ -134,6 +134,8 @@ function isCodexInjectedWrapper(text: string): boolean {
 export interface CodexParseOptions {
   /** Cut each tool input and reasoning summary to this many characters as its line is read. */
   payloadCap?: number;
+  /** The cut to apply to each payload. It wins over `payloadCap` and carries the budget of a whole session. */
+  cut?: (v: unknown) => unknown;
 }
 
 /**
@@ -163,7 +165,7 @@ export function parseCodexTranscriptText(text: string, opts: CodexParseOptions =
 }
 
 function codexLineHandler(messages: Message[], opts: CodexParseOptions): (lineNum: number, line: string) => void {
-  const cap = opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v;
+  const cap = opts.cut ?? (opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v);
   return (lineNum, line) => {
     if (!line.trim()) return;
     try {

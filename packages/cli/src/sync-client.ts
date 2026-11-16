@@ -47,7 +47,7 @@ import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
-import { walkSessionLimit, orderRefsForWalk, mayTombstone } from './walk-budget.js';
+import { walkSessionLimit, orderRefsForWalk, hasAckedMtime, mayTombstone } from './walk-budget.js';
 import { tombstoneMode, planTombstones, describeTombstonePlan } from './tombstone-rule.js';
 import { probeSessionSource } from './session-source-probe.js';
 import { reconcileLedgerIfDue } from './ledger-reconcile.js';
@@ -1858,7 +1858,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   // unbounded pass that a restart repeats from the first session. An explicit
   // `opts.limit` from the caller still wins.
   const walkMax = opts.limit ?? walkSessionLimit();
-  const ordered = walkMax > 0 ? orderRefsForWalk(refs, (id) => Boolean(ledger?.get(id))) : refs;
+  const ordered = walkMax > 0 ? orderRefsForWalk(refs, (id) => hasAckedMtime(ledger?.get(id))) : refs;
   const slice = walkMax > 0 ? ordered.slice(0, walkMax) : ordered;
   // Sessions the ledger has not acknowledged come first, so a walk is complete when its slice
   // holds all of them and it did not pause: the acknowledged ones behind them are checked by the
