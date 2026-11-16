@@ -220,6 +220,40 @@ protocol above:
 Measured on a 42 MB container: 840 MB peak RSS in full, 218 MB in chunks, the
 same 2,392 messages.
 
+## Tail segments
+An append used to read the stored envelope of its session, add the tail and write
+the whole envelope back. For a session of 39 MB on disk the envelope is 13 MB, and
+the collector appended to it every few seconds. The work grew with the session, and
+one request held the envelope of every session it named. On 2026-11-16 a request
+of 291 KB that named 36 appended sessions took a server pod above its 512Mi limit.
+
+The server now keeps a tail as a segment:
+
+- **Storage.** A segment is a row of `content_cache` with `source_type =
+  'session_tail'` and the id `<session id>#<seq>` (seq has 10 digits). Its body is
+  `{ v, base, o, lastLine, messages }`. A body under 32 KB stays in the row. A
+  larger one goes to the object store like an envelope.
+- **State.** The newest segment records where the tail ends: the byte offset `o`
+  and the last line. Seq 0 is a marker with no messages. A full sync of an
+  append-only session writes it with the base. A session stored before that gets
+  one from the end of its envelope text (`peekEnvelopeTail`), which reads the text
+  and does not parse it.
+- **Append.** The tail must start where the state ends (`base_offset` equals `o`),
+  otherwise the server asks for a full sync. A newest segment under 256 KB takes the
+  tail, so a session adds about one row for each 256 KB. The stored envelope is not
+  read.
+- **Read.** `getCachedContent`, `getCachedContentStale` and `getSessionPage` return
+  base plus segments in order. `getSessionPage` returns one page of messages and
+  does not build the merged envelope.
+- **Replace and purge.** A full sync, a rebuild and a purge delete the segments of
+  the session and their objects.
+- **Compaction.** The worker tier merges the base and the segments of a session
+  into a new base when it has more than 16 segments or 2 MB of them and no append
+  came in the last five minutes. It works on one session at a time, under the lock
+  that the appends take.
+- **Limits.** A request names at most `CHAT_RECALL_INGEST_MAX_CONVERSATIONS` (100)
+  sessions, and the collector names at most `CHAT_RECALL_APPEND_BATCH_MAX` (10).
+
 ## What this does NOT change
 - Non-session sources (plan/task/claude_md/…) — unchanged.
 - Derived-field reconciliation (titles) — unchanged (already cheap, head-only).

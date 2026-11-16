@@ -126,6 +126,8 @@ router.get('/archives', async (_req, res) => {
  * have a raw archive, so a session stored without one would look missing there.
  * Ids and mtimes only, about 100 bytes per session. `deleted` lists the ids that
  * carry a tombstone: the server refuses them, so a collector must not queue them.
+ * `empty` lists the sessions that are stored without a conversation: a collector
+ * sends these again.
  */
 router.get('/sessions', async (_req, res) => {
   try {
@@ -134,10 +136,13 @@ router.get('/sessions', async (_req, res) => {
     try {
       const rows = await store.listAllSessionsForPrecompute();
       const tombstones = await store.listTombstones();
+      const empty = await store.listSessionsWithoutContent();
       res.json({
         count: rows.length,
         sessions: rows.map((r) => ({ id: r.id, mtime: Number(r.mtime) || 0 })),
         deleted: tombstones.map((t) => t.session_id),
+        // Stored without a conversation: the collector sends these again.
+        empty,
       });
     } finally { await store.close(); }
   } catch (error) {

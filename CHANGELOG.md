@@ -2,6 +2,15 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.54] — 2026-11-16
+
+### Fixed
+- **A request names at most 10 appended sessions.** On 2026-11-16 a request of 291 KB that named 36 appended sessions took 3.5 s and the server pod that handled it was OOM-killed (limit 512Mi). The collector then retried the same kind of batch for 23 syncs in a row. It sends `CHAT_RECALL_APPEND_BATCH_MAX` sessions per append request now (default 10), and the server refuses a request of more than `CHAT_RECALL_INGEST_MAX_CONVERSATIONS` (default 100) with `413` and `too_many_conversations`.
+- **The collector sends again the sessions that the server stores without a conversation.** The restore of 2026-11-14 brought back about 7,300 session rows whose stored conversations had been deleted. `GET /api/status/sessions` lists them as `empty`, and the daily ledger check clears their ledger rows so the next walks send them in full.
+
+### Changed
+- **An append adds a tail segment and no longer rewrites the stored conversation.** The server writes the messages of an append as a segment, keeps one open segment of up to 256 KB, merges base and segments when a reader asks, and compacts the segments of an idle session in the background. The stored conversation of a session of 39 MB on disk is 13 MB, and it was read, rewritten and uploaded for every append (`docs/SYNC-INCREMENTAL.md`, "Tail segments").
+
 ## [0.7.53] — 2026-11-14
 
 The fixes below were first tagged 0.7.52. That tag points at a change that was reverted before it reached `main`, and npm never received it.

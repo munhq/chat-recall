@@ -361,6 +361,8 @@ export interface StorageDriver {
   getSessionPage(id: string, opts: { offset: number; limit: number; minMtime?: number }): Promise<import('./session-tails.js').EnvelopePage | null>;
   /** The body of one segment, or null when it does not exist or cannot be read. */
   getSessionTailBody(sessionId: string, seq: number): Promise<import('./session-tails.js').TailBody | null>;
+  /** Sessions that have a metadata row and no stored conversation, which a collector sends again. */
+  listSessionsWithoutContent(): Promise<string[]>;
   /** Sessions whose segments passed a limit and have been idle, largest first. */
   sessionsNeedingCompaction(opts?: { limit?: number; maxSegments?: number; maxBytes?: number; idleMs?: number }): Promise<string[]>;
   /**

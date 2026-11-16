@@ -1000,6 +1000,22 @@ export class PgStore implements StorageDriver {
    * idle time, largest first. An active session is left alone, so a compaction
    * does not race the appends that are still arriving.
    */
+  /**
+   * Sessions that have a metadata row and no stored conversation: no envelope row,
+   * or one with neither a body nor an object key. A collector sends these again.
+   * The restore of 2026-11-14 left about 7,300 of them: the rows came back, and
+   * the objects that held the conversations had been deleted by the purge.
+   */
+  async listSessionsWithoutContent(): Promise<string[]> {
+    const rows = await this.qr(
+      `SELECT m.id FROM memory_metadata m
+         LEFT JOIN content_cache c ON c.tenant = m.tenant AND c.id = m.id AND c.source_type = 'session'
+        WHERE m.tenant = $1 AND m.source_type = 'session'
+          AND (c.id IS NULL OR (c.content_json = '' AND c.object_key = ''))`,
+      [this.t]);
+    return rows.map((r: any) => r.id as string);
+  }
+
   async sessionsNeedingCompaction(opts: { limit?: number; maxSegments?: number; maxBytes?: number; idleMs?: number } = {}): Promise<string[]> {
     const rows = await runUnrestricted(() => this.q(
       `SELECT left(id, -11) AS sid,

@@ -136,6 +136,8 @@ export class SqliteStore implements StorageDriver {
     if (!r || !r.content) return null;
     try { return JSON.parse(r.content) as TailBody; } catch { return null; }
   }
+  /** The test driver does not report sessions without content. */
+  async listSessionsWithoutContent(): Promise<string[]> { return []; }
   /** The test driver keeps no index of segments by size; compaction is called per session. */
   async sessionsNeedingCompaction(): Promise<string[]> { return []; }
   async compactSessionTails(sessionId: string, version = 6) {

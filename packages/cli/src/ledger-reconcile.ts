@@ -6,7 +6,8 @@
  * 479, and nothing compared the two. One request to `/api/status/sessions` (about
  * 1 MB for 12,000 sessions) gives the server's list. A ledger row whose session
  * the server does not list is cleared, and the next bounded walk sends the
- * session. A session with a tombstone on the server is left alone: the server
+ * session. A session the server lists without a stored conversation counts as
+ * missing. A session with a tombstone on the server is left alone: the server
  * refuses it.
  */
 import { fetchWithTimeout } from './http.js';
@@ -59,10 +60,13 @@ export async function fetchServerSessions(server: string, token: string, fetcher
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetcher(`${server}/api/status/sessions`, { headers }, 120_000);
   if (!res.ok) throw new Error(`HTTP ${res.status} from /api/status/sessions`);
-  const body = await res.json() as { sessions?: Array<{ id?: unknown }>; deleted?: unknown[] };
+  const body = await res.json() as { sessions?: Array<{ id?: unknown }>; deleted?: unknown[]; empty?: unknown[] };
   if (!Array.isArray(body.sessions)) throw new Error('/api/status/sessions did not return a session list');
   const ids = new Set<string>();
   for (const s of body.sessions) if (typeof s.id === 'string') ids.add(s.id);
+  // A session the server stores without a conversation counts as missing: the
+  // restore of 2026-11-14 brought back about 7,300 rows whose conversations were gone.
+  for (const e of body.empty ?? []) if (typeof e === 'string') ids.delete(e);
   const deleted = new Set<string>();
   for (const d of body.deleted ?? []) if (typeof d === 'string') deleted.add(d);
   return { ids, deleted };

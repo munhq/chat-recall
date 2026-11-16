@@ -153,6 +153,15 @@ describe('fetchServerSessions', () => {
     expect([...got.deleted]).toEqual(['c']);
   });
 
+  test('a session stored without a conversation is not in the ids, so it counts as missing', async () => {
+    const got = await fetchServerSessions('https://example.test', 't', json({
+      sessions: [{ id: 'a', mtime: 1 }, { id: 'b', mtime: 2 }, { id: 'c', mtime: 3 }], deleted: [], empty: ['b'],
+    }));
+    expect([...got.ids].sort()).toEqual(['a', 'c']);
+    const plan = planReconcile({ ledger: rows([['a', 1], ['b', 2], ['c', 3]]), serverIds: got.ids });
+    expect(plan.queued).toEqual(['b']);
+  });
+
   test('an error status throws, so a failed call is not an empty server', async () => {
     await expect(fetchServerSessions('https://example.test', 't', json({ error: 'x' }, 502))).rejects.toThrow('HTTP 502');
   });
