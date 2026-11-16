@@ -25,7 +25,9 @@ const procFile = (path: string) => { const f = join(root, 'proc-cgroup'); writeF
 describe('ownCgroupDir', () => {
   it('is the cgroup of a unit that sets MemoryMax and MemoryHigh', () => {
     const dir = cgroup('app.slice/chat-recall-watch.service', { 'memory.max': '2147483648\n', 'memory.high': '1073741824\n', 'memory.current': String(900 * 1048576) });
-    expect(ownCgroupDir(procFile('/app.slice/chat-recall-watch.service'), root)).toBe(dir);
+    // The path of the cgroup is the root and the path of the proc file, joined with a slash on every platform.
+    expect(ownCgroupDir(procFile('/app.slice/chat-recall-watch.service'), root)).toBe(`${root}/app.slice/chat-recall-watch.service`);
+    expect(dir.replace(/\\/g, '/')).toBe(`${root.replace(/\\/g, '/')}/app.slice/chat-recall-watch.service`);
   });
 
   it('is null for the cgroup of a login session, which has no limit', () => {
