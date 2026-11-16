@@ -978,11 +978,20 @@ export class PgStore implements StorageDriver {
     }
   }
 
+  /**
+   * A segment row has an id that no `memory_metadata` row carries, so the
+   * `author_visibility` policy hides it from a member and refuses the insert
+   * ("new row violates row-level security policy", HTTP 500 on 2026-11-16). The
+   * write runs unrestricted on the open transaction. Segments hold no field that
+   * the policy guards: every read of one goes through the base row of its session.
+   */
   private async writeSessionTails(client: any, rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>): Promise<void> {
-    await this.lockSessionTails(client, rows.map((r) => r.sessionId));
-    await this.writeCachedContent(client, rows.map((r) => ({
-      id: tailRowId(r.sessionId, r.seq), sourceType: TAIL_SOURCE_TYPE, mtime: r.mtime, content: JSON.stringify(r.tail),
-    })));
+    await runUnrestricted(() => withViewerOn(client, async () => {
+      await this.lockSessionTails(client, rows.map((r) => r.sessionId));
+      await this.writeCachedContent(client, rows.map((r) => ({
+        id: tailRowId(r.sessionId, r.seq), sourceType: TAIL_SOURCE_TYPE, mtime: r.mtime, content: JSON.stringify(r.tail),
+      })));
+    }));
   }
 
   /** The body of one segment, or null when it does not exist or cannot be read. */
@@ -1072,10 +1081,11 @@ export class PgStore implements StorageDriver {
   /** Delete the segments of these sessions and name their objects, inside `client`'s transaction. */
   private async deleteSessionTails(client: any, sessionIds: string[]): Promise<string[]> {
     if (sessionIds.length === 0) return [];
-    const gone = await client.query(
+    // Unrestricted for the reason `writeSessionTails` gives: the viewer cannot see these rows.
+    const gone: { rows: Array<{ object_key: string }> } = await runUnrestricted(() => withViewerOn(client, () => client.query(
       `DELETE FROM content_cache WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = ANY($3) RETURNING object_key`,
-      [this.t, TAIL_SOURCE_TYPE, sessionIds]);
-    return gone.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
+      [this.t, TAIL_SOURCE_TYPE, sessionIds])));
+    return gone.rows.map((r) => r.object_key).filter(Boolean);
   }
   /**
    * Prior cached content for a whole batch, in one query.
