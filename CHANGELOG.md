@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.68] — 2026-11-16
+### Fixed
+- **`chat-recall verify --deep` leaves out a session that is sent without a raw archive.** A session whose files add up to more than `CHAT_RECALL_FULL_BUILD_MAX_MB` is sent without a raw archive, so no archive of it can reach the size of its local container. `verify` listed 4 such sessions (25.7 MB to 46.5 MB of files) as stranded, `--repair` cleared their cursors and the next sync sent them again with the same result. The deep check now sizes a session from its files on disk and leaves it out when it is over the ceiling, which also stops it from exporting the whole session into memory (it held 744 MB during a run).
 ## [0.7.67] — 2026-11-16
 ### Fixed
 - **The build of an OpenCode session no longer reads the whole OpenCode database.** The telemetry step gave the path of the session to the line-by-line parser of JSONL transcripts, and the path of an OpenCode session is the SQLite database of the tool (1.09 GB on 2026-11-16). The build of a 23 KB session took 5.8 seconds and reached 785 MB resident; the 741 OpenCode sessions the ledger check listed as missing took 72 minutes of the main thread, and the systemd watchdog ended the daemon at 21:36, 21:44 and 21:59 with a 1.6 GB peak. The parser now reads a path that ends in `.jsonl` only. The same build takes 92 ms and reaches 126 MB (`session-meta-source.test.ts`).

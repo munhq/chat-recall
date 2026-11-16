@@ -18,7 +18,9 @@ import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engin
 import { resolveProjectId, resolveWorkspaceId } from '@chat-recall/engine/core/project-resolver.js';
 import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
-import { loadAllCredentials, type Credentials } from './sync-client.js';
+import { loadAllCredentials, FULL_BUILD_MAX_BYTES, type Credentials } from './sync-client.js';
+import { sessionGroupsBytes } from './session-file-scan.js';
+import { resolveSessionContentGroups } from '@chat-recall/engine/core/live-session-scan.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { describeUnreachable } from './server-probe.js';
@@ -2038,6 +2040,10 @@ program
       fileSize: (rawId: string) => claude.fileSize?.(rawId) ?? 0,
       localContainerSize: (rawId: string): number | null => {
         try {
+          // A session whose files add up to more than the build ceiling is sent without a raw
+          // archive, so there is no archive to compare, and the export of it would hold the
+          // whole session in memory.
+          if (sessionGroupsBytes(resolveSessionContentGroups(rawId)) > FULL_BUILD_MAX_BYTES) return null;
           const exp = claude.exportRawSession?.(rawId);
           if (!exp) return null;
           const container = {
