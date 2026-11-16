@@ -131,11 +131,12 @@ async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOpti
   if (tool === 'codex') {
     const loc = getBackend('codex').findSession(sessionId);
     if (!loc) return null;
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
     const [messages, subagents] = await Promise.all([
-      parseCodexTranscript(loc.path),
-      parseCodexSubagents(loc.path),
+      parseCodexTranscript(loc.path, cut),
+      parseCodexSubagents(loc.path, cut),
     ]);
-    return { messages, subagents, mtime: loc.mtime || safeMtime(loc.path) };
+    return { messages, subagents, mtime: loc.mtime || safeMtime(loc.path), ...(opts.payloadCap ? { payloadCap: opts.payloadCap } : {}) };
   }
 
   // Generic fallback for any registered backend that exposes a canonical event

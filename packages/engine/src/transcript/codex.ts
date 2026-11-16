@@ -6,6 +6,7 @@ import { open, readdir, stat } from 'fs/promises';
 import { dirname, join, basename } from 'path';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
+import { capPayload } from './trim.js';
 
 const log = createLogger('transcript-codex');
 
@@ -22,7 +23,7 @@ const log = createLogger('transcript-codex');
  * next to the parent jsonl — Codex sub-agents are scattered across the same
  * date dir, so we scan that dir filtering by parent_thread_id.
  */
-export async function parseCodexSubagents(sessionPath: string): Promise<Subagent[]> {
+export async function parseCodexSubagents(sessionPath: string, opts: CodexParseOptions = {}): Promise<Subagent[]> {
   const dayDir = dirname(sessionPath);
   const parentId = basename(sessionPath).match(/([a-f0-9-]{36})\.jsonl$/i)?.[1];
   if (!parentId) return [];
@@ -63,7 +64,7 @@ export async function parseCodexSubagents(sessionPath: string): Promise<Subagent
       : 'other';
 
     let messages: Message[] = [];
-    try { messages = await parseCodexTranscript(filePath); }
+    try { messages = await parseCodexTranscript(filePath, opts); }
     catch (e) { log.error({ err: e, filePath }, 'Failed to parse Codex sub-agent'); }
 
     const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);
@@ -130,77 +131,77 @@ function isCodexInjectedWrapper(text: string): boolean {
   );
 }
 
+export interface CodexParseOptions {
+  /** Cut each tool input and reasoning summary to this many characters as its line is read. */
+  payloadCap?: number;
+}
+
 /**
- * Parse a Codex session from JSONL.
+ * Parse a Codex session from JSONL, one line at a time: a rollout holds whole
+ * tool outputs, so the file is never in memory as one string.
  */
-export async function parseCodexTranscript(sessionPath: string): Promise<Message[]> {
-  const { readFile } = await import('fs/promises');
-  return parseCodexTranscriptText(await readFile(sessionPath, 'utf-8'));
+export async function parseCodexTranscript(sessionPath: string, opts: CodexParseOptions = {}): Promise<Message[]> {
+  const fh = await open(sessionPath);
+  const messages: Message[] = [];
+  const add = codexLineHandler(messages, opts);
+  try {
+    let lineNum = 0;
+    for await (const line of fh.readLines()) add(++lineNum, line);
+  } finally {
+    await fh.close();
+  }
+  return messages;
 }
 
 /** Same parse over in-memory text — what the server runs on archived raw. */
-export function parseCodexTranscriptText(text: string): Message[] {
+export function parseCodexTranscriptText(text: string, opts: CodexParseOptions = {}): Message[] {
   const messages: Message[] = [];
+  const add = codexLineHandler(messages, opts);
   let lineNum = 0;
-
-  {
-    for (const line of text.split('\n')) {
-      lineNum++;
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type === 'event_msg' && obj.payload?.type === 'user_message') {
-          const text = String(obj.payload.message || '').trim();
-          if (!text || isCodexInjectedWrapper(text)) continue;
-          messages.push({
-            line: lineNum,
-            role: 'user',
-            content: text,
-            timestamp: obj.timestamp,
-          });
-        } else if (obj.type === 'response_item' && obj.payload?.type === 'message') {
-          // Skip developer/system/user injections — they're environment
-          // wrappers, not part of the user-facing transcript.
-          if (obj.payload.role !== 'assistant') continue;
-          const text = flattenCodexContent(obj.payload.content);
-          if (!text.trim()) continue;
-          messages.push({
-            line: lineNum,
-            role: 'assistant',
-            content: text,
-            timestamp: obj.timestamp,
-          });
-        } else if (obj.type === 'response_item' && obj.payload?.type === 'reasoning') {
-          // Surface model reasoning summaries as a thinking block on the
-          // next assistant message slot. Codex emits these between turns.
-          const summary = Array.isArray(obj.payload.summary)
-            ? obj.payload.summary.map((s: any) => s?.text || '').filter(Boolean).join('\n')
-            : '';
-          if (!summary.trim()) continue;
-          messages.push({
-            line: lineNum,
-            role: 'assistant',
-            content: '',
-            thinking: summary,
-            timestamp: obj.timestamp,
-          });
-        } else if (obj.type === 'response_item' && obj.payload?.type === 'function_call') {
-          let input: any = obj.payload.arguments || {};
-          if (typeof input === 'string') {
-            try { input = JSON.parse(input); } catch { /* keep raw string */ }
-          }
-          messages.push({
-            line: lineNum,
-            role: 'assistant',
-            content: '',
-            toolCalls: [{ name: obj.payload.name || '', input }],
-            timestamp: obj.timestamp,
-          });
-        }
-      } catch {
-        // skip malformed lines
-      }
-    }
-  }
+  for (const line of text.split('\n')) add(++lineNum, line);
   return messages;
+}
+
+function codexLineHandler(messages: Message[], opts: CodexParseOptions): (lineNum: number, line: string) => void {
+  const cap = opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v;
+  return (lineNum, line) => {
+    if (!line.trim()) return;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === 'event_msg' && obj.payload?.type === 'user_message') {
+        const text = String(obj.payload.message || '').trim();
+        if (!text || isCodexInjectedWrapper(text)) return;
+        messages.push({ line: lineNum, role: 'user', content: text, timestamp: obj.timestamp });
+      } else if (obj.type === 'response_item' && obj.payload?.type === 'message') {
+        // Skip developer/system/user injections — they're environment
+        // wrappers, not part of the user-facing transcript.
+        if (obj.payload.role !== 'assistant') return;
+        const text = flattenCodexContent(obj.payload.content);
+        if (!text.trim()) return;
+        messages.push({ line: lineNum, role: 'assistant', content: text, timestamp: obj.timestamp });
+      } else if (obj.type === 'response_item' && obj.payload?.type === 'reasoning') {
+        // Surface model reasoning summaries as a thinking block on the
+        // next assistant message slot. Codex emits these between turns.
+        const summary = Array.isArray(obj.payload.summary)
+          ? obj.payload.summary.map((s: any) => s?.text || '').filter(Boolean).join('\n')
+          : '';
+        if (!summary.trim()) return;
+        messages.push({ line: lineNum, role: 'assistant', content: '', thinking: cap(summary) as string, timestamp: obj.timestamp });
+      } else if (obj.type === 'response_item' && obj.payload?.type === 'function_call') {
+        let input: any = obj.payload.arguments || {};
+        if (typeof input === 'string') {
+          try { input = JSON.parse(input); } catch { /* keep raw string */ }
+        }
+        messages.push({
+          line: lineNum,
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ name: obj.payload.name || '', input: cap(input) }],
+          timestamp: obj.timestamp,
+        });
+      }
+    } catch {
+      // skip malformed lines
+    }
+  };
 }

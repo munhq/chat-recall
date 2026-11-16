@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.63] — 2026-11-16
+### Fixed
+- **A Codex rollout is read one line at a time and cut as it is read.** The parse read the whole rollout as one string and kept every tool input whole until the trim after the last line. It now reads each line with `readLines`, and cuts a tool input and a reasoning summary to 2,000 characters when its line is read, for the rollout and for its subagent rollouts (`codex-stream.test.ts`).
+- **The tests of the host of the machine pass on Windows.** `mcp-host.test.ts` expected `/home/user/.config/...` with forward slashes, and the kit joins the config and unit paths with the separator of the platform.
+- **The statement count of the tombstone test does not depend on the suites that ran before it.** The first purge of a process also ran the one-time lookups of the pool, and the purge issues one DELETE for each optional table that exists, so the count was 21 or 22 or more. The test makes one purge before it counts, asserts that 1 and 50 tombstones cost the same, and bounds the count at 21 to 22 (`tombstone-batch-statements.test.ts`).
 ## [0.7.62] — 2026-11-16
 ### Fixed
 - **A session with nothing to ship is no longer counted as missing from the server.** A session that holds only a `/clear` has no message a person can read, so its build gives nothing to ship and the server holds no row for it. The ledger check listed 1,262 such sessions as "in the ledger and not on the server" (`chat-recall verify --deep --since-hours 6`) and, at every start of the daemon, cleared their ledger rows and built them again. The walk now marks the ledger row of such a session with `E`, and the ledger check and `verify` leave marked rows out. A change to the file clears the mark (`sync-empty-verdict.test.ts`, `ledger-reconcile.test.ts`).

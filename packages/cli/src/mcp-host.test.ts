@@ -22,8 +22,9 @@ function fakeMachine(home = '/home/user'): Host & { files: Map<string, string>; 
 }
 
 const dist = '/opt/app/dist';
-const config = '/home/user/.config/mcp-kit/host.json';
-const unit = '/home/user/.config/systemd/user/mcp-kit-host.service';
+// The kit joins these with the separator of the platform, so the expected paths are joined the same way.
+const config = join('/home/user', '.config', 'mcp-kit', 'host.json');
+const unit = join('/home/user', '.config', 'systemd', 'user', 'mcp-kit-host.service');
 
 describe('the host of the machine', () => {
   test('needs Linux or macOS', () => {

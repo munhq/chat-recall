@@ -77,6 +77,10 @@ async function counted<T>(fn: () => Promise<T>): Promise<{ result: T; statements
     const many = ids(50, 'b');
     await seed(one);
     await seed(many);
+    // The first purge of a process also runs the one-time lookups of the pool and the schema,
+    // so it is made once before anything is counted.
+    await store.purgeSessionsMany(ids(1, 'warm'));
+    await store.addTombstonesMany(ids(1, 'warm'));
 
     const first = await counted(async () => {
       await store.purgeSessionsMany(one);
@@ -90,10 +94,12 @@ async function counted<T>(fn: () => Promise<T>): Promise<{ result: T; statements
     // The assertion the defect was invisible to: 50× the work, the same number
     // of round trips. The per-session loop made this 13 vs 650.
     expect(fifty.statements).toBe(first.statements);
-    // Measured at 21, and flat to 5,000 sessions. Asserted exactly so a new
-    // per-row statement shows up as a failing test rather than as latency:
-    // when a table joins the purge, update this number on purpose.
-    expect(fifty.statements).toBe(21);
+    // 21 on a database with the tables of this suite alone, 22 when the suites that ran before this
+    // one created an optional table: the purge issues one DELETE for each table that exists. Flat to
+    // 5,000 sessions. A per-row statement fails the equality above; when a table joins the purge,
+    // raise this bound on purpose.
+    expect(fifty.statements).toBeGreaterThanOrEqual(21);
+    expect(fifty.statements).toBeLessThanOrEqual(22);
   });
 
   test('the rows are actually gone and the tombstones are recorded', async () => {
