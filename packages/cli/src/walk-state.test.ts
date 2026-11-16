@@ -63,3 +63,21 @@ describe('requestFullWalk', () => {
     expect(JSON.parse(readFileSync(join(dir, 'walk-state.json'), 'utf8'))[`${SERVER}#full`]).toBe(0);
   });
 });
+
+describe('noteWalkSuccess', () => {
+  test('a walk of the changed sessions writes the last success and not the full walk', async () => {
+    const { noteWalkSuccess } = await import('./sync-client.js');
+    noteWalkSuccess(SERVER, false);
+    const state = JSON.parse(readFileSync(join(dir, 'walk-state.json'), 'utf8'));
+    expect(state[SERVER]).toBeGreaterThan(0);
+    expect(state[`${SERVER}#full`]).toBeUndefined();
+  });
+
+  test('a complete full walk writes both', async () => {
+    const { noteWalkSuccess, lastFullWalkAt } = await import('./sync-client.js');
+    noteWalkSuccess(SERVER, true);
+    const state = JSON.parse(readFileSync(join(dir, 'walk-state.json'), 'utf8'));
+    expect(state[`${SERVER}#full`]).toBeGreaterThan(0);
+    expect(lastFullWalkAt(SERVER)).toBe(state[`${SERVER}#full`]);
+  });
+});

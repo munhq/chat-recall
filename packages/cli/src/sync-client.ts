@@ -603,6 +603,12 @@ export interface SyncResult {
   /** Total wall-clock ms spent scanning this run. */
   scanMs: number;
   /**
+   * False when the walk stopped before it visited every session it listed: it paused at
+   * the memory bound, or it carried a slice of the list (`CHAT_RECALL_SYNC_WALK_MAX`).
+   * Only a complete full walk counts as the daily full walk.
+   */
+  walkComplete?: boolean;
+  /**
    * THIS WALK'S OUTCOME PER TARGET, keyed by server URL.
    *
    * The aggregate above cannot answer "did target X accept anything", and the
@@ -683,6 +689,8 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const skippedTargets: string[] = [];
   // Per target, for the health file the daemon writes. See SyncResult.perTarget.
   const perTarget: Record<string, TargetOutcome> = {};
+  /** Per target: did the walk visit every session it listed? */
+  const walkCompleteBy = new Map<string, boolean>();
   for (const cred of targets) {
     // CIRCUIT BREAKER. Targets are walked in SEQUENCE, so a dead one does not
     // just fail — it delays every ship to the healthy targets behind it, and
@@ -712,7 +720,9 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
         items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
         derived: agg.derived + r.derived, kgEntities: agg.kgEntities + r.kgEntities, kgTriples: agg.kgTriples + r.kgTriples,
         scanned: Math.max(agg.scanned, r.scanned), scanMs: Math.max(agg.scanMs, r.scanMs),
+        walkComplete: agg.walkComplete !== false && r.walkComplete !== false,
       } : r;
+      walkCompleteBy.set(cred.serverUrl, r.walkComplete !== false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`${cred.serverUrl}: ${msg}`);
@@ -787,7 +797,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // 'changed' instead of listing all 12,224 sessions again (issue #16).
   if (agg) {
     for (const t of targets) {
-      if (!errors.some((e) => e.startsWith(`${t.serverUrl}:`))) noteWalkSuccess(t.serverUrl, opts.walk !== 'changed');
+      if (!errors.some((e) => e.startsWith(`${t.serverUrl}:`))) noteWalkSuccess(t.serverUrl, opts.walk !== 'changed' && walkCompleteBy.get(t.serverUrl) === true);
     }
   }
   // After the walk: the connection is warm and the numbers are final. Never
@@ -828,7 +838,7 @@ export function requestFullWalk(serverUrl: string): void {
 /** The key of the last FULL walk of a target. A walk of the changed sessions does not write it. */
 const FULL_KEY = (serverUrl: string): string => `${serverUrl.replace(/\/+$/, '')}#full`;
 
-function noteWalkSuccess(serverUrl: string, full: boolean): void {
+export function noteWalkSuccess(serverUrl: string, full: boolean): void {
   try {
     const state = readWalkState();
     const now = Date.now();
@@ -1849,6 +1859,11 @@ const refs = listAvailableBackends().flatMap((b) => {
   const walkMax = opts.limit ?? walkSessionLimit();
   const ordered = walkMax > 0 ? orderRefsForWalk(refs, (id) => Boolean(ledger?.get(id))) : refs;
   const slice = walkMax > 0 ? ordered.slice(0, walkMax) : ordered;
+  // Sessions the ledger has not acknowledged come first, so a walk is complete when its slice
+  // holds all of them and it did not pause: the acknowledged ones behind them are checked by the
+  // walks of changed sessions. Counting the whole list made a walk of 12,000 sessions with a
+  // cap of 2,000 never complete.
+  const unackedCount = walkMax > 0 ? refs.reduce((n, r) => n + (ledger?.get(r.prefixedId) ? 0 : 1), 0) : refs.length;
 
   // CHAT_RECALL_SYNC_TRACE=1: phase + progress markers with heap usage, to
   // stderr. This is how the 2026-07-03 walk OOM was localized — keep it.
@@ -2487,6 +2502,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     items: itemsBatch.sent, links: linksBatch.sent, findings: findingsBatch.sent, derived: derivedBatch.sent,
     kgEntities: kgEntityBatch.sent, kgTriples: kgTripleBatch.sent,
     scanned, scanMs: Math.round(scanMs),
+    walkComplete: !walkPaused && slice.length >= Math.min(unackedCount, ordered.length),
   };
 }
 

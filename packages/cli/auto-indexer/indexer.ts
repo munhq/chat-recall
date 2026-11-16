@@ -149,6 +149,12 @@ async function shipToServer(trigger: string): Promise<void> {
     const fullDue = shouldWalkFull({ lastSuccessAt: lastFullWalkAt(), now: Date.now() });
     const scope = trigger === 'file-change' || !fullDue ? 'changed' : 'full';
     const result = await syncIncremental({ scope });
+    // A full walk that stopped early (the memory bound, or the cap on one walk) leaves
+    // the full walk due. The next one starts shortly, after the memory of this one is
+    // returned, and not at the next heartbeat a quarter of an hour away.
+    if (!isSyncSkip(result) && scope === 'full' && result.walkComplete === false) {
+      setTimeout(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('continue')); }, 20_000).unref();
+    }
     if (isSyncSkip(result)) {
       // 'lock-held' is routine writer election (an MCP session's sync tick
       // won the lock) — nothing to say. Only the user-actionable reasons

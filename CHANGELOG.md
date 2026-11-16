@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.58] — 2026-11-16
+
+### Fixed
+- **A full walk that stops early is continued, and only a complete one counts as the daily full walk.** On 2026-11-16 a full walk paused at the collector's memory bound after 48 of 2,000 sessions, and it was still recorded as the full walk of the day, so the 6,700 sessions that the server stored without a conversation waited 24 hours for the next one. A walk is complete now when its slice holds every session that the ledger has not acknowledged and it did not pause (`walkComplete` in the result of `syncSessions`). The daemon starts the next full walk 20 seconds after one that stopped early.
+
 ## [0.7.57] — 2026-11-16
 
 ### Fixed
