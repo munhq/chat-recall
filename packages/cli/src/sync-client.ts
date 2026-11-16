@@ -2643,6 +2643,16 @@ export function sessionFileBytes(ref: SessionRef): number {
  * main file alone under-counts: a 19 MB transcript built from a 42 MB shadow
  * and peaked at 840 MB RSS.
  */
+/**
+ * True when the path is a JSONL transcript. The metadata parser reads a file line by line, and
+ * the path of an OpenCode session is the SQLite database of the tool (1.09 GB on 2026-11-16):
+ * every build read the whole database, took 5.8 seconds for a 23 KB session and held up to
+ * 796 MB. A database gives no telemetry to this parser, so it is not read.
+ */
+export function isJsonlTranscript(path: string): boolean {
+  return /\.jsonl$/i.test(path);
+}
+
 function syncTranscript(t: { messages: any[]; subagents: any[]; payloadCap?: number }): { messages: any[]; subagents: any[] } {
   // A transcript the parser already cut is not cut again: the cut is not idempotent.
   const cut = t.payloadCap ? { messages: t.messages, subagents: t.subagents } : trimTranscriptForSync(t);
@@ -2916,7 +2926,7 @@ export async function buildConversationSync(
   } catch { /* fall back to ref.projectPath */ }
   const resolved = resolveProjectId(projectPath);
   const projectId = resolved.source === 'ignored' ? '' : resolved.id;
-  if (includeMeta && ref.fullPath) {
+  if (includeMeta && ref.fullPath && isJsonlTranscript(ref.fullPath)) {
     try {
       const parsed = await parseSessionFile(ref.fullPath);
       const m = parsed.metadata;

@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.67] — 2026-11-16
+### Fixed
+- **The build of an OpenCode session no longer reads the whole OpenCode database.** The telemetry step gave the path of the session to the line-by-line parser of JSONL transcripts, and the path of an OpenCode session is the SQLite database of the tool (1.09 GB on 2026-11-16). The build of a 23 KB session took 5.8 seconds and reached 785 MB resident; the 741 OpenCode sessions the ledger check listed as missing took 72 minutes of the main thread, and the systemd watchdog ended the daemon at 21:36, 21:44 and 21:59 with a 1.6 GB peak. The parser now reads a path that ends in `.jsonl` only. The same build takes 92 ms and reaches 126 MB (`session-meta-source.test.ts`).
 ## [0.7.66] — 2026-11-16
 ### Fixed
 - **The daemon is no longer killed by its watchdog after the release of 0.7.64.** From 0.7.64 the walk ran the garbage collector and `memory.reclaim` at the memory bound and went on. On 2026-11-16 the unit was killed by the watchdog at 21:36 and at 21:44 (`Watchdog timeout (limit 5min)`, signal 6, 1.6 GB memory peak), after 80 minutes of 0.7.61 to 0.7.63 without a kill. The walk pauses at the bound again, as it did before 0.7.64 (the entry of 0.7.64 is withdrawn).
