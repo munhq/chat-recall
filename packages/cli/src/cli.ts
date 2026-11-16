@@ -18,7 +18,7 @@ import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engin
 import { resolveProjectId, resolveWorkspaceId } from '@chat-recall/engine/core/project-resolver.js';
 import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
-import { loadAllCredentials, FULL_BUILD_MAX_BYTES, type Credentials } from './sync-client.js';
+import { loadAllCredentials, fetchTenantSecurityConfig, FULL_BUILD_MAX_BYTES, type Credentials } from './sync-client.js';
 import { sessionGroupsBytes } from './session-file-scan.js';
 import { resolveSessionContentGroups } from '@chat-recall/engine/core/live-session-scan.js';
 import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
@@ -2075,6 +2075,10 @@ program
     for (const t of targets) {
       let report;
       try {
+        // The sync redacts with the rule pack of the server, so the deep check measures with it:
+        // with the compiled-in rules alone a session that the pack redacts looked 764 bytes larger
+        // than its archive on the server.
+        await fetchTenantSecurityConfig(t as Credentials);
         report = await verifyAgainstServer(t.serverUrl, t.token, sinceMs, deps);
       } catch (e) {
         console.error(chalk.red(`${t.serverUrl}: ${e instanceof Error ? e.message : e}`));

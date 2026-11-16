@@ -300,7 +300,7 @@ interface TenantSecurityConfig {
 const _securityConfigCache = new Map<string, { fetchedAt: number; config: TenantSecurityConfig }>();
 const SECURITY_CONFIG_TTL_MS = 5 * 60 * 1000;
 
-async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecurityConfig> {
+export async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecurityConfig> {
   const base = cred.serverUrl.replace(/\/+$/, '');
   const cached = _securityConfigCache.get(base);
   if (cached && Date.now() - cached.fetchedAt < SECURITY_CONFIG_TTL_MS) return cached.config;

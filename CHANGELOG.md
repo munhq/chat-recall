@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.70] — 2026-11-17
+### Fixed
+- **`chat-recall verify --deep` redacts with the rule pack of the server.** The sync redacts a session with the compiled-in rules and the pack of the server, and the check measured it with the compiled-in rules alone. A session that the pack redacts looked 764 bytes larger than its archive on the server and was listed as stranded; with the pack installed the same session is 249 bytes smaller than the archive. The check now fetches the pack before it measures.
 ## [0.7.69] — 2026-11-16
 ### Fixed
 - **A session repaired with `verify --repair` is walked first.** The repair deletes `m`, `o`, `s` and `h` of the ledger row and keeps the row for the coverage of its fields. The walk ordered a session by whether its row existed, so a repaired session went behind the unacknowledged ones, outside the slice of 2,000 sessions of the walk, and its cursor stayed cleared: `96491dcf` and `6ec051d9` were not sent in 80 minutes. The order now reads the acknowledged mtime (`walk-budget.test.ts`).
