@@ -3,7 +3,7 @@
  * session and the merge a reader gets.
  */
 import { describe, test, expect } from 'vitest';
-import { tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, type TailBody } from './session-tails.js';
+import { tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, peekEnvelopeTail, markerTail, type TailBody } from './session-tails.js';
 
 const msg = (line: number, content = `m${line}`) => ({ role: 'user', content, line });
 const base = (n: number, o = 100) => JSON.stringify({ v: 6, messages: Array.from({ length: n }, (_, i) => msg(i + 1)), subagents: [], o });
@@ -90,5 +90,45 @@ describe('mergeEnvelopeWithTails', () => {
     const merged = JSON.parse(mergeEnvelopeWithTails(big, [{ seq: 1, body: tail({ o: 5, lastLine: 8001, messages: [msg(8001)] }) }]));
     expect(merged.messages).toHaveLength(8001);
     expect(Date.now() - t0).toBeLessThan(2000);
+  });
+});
+
+describe('peekEnvelopeTail', () => {
+  test('reads the offset and the last line of a stored envelope without parsing it', () => {
+    expect(peekEnvelopeTail(base(5, 4096))).toEqual({ o: 4096, lastLine: 5 });
+  });
+
+  test('agrees with a parse of the same envelope', () => {
+    const text = base(321, 987654);
+    const env = JSON.parse(text);
+    expect(peekEnvelopeTail(text)).toEqual({ o: env.o, lastLine: env.messages[env.messages.length - 1].line });
+  });
+
+  test('an envelope with no messages ends at line 0', () => {
+    expect(peekEnvelopeTail(JSON.stringify({ v: 6, messages: [], subagents: [], o: 77 }))).toEqual({ o: 77, lastLine: 0 });
+  });
+
+  test('a last message with a long content is found', () => {
+    const text = JSON.stringify({ v: 6, messages: [msg(1), { role: 'assistant', content: 'y'.repeat(300_000), line: 2 }], subagents: [], o: 5 });
+    expect(peekEnvelopeTail(text)).toEqual({ o: 5, lastLine: 2 });
+  });
+
+  test('text in a message that looks like a line key does not count', () => {
+    const text = JSON.stringify({ v: 6, messages: [msg(1), { role: 'user', content: 'it said "line":999 here', line: 2 }], subagents: [], o: 5 });
+    expect(peekEnvelopeTail(text)?.lastLine).toBe(2);
+  });
+
+  test('text that does not end like an envelope gives null', () => {
+    expect(peekEnvelopeTail('not json')).toBeNull();
+    expect(peekEnvelopeTail(JSON.stringify({ v: 6, messages: [msg(1)], subagents: [] }))).toBeNull();
+    expect(peekEnvelopeTail(JSON.stringify({ v: 6, o: 5, messages: [msg(1)] }))).toBeNull();
+  });
+});
+
+describe('markerTail', () => {
+  test('is a segment with no messages that carries the state', () => {
+    const t = markerTail(6, 100, 9);
+    expect(t).toEqual({ v: 6, base: 100, o: 100, lastLine: 9, messages: [] });
+    expect(tailStateOf(0, JSON.stringify(t))).toEqual({ seq: 0, o: 100, lastLine: 9 });
   });
 });

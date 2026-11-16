@@ -347,6 +347,12 @@ export interface StorageDriver {
    * envelope. A session with no segment has no entry.
    */
   getSessionTailStates(sessionIds: string[]): Promise<Map<string, import('./session-tails.js').TailState>>;
+  /**
+   * Give sessions that have no tail state one, read from the end of the stored
+   * envelope's text without parsing it. One session at a time. A session whose
+   * envelope does not end like an envelope gets no entry.
+   */
+  seedSessionTailStates(sessionIds: string[], version?: number): Promise<Map<string, import('./session-tails.js').TailState>>;
   /** Write tail segments, outside an ingest batch. */
   appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: import('./session-tails.js').TailBody }>): Promise<void>;
   /** Which of these ids already have a metadata row — one query for a batch. */

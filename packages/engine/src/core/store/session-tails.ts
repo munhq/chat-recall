@@ -58,6 +58,31 @@ export function tailStateOf(seq: number, body: string): TailState | null {
 }
 
 /**
+ * Where a stored envelope ends, read from the end of its JSON text without
+ * parsing it: the synced-through offset (the last key, `"o"`) and the line number
+ * of its last message. A session with no tail state gets one from this, so its
+ * first append does not parse and rewrite an envelope of many megabytes.
+ * Returns null when the text does not end the way `JSON.stringify` of an envelope
+ * does, and the caller then takes the path that parses it.
+ */
+export function peekEnvelopeTail(base: string): { o: number; lastLine: number } | null {
+  const o = /,"o":(\d+)\}\s*$/.exec(base.slice(-48));
+  if (!o) return null;
+  const cut = base.lastIndexOf('],"subagents":');
+  if (cut < 0) return null;
+  if (base.slice(0, cut).endsWith('"messages":[')) return { o: Number(o[1]), lastLine: 0 };
+  const at = base.lastIndexOf('"line":', cut);
+  if (at < 0) return null;
+  const digits = /^\d+/.exec(base.slice(at + 7, at + 27));
+  return digits ? { o: Number(o[1]), lastLine: Number(digits[0]) } : null;
+}
+
+/** The body of the marker that gives a session its tail state. */
+export function markerTail(version: number, o: number, lastLine: number): TailBody {
+  return { v: version, base: o, o, lastLine, messages: [] };
+}
+
+/**
  * The stored envelope with its segments applied, as the JSON string a reader
  * parses. Segments are applied in sequence order. The result carries the offset of
  * the newest segment and the subagents of the newest segment that has any.

@@ -59,14 +59,17 @@ const append = (baseOffset: number, fromOffset: number, baseLine: number, tail: 
 });
 
 describe('append as a tail segment', () => {
-  test('the first append merges into the base and leaves a marker', async () => {
+  test('the first append seeds the state from the end of the base and adds a segment', async () => {
     const { createStore, post } = await harness();
     expect((await post({ conversations: [full(4, 1000)] })).body.conv).toBe(1);
+    const store0 = await createStore();
+    expect((await store0.getSessionTailStates([SESSION])).has(SESSION)).toBe(false);
+    await store0.close();
     const res = await post({ conversations: [append(1000, 1500, 4, msgs(5, 2), MTIME + 1000)] });
     expect(res.body.full_resync_needed ?? []).toEqual([]);
     const store = await createStore();
     const states = await store.getSessionTailStates([SESSION]);
-    expect(states.get(SESSION)).toEqual({ seq: 0, o: 1500, lastLine: 6 });
+    expect(states.get(SESSION)).toEqual({ seq: 1, o: 1500, lastLine: 6 });
     const merged = JSON.parse((await store.getCachedContentStale(SESSION, 'session'))!.content);
     expect(merged.messages.map((m: { line: number }) => m.line)).toEqual([1, 2, 3, 4, 5, 6]);
     await store.close();
@@ -77,7 +80,7 @@ describe('append as a tail segment', () => {
     const res = await post({ conversations: [append(1500, 1800, 6, msgs(7, 3), MTIME + 2000)] });
     expect(res.body.full_resync_needed ?? []).toEqual([]);
     const store = await createStore();
-    expect((await store.getSessionTailStates([SESSION])).get(SESSION)).toEqual({ seq: 1, o: 1800, lastLine: 9 });
+    expect((await store.getSessionTailStates([SESSION])).get(SESSION)).toEqual({ seq: 2, o: 1800, lastLine: 9 });
     const merged = JSON.parse((await store.getCachedContentStale(SESSION, 'session'))!.content);
     expect(merged.messages.map((m: { line: number }) => m.line)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(merged.o).toBe(1800);
@@ -90,7 +93,7 @@ describe('append as a tail segment', () => {
     const res = await post({ conversations: [append(1234, 1300, 9, msgs(10, 1), MTIME + 3000)] });
     expect(res.body.full_resync_needed).toEqual([SESSION]);
     const store = await createStore();
-    expect((await store.getSessionTailStates([SESSION])).get(SESSION)?.seq).toBe(1);
+    expect((await store.getSessionTailStates([SESSION])).get(SESSION)?.seq).toBe(2);
     await store.close();
   });
 
@@ -109,7 +112,7 @@ describe('append as a tail segment', () => {
     await post({ conversations: [append(2000, 2100, 12, msgs(13, 1), MTIME + 5000)] });
     await post({ conversations: [append(2100, 2200, 13, msgs(14, 1), MTIME + 6000)] });
     const store = await createStore();
-    expect((await store.getSessionTailStates([SESSION])).get(SESSION)?.seq).toBe(1);
+    expect((await store.getSessionTailStates([SESSION])).get(SESSION)?.seq).toBe(2);
     expect((await post({ tombstones: [{ session_id: SESSION }] })).body.dead).toBe(1);
     expect((await store.getSessionTailStates([SESSION])).has(SESSION)).toBe(false);
     expect(await store.getCachedContentStale(SESSION, 'session')).toBeNull();

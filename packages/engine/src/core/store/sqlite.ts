@@ -11,7 +11,7 @@
 
 import { MemoryStore } from '../memory-store.js';
 import { isEmptyBatch, emptyCounts, type IngestBatch, type IngestCounts, type IngestMetaWriter, type IngestSideWriters } from './ingest-batch.js';
-import { TAIL_SOURCE_TYPE, tailRowId, tailStateOf, mergeEnvelopeWithTails, type TailBody, type TailState } from './session-tails.js';
+import { TAIL_SOURCE_TYPE, tailRowId, tailStateOf, mergeEnvelopeWithTails, peekEnvelopeTail, markerTail, type TailBody, type TailState } from './session-tails.js';
 
 import type { StorageDriver } from './driver.js';
 
@@ -112,6 +112,17 @@ export class SqliteStore implements StorageDriver {
       const last = rows[rows.length - 1];
       const state = last ? tailStateOf(last.seq, last.body) : null;
       if (state) out.set(id, state);
+    }
+    return out;
+  }
+  async seedSessionTailStates(sessionIds: string[], version = 6) {
+    const out = new Map<string, TailState>();
+    for (const id of new Set(sessionIds.filter(Boolean))) {
+      const row = this.inner.getCachedContentStale(id, 'session');
+      const peek = row?.content ? peekEnvelopeTail(row.content) : null;
+      if (!row || !peek) continue;
+      this.inner.setCachedContent(tailRowId(id, 0), TAIL_SOURCE_TYPE, row.mtime, JSON.stringify(markerTail(version, peek.o, peek.lastLine)));
+      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine });
     }
     return out;
   }

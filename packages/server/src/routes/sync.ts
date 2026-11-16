@@ -941,6 +941,13 @@ router.post('/', async (req, res) => {
           // full conversations alone (issue #27).
           const appendIds = conversations.filter((c) => c.append && c.final === undefined).map((c) => c.session_id).filter(Boolean);
           const tailStates = await store.getSessionTailStates(appendIds);
+          // An appended session that has no state yet gets one from the end of its
+          // stored envelope. Without it the first append of each session would
+          // parse and rewrite the whole envelope, which is the work this avoids.
+          const unseeded = appendIds.filter((id) => !tailStates.has(id));
+          if (unseeded.length > 0) {
+            for (const [id, s] of await store.seedSessionTailStates(unseeded, PARSER_VERSION)) tailStates.set(id, s);
+          }
           const priorContent = await store.getCachedContentStaleMany('session', convIds.filter((id) => !tailStates.has(id)));
           const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
           const priorArchive = await store.rawSessionMetaMany(convIds);

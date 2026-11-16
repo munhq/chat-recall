@@ -31,7 +31,7 @@ import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
-import { TAIL_SOURCE_TYPE, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, type TailBody, type TailState } from './session-tails.js';
+import { TAIL_SOURCE_TYPE, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, peekEnvelopeTail, markerTail, type TailBody, type TailState } from './session-tails.js';
 import { embedPolicy, trivialSessionPredicateSql } from './embed-policy.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -923,6 +923,27 @@ export class PgStore implements StorageDriver {
       const state = parsed && bodies[i] !== null ? tailStateOf(parsed.seq, bodies[i] as string) : null;
       if (parsed && state) out.set(parsed.sessionId, state);
     });
+    return out;
+  }
+
+  /**
+   * Give sessions that have no tail state one, from the end of their stored
+   * envelope: the text is read and its last bytes are looked at, and nothing is
+   * parsed or rewritten. One session at a time, so one envelope is in memory.
+   * A session whose envelope does not end the way an envelope does gets no entry.
+   */
+  async seedSessionTailStates(sessionIds: string[], version = 6): Promise<Map<string, TailState>> {
+    const out = new Map<string, TailState>();
+    for (const id of [...new Set(sessionIds.filter(Boolean))]) {
+      const row = await this.one(
+        `SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, id]);
+      if (!row) continue;
+      const base = await readCachedBody(row);
+      const peek = base ? peekEnvelopeTail(base) : null;
+      if (!peek) continue;
+      await this.appendSessionTails([{ sessionId: id, seq: 0, mtime: Number(row.mtime), tail: markerTail(version, peek.o, peek.lastLine) }]);
+      out.set(id, { seq: 0, o: peek.o, lastLine: peek.lastLine });
+    }
     return out;
   }
 
