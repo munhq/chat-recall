@@ -39,6 +39,7 @@
 import express from 'express';
 import { tombstoneBatchTooLarge, TombstoneBatchRefused, splitTombstoned } from './tombstone-guard.js';
 import { summariseIngestBatch } from './ingest-log.js';
+import type { TailState } from '@chat-recall/engine/core/store/session-tails.js';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
@@ -72,6 +73,11 @@ interface ConvContext {
   priorContent: Map<string, { content: string; mtime: number }>;
   priorChunkIdx: Map<string, number>;
   priorArchive: Map<string, { size: number; mtime: number; project_id: string }>;
+  /** Where the appended tail of each session in the batch ends (issue #27). A
+   *  session in this map appends as a segment and its stored envelope is not read. */
+  tailStates: Map<string, TailState>;
+  /** Segments to write, flushed with the batch. */
+  sessionTailBatch: NonNullable<IngestBatch['sessionTails']>;
   /** Appended to, never written — the handler flushes the batch once. */
   itemBatch: MemoryItem[];
   chunkBatch: MemoryChunk[];
@@ -167,7 +173,7 @@ export function parseInventory(raw: unknown): Array<{ sourceType: string; ids: s
 
 async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promise<void> {
   const {
-    store, agent, deadSet, priorContent, priorChunkIdx, priorArchive,
+    store, agent, deadSet, priorContent, priorChunkIdx, priorArchive, tailStates, sessionTailBatch,
     itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch, sessionMetaBatch,
     touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, tally,
   } = ctx;
@@ -193,6 +199,38 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         // No usable tail envelope → ask for full. (Shouldn't happen — the
         // client always sends an envelope on append — but be defensive.)
         fullResyncNeeded.push(cv.session_id);
+        return;
+      }
+      // A session that has a tail state appends as a segment: the stored envelope
+      // is not read, and the work is proportional to the tail (issue #27).
+      const state = tailStates.get(cv.session_id);
+      if (state && cv.final === undefined) {
+        // The same continuity guard as below: the tail must start where the stored
+        // envelope ends.
+        if (state.o !== (cv.base_offset ?? -1)) {
+          fullResyncNeeded.push(cv.session_id);
+          return;
+        }
+        const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
+        const numbered = numberTail([{ line: state.lastLine } as EnvelopeMessage], tailMsgs, cv.base_line);
+        const lastLine = numbered.length > 0 ? (numbered[numbered.length - 1].line ?? state.lastLine) : state.lastLine;
+        sessionTailBatch.push({
+          sessionId: cv.session_id, seq: state.seq + 1, mtime,
+          tail: { v: PARSER_VERSION, base: state.o, o: cv.from_offset ?? state.o, lastLine, messages: numbered },
+        });
+        const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
+        if (textSource.length > 0) {
+          const maxIdx = priorChunkIdx.get(cv.session_id) ?? 0;
+          const tailChunks = chunksFromTurns(
+            cv.session_id,
+            textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
+            projectPath, mtime, cv.project_id || undefined,
+          );
+          for (let i = 0; i < tailChunks.length; i++) tailChunks[i].chunkId = `${cv.session_id}:sync:${maxIdx + 1 + i}`;
+          appendChunkBatch.push(...tailChunks);
+        }
+        touchBatch.push({ sessionId: cv.session_id, mtime });
+        tally.appendConv++;
         return;
       }
       // A rebuild that this tail continues takes it, and the stored messages
@@ -268,6 +306,12 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
         // Advance the synced-through offset to where this tail ends.
         const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
         cachedContentBatch.push({ id: cv.session_id, sourceType: 'session', mtime, content: JSON.stringify(merged) });
+        // The marker that makes the next append of this session a segment: no
+        // messages, the offset and the last line the merged envelope ends at.
+        sessionTailBatch.push({
+          sessionId: cv.session_id, seq: 0, mtime,
+          tail: { v: PARSER_VERSION, base: prev.o, o: merged.o as number, lastLine: mergedMsgs.length > 0 ? (mergedMsgs[mergedMsgs.length - 1].line ?? 0) : 0, messages: [] },
+        });
 
         // Append chunks for the tail's text turns. The server owns the
         // chunk-id index: continue from MAX(existing :sync: index) + 1.
@@ -835,6 +879,7 @@ router.post('/', async (req, res) => {
       // Append chunks go through a SEPARATE batch (appendChunksFTS — no per-item
       // delete) so they don't wipe the head's chunks.
       const appendChunkBatch: Parameters<typeof store.appendChunksFTS>[0] = [];
+      const sessionTailBatch: NonNullable<IngestBatch['sessionTails']> = [];
       // Cached content, collected in the conversation loop and flushed once —
       // it was a round trip per session. See docs/SYNC-BATCH-WRITES.md §4.
       const cachedContentBatch: Array<{ id: string; sourceType: string; mtime: number; content: string }> = [];
@@ -891,7 +936,12 @@ router.post('/', async (req, res) => {
           // inside it — `getCachedContentStale` twice. One query each for the
           // whole batch. See docs/SYNC-BATCH-WRITES.md §4.
           const convIds = conversations.map((c) => c.session_id).filter(Boolean);
-          const priorContent = await store.getCachedContentStaleMany('session', convIds);
+          // A session that appends as a segment needs only where its tail ends. Its
+          // stored envelope is not read, so the batch holds the envelopes of the
+          // full conversations alone (issue #27).
+          const appendIds = conversations.filter((c) => c.append && c.final === undefined).map((c) => c.session_id).filter(Boolean);
+          const tailStates = await store.getSessionTailStates(appendIds);
+          const priorContent = await store.getCachedContentStaleMany('session', convIds.filter((id) => !tailStates.has(id)));
           const priorChunkIdx = await store.maxSyncChunkIndexMany(convIds);
           const priorArchive = await store.rawSessionMetaMany(convIds);
 
@@ -899,7 +949,7 @@ router.post('/', async (req, res) => {
           for (const cv of conversations) {
             await ingestConversation(cv, {
               store, agent: { tenant: agent.tenant, deviceId: agent.deviceId },
-              deadSet, priorContent, priorChunkIdx, priorArchive,
+              deadSet, priorContent, priorChunkIdx, priorArchive, tailStates, sessionTailBatch,
               itemBatch, chunkBatch, appendChunkBatch, cachedContentBatch,
               sessionMetaBatch, touchBatch, fullResyncNeeded, shrinkGuardedIds, rebuildStagedIds, tally,
             });
@@ -1097,6 +1147,7 @@ router.post('/', async (req, res) => {
             chunks: chunkBatch,
             appendChunks: appendChunkBatch,
             cachedContent: cachedContentBatch,
+            sessionTails: sessionTailBatch,
             sessionMeta: sessionMetaBatch,
             touchMtime: touchBatch,
             compute: computeBatch,

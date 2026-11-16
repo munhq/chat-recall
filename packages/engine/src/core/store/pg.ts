@@ -31,6 +31,7 @@ import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 import { getObjectStore, rawObjectKey, contentObjectKey, contentDigest, gzipText, readCachedBody } from './object-store.js';
+import { TAIL_SOURCE_TYPE, tailRowId, parseTailRowId, tailStateOf, mergeEnvelopeWithTails, type TailBody, type TailState } from './session-tails.js';
 import { embedPolicy, trivialSessionPredicateSql } from './embed-policy.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -863,12 +864,90 @@ export class PgStore implements StorageDriver {
   // the two forms coexist during and after a move.
   async getCachedContent(id: string, sourceType: string, mtime: number): Promise<string | null> {
     const row = await this.one(`SELECT content_json, object_key FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3 AND mtime>=$4`, [this.t, id, sourceType, intMs(mtime)]);
-    return row ? readCachedBody(row) : null;
+    if (!row) return null;
+    const base = await readCachedBody(row);
+    if (base === null || sourceType !== 'session') return base;
+    return mergeEnvelopeWithTails(base, (await this.tailBodies([id])).get(id) ?? []);
   }
   async getCachedContentStale(id: string, sourceType: string): Promise<{ content: string; mtime: number } | null> {
     const row = await this.one(`SELECT content_json, object_key, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType]);
     if (!row) return null;
-    return { content: (await readCachedBody(row)) ?? '', mtime: Number(row.mtime) };
+    const base = (await readCachedBody(row)) ?? '';
+    const content = sourceType === 'session' && base ? mergeEnvelopeWithTails(base, (await this.tailBodies([id])).get(id) ?? []) : base;
+    return { content, mtime: Number(row.mtime) };
+  }
+
+  /**
+   * The bodies of the tail segments of these sessions, in sequence order.
+   *
+   * A segment row is invisible to a member (its id is not the id of a
+   * `memory_metadata` row), so the read runs unrestricted. Every caller has found
+   * the base row of the session through the member's own view first.
+   */
+  private async tailBodies(sessionIds: string[]): Promise<Map<string, Array<{ seq: number; body: string }>>> {
+    const out = new Map<string, Array<{ seq: number; body: string }>>();
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await runUnrestricted(() => this.q(
+      `SELECT id, content_json, object_key FROM content_cache
+        WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = ANY($3) ORDER BY id`,
+      [this.t, TAIL_SOURCE_TYPE, ids]));
+    const bodies = await Promise.all(rows.map((r: any) => readCachedBody(r)));
+    rows.forEach((r: any, i: number) => {
+      const parsed = parseTailRowId(r.id);
+      if (!parsed || bodies[i] === null) return;
+      const list = out.get(parsed.sessionId) ?? [];
+      list.push({ seq: parsed.seq, body: bodies[i] as string });
+      out.set(parsed.sessionId, list);
+    });
+    return out;
+  }
+
+  /**
+   * Where each session's appended tail ends: the sequence number, the byte offset
+   * and the last line of its newest segment. It reads one small body for each
+   * session and never the stored envelope. A session with no segment has no entry.
+   */
+  async getSessionTailStates(sessionIds: string[]): Promise<Map<string, TailState>> {
+    const out = new Map<string, TailState>();
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const rows = await runUnrestricted(() => this.q(
+      `SELECT DISTINCT ON (left(id, -11)) id, content_json, object_key FROM content_cache
+        WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = ANY($3)
+        ORDER BY left(id, -11), id DESC`,
+      [this.t, TAIL_SOURCE_TYPE, ids]));
+    const bodies = await Promise.all(rows.map((r: any) => readCachedBody(r)));
+    rows.forEach((r: any, i: number) => {
+      const parsed = parseTailRowId(r.id);
+      const state = parsed && bodies[i] !== null ? tailStateOf(parsed.seq, bodies[i] as string) : null;
+      if (parsed && state) out.set(parsed.sessionId, state);
+    });
+    return out;
+  }
+
+  /**
+   * Write tail segments. Each one costs what its tail costs: the body goes through
+   * the same object-store path as an envelope, and no stored envelope is read.
+   */
+  async appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>): Promise<void> {
+    if (rows.length === 0) return;
+    await runUnrestricted(() => this.tx((client) => this.writeSessionTails(client, rows)));
+  }
+
+  private async writeSessionTails(client: any, rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>): Promise<void> {
+    await this.writeCachedContent(client, rows.map((r) => ({
+      id: tailRowId(r.sessionId, r.seq), sourceType: TAIL_SOURCE_TYPE, mtime: r.mtime, content: JSON.stringify(r.tail),
+    })));
+  }
+
+  /** Delete the segments of these sessions and name their objects, inside `client`'s transaction. */
+  private async deleteSessionTails(client: any, sessionIds: string[]): Promise<string[]> {
+    if (sessionIds.length === 0) return [];
+    const gone = await client.query(
+      `DELETE FROM content_cache WHERE tenant=$1 AND source_type=$2 AND left(id, -11) = ANY($3) RETURNING object_key`,
+      [this.t, TAIL_SOURCE_TYPE, sessionIds]);
+    return gone.rows.map((r: any) => r.object_key).filter(Boolean) as string[];
   }
   /**
    * Prior cached content for a whole batch, in one query.
@@ -898,7 +977,12 @@ export class PgStore implements StorageDriver {
     // a whole batch, and one sequential round trip per session would put the
     // bucket's latency on every sync. A row without a key costs nothing here.
     const bodies = await Promise.all(rows.map((r: any) => readCachedBody(r)));
-    rows.forEach((r: any, i: number) => out.set(r.id, { content: bodies[i] ?? '', mtime: Number(r.mtime) }));
+    const tails = sourceType === 'session' ? await this.tailBodies(rows.map((r: any) => r.id)) : new Map();
+    rows.forEach((r: any, i: number) => {
+      const base = bodies[i] ?? '';
+      const content = base ? mergeEnvelopeWithTails(base, tails.get(r.id) ?? []) : base;
+      out.set(r.id, { content, mtime: Number(r.mtime) });
+    });
     return out;
   }
 
@@ -1345,6 +1429,10 @@ export class PgStore implements StorageDriver {
     // key and is never in this set.
     const live = new Set(prepared.map((p) => p.objectKey).filter(Boolean));
     const dead = prevKeys.filter((k) => !live.has(k));
+    // A new base replaces everything the old base and its segments held, so the
+    // segments of these sessions go with it, and so do their objects.
+    const replaced = list.filter((r) => r.sourceType === 'session').map((r) => r.id);
+    dead.push(...await this.deleteSessionTails(client, replaced));
     if (dead.length > 0) await this.deleteObjectsAfterCommit(dead);
   }
 
@@ -1443,6 +1531,9 @@ export class PgStore implements StorageDriver {
 
       // 4. Cached conversation envelopes.
       if (batch.cachedContent?.length) await this.writeCachedContent(client, batch.cachedContent);
+      // 4b. Tail segments, after the bases: a new base deletes the segments of its
+      //     session, and a segment of this batch must come after that delete.
+      if (batch.sessionTails?.length) await this.writeSessionTails(client, batch.sessionTails);
 
       // 5. Chunks. The full set replaces an item's rows; the tail set appends.
       if (batch.chunks?.length) counts.chunks += await this.writeChunkRows(client, batch.chunks, 'replace');
@@ -2033,6 +2124,7 @@ export class PgStore implements StorageDriver {
           `DELETE FROM content_cache WHERE tenant=$1 AND id = ANY($2) AND source_type='session' RETURNING object_key`,
           [this.t, ids]);
         objectKeys = objectKeys.concat(purged.rows.map((r: any) => r.object_key).filter(Boolean));
+        objectKeys = objectKeys.concat(await this.deleteSessionTails(client, ids));
       }
       if (present.has('memory_metadata')) {
         await client.query(

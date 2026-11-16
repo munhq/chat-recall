@@ -21,6 +21,7 @@ import type { MemoryItem, MemoryChunk, MemoryLink } from '../../types/memory.js'
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
 import type { KnowledgeGraph } from '../knowledge-graph.js';
+import type { TailBody } from './session-tails.js';
 
 /**
  * A session-metadata row, as the metadata cache defines it.
@@ -65,6 +66,8 @@ export interface IngestBatch {
   /** Tail chunks only — appended, never replacing the head's. */
   appendChunks?: MemoryChunk[];
   cachedContent?: Array<{ id: string; sourceType: string; mtime: number; content: string }>;
+  /** Tail segments of stored envelopes (issue #27). Written after `cachedContent`. */
+  sessionTails?: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>;
   sessionMeta?: IngestSessionMeta[];
   /** Appended sessions: move mtime, leave head-derived columns alone. */
   touchMtime?: Array<{ sessionId: string; mtime: number }>;
@@ -134,7 +137,7 @@ export interface IngestSideWriters {
 /** Nothing to write — used to skip opening a transaction at all. */
 export function isEmptyBatch(b: IngestBatch): boolean {
   return !b.items?.length && !b.chunks?.length && !b.appendChunks?.length
-    && !b.cachedContent?.length && !b.sessionMeta?.length && !b.touchMtime?.length
+    && !b.cachedContent?.length && !b.sessionTails?.length && !b.sessionMeta?.length && !b.touchMtime?.length
     && !b.compute?.length && !b.findings?.length && !b.links?.length
     && !b.toolTitles?.length && !b.outcomes?.length && !b.kgEntities?.length && !b.kgTriples?.length;
 }

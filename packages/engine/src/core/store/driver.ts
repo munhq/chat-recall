@@ -341,6 +341,14 @@ export interface StorageDriver {
   getCachedContentStaleMany(sourceType: string, ids: string[]): Promise<Map<string, { content: string; mtime: number }>>;
   /** The tail-append chunk cursor for a whole batch, in one query. */
   maxSyncChunkIndexMany(itemIds: string[]): Promise<Map<string, number>>;
+  /**
+   * Where each session's appended tail ends (issue #27): the sequence number, the
+   * byte offset and the last line of its newest segment. It never reads the stored
+   * envelope. A session with no segment has no entry.
+   */
+  getSessionTailStates(sessionIds: string[]): Promise<Map<string, import('./session-tails.js').TailState>>;
+  /** Write tail segments, outside an ingest batch. */
+  appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: import('./session-tails.js').TailBody }>): Promise<void>;
   /** Which of these ids already have a metadata row — one query for a batch. */
   existingItemIds(sourceType: string, ids: string[]): Promise<Set<string>>;
   /** Who owns this item — for repair paths that must write as its author. */

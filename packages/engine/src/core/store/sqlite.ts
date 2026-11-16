@@ -11,6 +11,7 @@
 
 import { MemoryStore } from '../memory-store.js';
 import { isEmptyBatch, emptyCounts, type IngestBatch, type IngestCounts, type IngestMetaWriter, type IngestSideWriters } from './ingest-batch.js';
+import { TAIL_SOURCE_TYPE, tailRowId, tailStateOf, mergeEnvelopeWithTails, type TailBody, type TailState } from './session-tails.js';
 
 import type { StorageDriver } from './driver.js';
 
@@ -77,9 +78,46 @@ export class SqliteStore implements StorageDriver {
   async getLinkCount(...a: Args<'getLinkCount'>) { return this.inner.getLinkCount(...a); }
 
   // ── content cache ──
-  async getCachedContent(...a: Args<'getCachedContent'>) { return this.inner.getCachedContent(...a); }
-  async getCachedContentStale(...a: Args<'getCachedContentStale'>) { return this.inner.getCachedContentStale(...a); }
+  async getCachedContent(...a: Args<'getCachedContent'>) {
+    const base = this.inner.getCachedContent(...a);
+    return base !== null && a[1] === 'session' ? mergeEnvelopeWithTails(base, this.tailRows(a[0])) : base;
+  }
+  async getCachedContentStale(...a: Args<'getCachedContentStale'>) {
+    const r = this.inner.getCachedContentStale(...a);
+    if (!r || a[1] !== 'session' || !r.content) return r;
+    return { ...r, content: mergeEnvelopeWithTails(r.content, this.tailRows(a[0])) };
+  }
   async setCachedContent(...a: Args<'setCachedContent'>) { return this.inner.setCachedContent(...a); }
+
+  // ── tail segments (issue #27) ──
+  // Segments are rows of the same content cache under the id of
+  // `tailRowId`. A segment that was dropped is overwritten with an empty body,
+  // and the first missing or empty row ends a session's segments.
+  private tailRows(sessionId: string): Array<{ seq: number; body: string }> {
+    const out: Array<{ seq: number; body: string }> = [];
+    for (let seq = 0; ; seq++) {
+      const r = this.inner.getCachedContentStale(tailRowId(sessionId, seq), TAIL_SOURCE_TYPE);
+      if (!r || !r.content) break;
+      out.push({ seq, body: r.content });
+    }
+    return out;
+  }
+  private dropTails(sessionId: string): void {
+    for (const t of this.tailRows(sessionId)) this.inner.setCachedContent(tailRowId(sessionId, t.seq), TAIL_SOURCE_TYPE, 0, '');
+  }
+  async getSessionTailStates(sessionIds: string[]) {
+    const out = new Map<string, TailState>();
+    for (const id of sessionIds) {
+      const rows = this.tailRows(id);
+      const last = rows[rows.length - 1];
+      const state = last ? tailStateOf(last.seq, last.body) : null;
+      if (state) out.set(id, state);
+    }
+    return out;
+  }
+  async appendSessionTails(rows: Array<{ sessionId: string; seq: number; mtime: number; tail: TailBody }>) {
+    for (const r of rows) this.inner.setCachedContent(tailRowId(r.sessionId, r.seq), TAIL_SOURCE_TYPE, r.mtime, JSON.stringify(r.tail));
+  }
   /**
    * One ingest request's writes, ROW BY ROW.
    *
@@ -106,7 +144,11 @@ export class SqliteStore implements StorageDriver {
     for (const t of batch.touchMtime ?? []) this.inner.touchSessionMtime(t.sessionId, t.mtime);
     for (const m of batch.sessionMeta ?? []) await meta?.setMany([m]);
     for (const t of batch.toolTitles ?? []) await meta?.setToolTitle(t.sessionId, t.title);
-    for (const c of batch.cachedContent ?? []) this.inner.setCachedContent(c.id, c.sourceType, c.mtime, c.content);
+    for (const c of batch.cachedContent ?? []) {
+      this.inner.setCachedContent(c.id, c.sourceType, c.mtime, c.content);
+      if (c.sourceType === 'session') this.dropTails(c.id);
+    }
+    if (batch.sessionTails?.length) await this.appendSessionTails(batch.sessionTails);
     if (batch.chunks?.length) counts.chunks += this.inner.addChunksFTS(batch.chunks);
     if (batch.appendChunks?.length) counts.chunks += this.inner.appendChunksFTS(batch.appendChunks);
     for (const f of batch.findings ?? []) counts.findings += this.inner.replaceSecretFindings(f.sessionId, f.findings).written;
@@ -138,7 +180,8 @@ export class SqliteStore implements StorageDriver {
     const out = new Map<string, { content: string; mtime: number }>();
     for (const id of ids) {
       const r = this.inner.getCachedContentStale(id, sourceType);
-      if (r) out.set(id, r);
+      if (!r) continue;
+      out.set(id, sourceType === 'session' && r.content ? { ...r, content: mergeEnvelopeWithTails(r.content, this.tailRows(id)) } : r);
     }
     return out;
   }
@@ -205,7 +248,7 @@ export class SqliteStore implements StorageDriver {
   // store is a local file, so a loop costs microseconds. Statement counts mean
   // nothing here — measure them against Postgres.
   async purgeSessionsMany(sessionIds: string[]) {
-    for (const id of sessionIds) this.inner.purgeSession(id);
+    for (const id of sessionIds) { this.dropTails(id); this.inner.purgeSession(id); }
   }
   async addTombstonesMany(sessionIds: string[]) {
     for (const id of sessionIds) this.inner.addTombstone(id);
