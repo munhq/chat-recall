@@ -55,8 +55,6 @@ const full = (n: number, o: number) => ({
 const append = (baseOffset: number, fromOffset: number, baseLine: number, tail: ReturnType<typeof msgs>, mtime: number) => ({
   session_id: SESSION, tool: 'claude', project_path: '/tmp/tail', mtime, append: true,
   base_offset: baseOffset, from_offset: fromOffset, base_line: baseLine,
-  // The collector sets `final` on every tail: it says the tail ends the file.
-  final: true,
   envelope: { v: 6, messages: tail.map((m, i) => ({ ...m, line: i + 1 })), subagents: [] },
 });
 

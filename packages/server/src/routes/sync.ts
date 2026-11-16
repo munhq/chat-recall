@@ -214,10 +214,7 @@ async function ingestConversation(cv: SyncConversation, ctx: ConvContext): Promi
       // A session that has a tail state appends as a segment: the stored envelope
       // is not read, and the work is proportional to the tail (issue #27).
       const state = tailStates.get(cv.session_id);
-      // `final` is set by the collector on every tail (it says the tail ends the
-      // file), so it does not decide the path. A session in a staged rebuild has no
-      // state: its base carries the rebuild, and the base write dropped the segments.
-      if (state) {
+      if (state && cv.final === undefined) {
         // The same continuity guard as below: the tail must start where the stored
         // envelope ends.
         if (state.o !== (cv.base_offset ?? -1)) {
@@ -980,7 +977,7 @@ router.post('/', async (req, res) => {
           // A session that appends as a segment needs only where its tail ends. Its
           // stored envelope is not read, so the batch holds the envelopes of the
           // full conversations alone (issue #27).
-          const appendIds = conversations.filter((c) => c.append).map((c) => c.session_id).filter(Boolean);
+          const appendIds = conversations.filter((c) => c.append && c.final === undefined).map((c) => c.session_id).filter(Boolean);
           ingestStage('before states', agent.tenant);
           const tailStates = await store.getSessionTailStates(appendIds);
           ingestStage('after states', agent.tenant);
