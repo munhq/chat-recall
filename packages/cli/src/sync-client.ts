@@ -53,7 +53,7 @@ import { probeSessionSource } from './session-source-probe.js';
 import { reconcileLedgerIfDue } from './ledger-reconcile.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, SYNC_PAYLOAD_CAP, TRANSCRIPT_VERSION, gzipContainer, redactContainer, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, shadowUncompressedBytes, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { canonicalEventsToMessages } from '@chat-recall/engine/transcript/index.js';
@@ -219,6 +219,7 @@ let walkProgressForUpload: { done: number; total: number; complete: boolean } | 
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
 import { reportWalkProgress, readCollectorHealth, updateCollectorHealth } from '@chat-recall/engine/core/collector-health.js';
 import { withSessionReadCache , withSessionScanScope, resolveSessionContentGroups } from '@chat-recall/engine/core/live-session-scan.js';
+import { scanSessionGroupsChunked, sessionGroupsBytes } from './session-file-scan.js';
 import { writeArchiveFile, uploadArchiveFile, type ArchiveSource, type ArchiveFile } from './raw-archive-parts.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
@@ -2641,6 +2642,12 @@ export function sessionFileBytes(ref: SessionRef): number {
  * main file alone under-counts: a 19 MB transcript built from a 42 MB shadow
  * and peaked at 840 MB RSS.
  */
+function syncTranscript(t: { messages: any[]; subagents: any[]; payloadCap?: number }): { messages: any[]; subagents: any[] } {
+  // A transcript the parser already cut is not cut again: the cut is not idempotent.
+  const cut = t.payloadCap ? { messages: t.messages, subagents: t.subagents } : trimTranscriptForSync(t);
+  return { messages: cut.messages, subagents: cut.subagents.map((s: any) => ({ ...s, filePath: '' })) };
+}
+
 export function sessionBuildBytes(ref: SessionRef): number {
   const main = sessionFileBytes(ref);
   if (main === 0) return 0;
@@ -2688,7 +2695,7 @@ export async function buildConversationSync(
   // envelope and the redacted text both come from it. When the shadow path
   // runs (normal-size sessions) it also yields the fullest raw container, which
   // the secret scan + raw archive below reuse instead of re-exporting.
-  let transcript: { messages: any[]; subagents: any[] } | null = null;
+  let transcript: { messages: any[]; subagents: any[]; payloadCap?: number } | null = null;
   let fullestContainer: RawContainer | null = null;
   if (oversized) {
     const backend = getBackendForId(ref.prefixedId);
@@ -2719,7 +2726,12 @@ export async function buildConversationSync(
     // shrink, and every viewer tab keeps its full history.
     try {
       const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
-      const exp = backend.exportRawSession(ref.prefixedId);
+      // A Claude session is sized from its files on disk, before anything is read: the files of an
+      // export over the ceiling are never held in memory together, so the export is not made.
+      const streamGroups = ref.toolId === 'claude' ? resolveSessionContentGroups(ref.rawId) : [];
+      const streamedBytes = sessionGroupsBytes(streamGroups);
+      const streamed = streamedBytes > FULL_BUILD_MAX_BYTES;
+      const exp = streamed ? null : backend.exportRawSession(ref.prefixedId);
       // Content-identity gate: hash the raw export (mtime-independent) BEFORE the
       // shadow merge / parse / redact / KG / git-replay. If it equals what this
       // target last FULL-synced, nothing downstream can differ — bail now. This
@@ -2740,9 +2752,9 @@ export async function buildConversationSync(
       // The ceiling check after the build therefore cannot protect the build.
       // An export over the ceiling gets no container copy and no shadow merge;
       // the live parse below reads it once instead.
-      const exportBytes = exportByteLength(exp);
+      const exportBytes = streamed ? streamedBytes : exportByteLength(exp);
       const overCeiling = exportBytes > FULL_BUILD_MAX_BYTES;
-      if (exp && overCeiling) {
+      if ((exp || streamed) && overCeiling) {
         console.error(`[sync] ${ref.prefixedId} export is ${(exportBytes / 1048576).toFixed(0)}MB `
           + `(over the ${(FULL_BUILD_MAX_BYTES / 1048576).toFixed(0)}MB ceiling) — parsing it in place, `
           + 'no container copy, no shadow merge, no raw archive');
@@ -2755,28 +2767,32 @@ export async function buildConversationSync(
         includeRaw = false;
         includeMeta = false;
         exportOverCeiling = true;
-        // The secret scan reads one file of the export at a time. The container, the joined text
+        // The secret scan reads the files in pieces that end at a line end. The container, the joined text
         // and the copy for the scan worker below are what a 44 MB export grew to 838 MB with
         // (2026-11-16): the guard above said "no container copy", and then the code after the
         // parse exported the session again and built one.
-        overCeilingFindings = [];
-        let lineBase = 0;
-        for (const f of exp.files) {
-          const text = f.bytes.toString('utf8');
-          try {
-            for (const x of scanTextForFindings(text)) {
-              overCeilingFindings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: x.rule, line: x.line + lineBase, preview: x.preview });
-            }
-          } catch { /* best-effort */ }
-          if (opts.tenantRules && opts.tenantRules.length > 0) {
+        if (streamed) {
+          overCeilingFindings = await scanSessionGroupsChunked(ref.prefixedId, streamGroups, opts.tenantRules);
+        } else if (exp) {
+          overCeilingFindings = [];
+          let lineBase = 0;
+          for (const f of exp.files) {
+            const text = f.bytes.toString('utf8');
             try {
-              for (const x of scanTenantRules(text, opts.tenantRules)) {
-                overCeilingFindings.push({ session_id: ref.prefixedId, detector: x.detector, rule: x.rule, line: x.line + lineBase, preview: x.preview });
+              for (const x of scanTextForFindings(text)) {
+                overCeilingFindings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: x.rule, line: x.line + lineBase, preview: x.preview });
               }
             } catch { /* best-effort */ }
+            if (opts.tenantRules && opts.tenantRules.length > 0) {
+              try {
+                for (const x of scanTenantRules(text, opts.tenantRules)) {
+                  overCeilingFindings.push({ session_id: ref.prefixedId, detector: x.detector, rule: x.rule, line: x.line + lineBase, preview: x.preview });
+                }
+              } catch { /* best-effort */ }
+            }
+            // The container joins the files with a newline, so the next file starts one line after this one ends.
+            lineBase += (text.match(/\n/g)?.length ?? 0) + 1;
           }
-          // The container joins the files with a newline, so the next file starts one line after this one ends.
-          lineBase += (text.match(/\n/g)?.length ?? 0) + 1;
         }
       }
       if (exp && !overCeiling) {
@@ -2840,7 +2856,7 @@ export async function buildConversationSync(
     } catch { /* shadow/export failed — fall back to the live parse below */ }
     if (!transcript) {
       try {
-        const t = await parseTranscript(ref.prefixedId);
+        const t = await parseTranscript(ref.prefixedId, { payloadCap: SYNC_PAYLOAD_CAP });
         if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
       } catch { /* unparseable */ }
     }
@@ -2862,7 +2878,9 @@ export async function buildConversationSync(
   // ships), then redact every string. Counts are preserved exactly.
   const count = { redactions: 0 };
   const envelope = redactDeep(
-    { v: TRANSCRIPT_VERSION, ...trimTranscriptForSync(transcript) },
+    // A transcript the parser already cut is not cut again: the cut is not idempotent.
+    // The path of a subagent file on this machine does not leave it: the container parse gives ''.
+    { v: TRANSCRIPT_VERSION, ...syncTranscript(transcript) },
     count,
   ) as { v: number; messages: any[]; subagents: any[] };
 

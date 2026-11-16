@@ -42,7 +42,7 @@ describe('the ceiling is decided on the export, before the container exists', ()
   });
 
   test('the export is measured before buildRawContainer is called', () => {
-    const measured = SOURCE.indexOf('const exportBytes = exportByteLength(exp);');
+    const measured = SOURCE.indexOf('const exportBytes = streamed ? streamedBytes : exportByteLength(exp);');
     const built = SOURCE.indexOf('built = buildRawContainer(exp);');
     expect(measured).toBeGreaterThan(-1);
     expect(built).toBeGreaterThan(-1);
@@ -62,7 +62,7 @@ describe('the ceiling is decided on the export, before the container exists', ()
   test('an over-ceiling session is still counted, once', () => {
     // The event carries the size, the tool and a de-duplication key, so the
     // count means sessions and not "how often did the walk see it".
-    const block = SOURCE.slice(SOURCE.indexOf('if (exp && overCeiling) {'), SOURCE.indexOf('if (exp && !overCeiling) {'));
+    const block = SOURCE.slice(SOURCE.indexOf('if ((exp || streamed) && overCeiling) {'), SOURCE.indexOf('if (exp && !overCeiling) {'));
     expect(block).toContain("kind: 'oversized_session'");
     expect(block).toContain('dedupeKey: stableMark(ref.prefixedId)');
     expect(block).toContain('includeRaw = false;');

@@ -20,8 +20,10 @@ import { parseClaudeTranscript, parseClaudeTranscriptText, parseClaudeSubagents 
 import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 import { canonicalEventsToMessages } from './from-events.js';
+import { capPayload, SYNC_PAYLOAD_CAP } from './trim.js';
 
 export * from './types.js';
+export { capPayload, SYNC_PAYLOAD_CAP } from './trim.js';
 export {
   buildRawContainer, containerSrcHash, gzipContainer, gzipContainerStreamed, gunzipContainer, mapContainerText, RAW_PARSE_MAX_BYTES,
   repairRedactedJsonl, repairContainer, redactJsonLine, redactContainer,
@@ -42,11 +44,29 @@ export { canonicalEventsToMessages } from './from-events.js';
 export interface ParsedTranscript extends Transcript {
   /** Source file mtime (ms) at parse time — the envelope freshness key. */
   mtime: number;
+  /** Set when every tool input, tool result and thinking body is already cut to
+   *  this many characters. Cut a transcript with this set only once more at the
+   *  same cap: `capPayload` is not idempotent. */
+  payloadCap?: number;
+}
+
+export interface ParseTranscriptOptions {
+  /** Cut each payload body to this many characters while the file is read, so
+   *  the parse holds the cut transcript and never the full payloads. */
+  payloadCap?: number;
 }
 
 /** Parse a session (any tool, prefixed or bare id) into the canonical shape.
  *  Returns null when the session can't be located. */
-export async function parseTranscript(sessionId: string): Promise<ParsedTranscript | null> {
+export async function parseTranscript(sessionId: string, opts: ParseTranscriptOptions = {}): Promise<ParsedTranscript | null> {
+  const t = await parseTranscriptUncut(sessionId, opts);
+  const cap = opts.payloadCap;
+  if (!t || !cap || t.payloadCap === cap) return t;
+  // A tool whose parser does not cut while it reads: cut the parsed transcript.
+  return { ...t, ...trimTranscriptForSync(t, cap), payloadCap: cap };
+}
+
+async function parseTranscriptUncut(sessionId: string, opts: ParseTranscriptOptions): Promise<ParsedTranscript | null> {
   const tool = detectTool(sessionId);
 
   if (tool === 'claude') {
@@ -68,9 +88,10 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
     const primaryPath = mainGroup.paths[0];
     const merged = readSessionGroupText(mainGroup);
 
+    const cut = opts.payloadCap ? { payloadCap: opts.payloadCap } : {};
     const [tail, allSubagents] = await Promise.all([
-      Promise.resolve(parseClaudeTranscriptText(merged.text)),
-      parseClaudeSubagents(primaryPath),
+      Promise.resolve(parseClaudeTranscriptText(merged.text, cut)),
+      parseClaudeSubagents(primaryPath, cut),
     ]);
     // Compaction stitching: when Claude Code compacts, the prior history
     // moves into agent-acompact-* sidecars and the main JSONL keeps only
@@ -95,7 +116,7 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
     }
     // Newest mtime across copies — a session whose live half is in a secondary
     // home must not report the stale primary's timestamp.
-    return { messages, subagents, mtime: merged.mtime || safeMtime(primaryPath) };
+    return { messages, subagents, mtime: merged.mtime || safeMtime(primaryPath), ...(opts.payloadCap ? { payloadCap: opts.payloadCap } : {}) };
   }
 
   if (tool === 'opencode') {
@@ -146,26 +167,8 @@ function safeMtime(path: string): number {
  * replay (full file contents inside tool calls) never leaves the machine.
  * Counts are preserved exactly; only payload bodies are truncated.
  */
-export function trimTranscriptForSync(t: Transcript, capChars = 2000): Transcript {
-  // Preserve structure: objects (Edit inputs with old_string/new_string,
-  // tool results) stay objects when they fit — the viewer renders real
-  // diffs from them. Only oversized values degrade to truncated strings.
-  const cap = (v: unknown): unknown => {
-    if (v === undefined) return undefined;
-    if (typeof v === 'string') {
-      return v.length > capChars ? v.slice(0, capChars) + `… [+${v.length - capChars} chars]` : v;
-    }
-    let s = '';
-    try { s = JSON.stringify(v) ?? ''; } catch { return undefined; }
-    if (s.length <= capChars * 4) return v; // structured + reasonably sized → keep as-is
-    if (Array.isArray(v)) return s.slice(0, capChars) + `… [+${s.length - capChars} chars]`;
-    if (v && typeof v === 'object') {
-      const o: Record<string, unknown> = {};
-      for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = cap(val);
-      return o;
-    }
-    return v;
-  };
+export function trimTranscriptForSync(t: Transcript, capChars = SYNC_PAYLOAD_CAP): Transcript {
+  const cap = (v: unknown): unknown => capPayload(v, capChars);
   const trimMsg = (m: TranscriptMessage): TranscriptMessage => ({
     ...m,
     thinking: m.thinking !== undefined ? (cap(m.thinking) as string) : undefined,

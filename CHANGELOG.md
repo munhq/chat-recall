@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.60] — 2026-11-16
+### Fixed
+- **A session with large subagent files is read one line at a time and cut as it is read.** The parse of a Claude session read every record, kept every tool result whole, and cut each payload to 2,000 characters only after the last record. The scan of an export over `CHAT_RECALL_FULL_BUILD_MAX_MB` first read all of its files into memory. Now the files are sized on disk before anything is read, the secret scan reads each file in pieces of 8 MB that end at a line end (line numbers are those of the container scan), and the parse cuts each tool input, tool result and thinking body when its line is read. The scan holds one piece at a time (+36 MB to +62 MB resident for 27 MB and 50 MB sessions); the parse holds the cut transcript. The path of a subagent file on the machine no longer goes into the envelope (`sync-over-ceiling.test.ts`, `claude-stream.test.ts`).
 ## [0.7.59] — 2026-11-16
 
 ### Fixed

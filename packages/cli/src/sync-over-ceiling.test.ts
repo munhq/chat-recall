@@ -58,6 +58,17 @@ function writeSession(): void {
   const sub: string[] = [];
   const pad = 'lorem ipsum dolor sit amet '.repeat(60);
   for (let i = 0; i < 6000; i++) {
+    if (i === 100) {
+      // A tool call whose input and result are longer than the cap of the sync wire.
+      sub.push(JSON.stringify({
+        type: 'assistant', timestamp: ts(100 + i), cwd: PROJECT, sessionId: SESSION_ID, isSidechain: true, agentId: 'agent-a',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_long', name: 'Bash', input: { command: 'echo '.repeat(3000) } }] },
+      }));
+      sub.push(JSON.stringify({
+        type: 'user', timestamp: ts(100 + i), cwd: PROJECT, sessionId: SESSION_ID, isSidechain: true, agentId: 'agent-a',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_long', content: 'out '.repeat(10000) }] },
+      }));
+    }
     const text = i === 4000 ? `the key is ${SECRET}` : `sub turn ${i} ${pad}`;
     sub.push(JSON.stringify({
       type: 'assistant', timestamp: ts(100 + i), cwd: PROJECT, sessionId: SESSION_ID, isSidechain: true, agentId: 'agent-a',
@@ -110,5 +121,9 @@ describe('an export over the ceiling', () => {
     const over = await build('8');
     expect(over.built.conv.envelope.messages.length).toBe(whole.built.conv.envelope.messages.length);
     expect(over.built.conv.envelope.subagents.length).toBe(whole.built.conv.envelope.subagents.length);
+    // Every message, tool call and cut payload, as the build under the ceiling sends them.
+    expect(over.built.conv.envelope).toEqual(whole.built.conv.envelope);
+    const longCall = over.built.conv.envelope.subagents[0].messages.flatMap((m: any) => m.toolCalls ?? []).find((c: any) => c.name === 'Bash');
+    expect(String(longCall.result)).toMatch(/… \[\+\d+ chars\]$/);
   });
 });

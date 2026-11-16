@@ -8,6 +8,7 @@ import { dirname, join, basename } from 'path';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
 import { queuedCommandPrompt, userRecordOrigin } from '../core/claude-prompt-origin.js';
+import { capPayload } from './trim.js';
 
 const log = createLogger('transcript-claude');
 
@@ -48,69 +49,93 @@ function stripBanners(text: string): string {
  * returned, only a signed signature). We still surface the turn so the flow
  * is visible even when the text is empty.
  */
-export async function parseClaudeTranscript(sessionPath: string): Promise<Message[]> {
-  return parseMessagesFromFile(sessionPath);
+export interface ClaudeParseOptions {
+  /** Cut each tool input, tool result and thinking body to this many characters
+   *  as its line is read. The parse then holds the cut transcript and never the
+   *  full payloads, so its memory follows the size of the output and not the
+   *  size of the file. */
+  payloadCap?: number;
+}
+
+export async function parseClaudeTranscript(sessionPath: string, opts: ClaudeParseOptions = {}): Promise<Message[]> {
+  return parseMessagesFromFile(sessionPath, opts);
 }
 
 /** Same parse over in-memory text — what the server runs on archived raw. */
-export function parseClaudeTranscriptText(text: string): Message[] {
-  const raw: Array<{ line: number; obj: any }> = [];
+export function parseClaudeTranscriptText(text: string, opts: ClaudeParseOptions = {}): Message[] {
+  const builder = new MessageBuilder(opts.payloadCap);
   let lineNumber = 0;
   for (const line of text.split('\n')) {
     lineNumber++;
     if (!line.trim()) continue;
-    try { raw.push({ line: lineNumber, obj: JSON.parse(line) }); } catch { /* malformed line */ }
+    let obj: unknown;
+    try { obj = JSON.parse(line); } catch { continue; /* malformed line */ }
+    builder.add(lineNumber, obj);
   }
-  return messagesFromRawLines(raw);
+  return builder.messages;
 }
 
-async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
+async function parseMessagesFromFile(sessionPath: string, opts: ClaudeParseOptions): Promise<Message[]> {
   const file = await open(sessionPath);
-  const raw: Array<{ line: number; obj: any }> = [];
+  const builder = new MessageBuilder(opts.payloadCap);
   try {
     let lineNumber = 0;
     for await (const line of file.readLines()) {
       lineNumber++;
       if (!line.trim()) continue;
+      let obj: unknown;
       try {
-        raw.push({ line: lineNumber, obj: JSON.parse(line) });
+        obj = JSON.parse(line);
       } catch {
         // A live transcript's last line is routinely half-written — skipping
         // it is normal operation, not an error. A stack trace here lands in a
         // brand-new user's face on their first sync. Keep a quiet breadcrumb.
         log.debug({ line: lineNumber, file: sessionPath }, 'skipped malformed transcript line');
+        continue;
       }
+      builder.add(lineNumber, obj);
     }
   } finally {
     await file.close();
   }
-  return messagesFromRawLines(raw);
+  return builder.messages;
 }
 
-function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[] {
+/**
+ * Turns the records of one transcript file into messages, one record at a time.
+ *
+ * Claude Code stores a tool_result inside the user record that follows the
+ * assistant's tool_use, so a call and its result are in two records. This keeps
+ * the calls by tool_use id and gives each its result when the result record
+ * comes, in either order, and the last result for an id wins. Nothing but the
+ * messages, the calls and the results is kept, so a record's body is released
+ * as soon as the next record is read.
+ */
+class MessageBuilder {
+  readonly messages: Message[] = [];
+  private readonly cap: (v: unknown) => unknown;
+  /** The calls of each tool_use id. */
+  private readonly calls = new Map<string, ToolCall[]>();
+  /** The last result of each tool_use id. */
+  private readonly results = new Map<string, { content: unknown; isError: boolean }>();
 
-  const toolResults = new Map<string, { content: any; isError?: boolean }>();
-  for (const { obj } of raw) {
-    if (obj?.type !== 'user') continue;
-    const content = obj.message?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type === 'tool_result' && block.tool_use_id) {
-        toolResults.set(block.tool_use_id, {
-          content: block.content,
-          isError: block.is_error === true,
-        });
-      }
-    }
+  constructor(payloadCap?: number) {
+    this.cap = payloadCap ? (v) => capPayload(v, payloadCap) : (v) => v;
   }
 
-  const messages: Message[] = [];
-  for (const { line, obj } of raw) {
-    if (!obj || typeof obj !== 'object') continue;
+  add(line: number, obj: any): void {
+    if (!obj || typeof obj !== 'object') return;
     const timestamp = typeof obj.timestamp === 'string' ? obj.timestamp : undefined;
 
     if (obj.type === 'user') {
       const content = obj.message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === 'tool_result' && block.tool_use_id) {
+            this.addResult(block.tool_use_id, this.cap(block.content), block.is_error === true);
+          }
+        }
+      }
       let text = '';
       if (typeof content === 'string') {
         text = content;
@@ -120,41 +145,48 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
           .map((c: any) => c.text)
           .join('\n');
       }
-      if (!text.trim()) continue; // tool_result-only user messages are attached to the preceding assistant
+      if (!text.trim()) return; // tool_result-only user messages are attached to the preceding assistant
       const cleaned = stripBanners(text);
-      if (!cleaned) continue; // was ONLY banners / local-command plumbing → drop it
+      if (!cleaned) return; // was ONLY banners / local-command plumbing → drop it
       const origin = userRecordOrigin(obj, cleaned);
-      messages.push({ line, role: 'user', content: cleaned, timestamp, ...(origin === 'human' ? {} : { origin }) });
+      this.messages.push({ line, role: 'user', content: cleaned, timestamp, ...(origin === 'human' ? {} : { origin }) });
     } else if (obj.type === 'attachment') {
       // A prompt typed while the agent works reaches the transcript only as
       // this attachment, so without it the prompt is missing from the view.
       const queued = queuedCommandPrompt(obj);
-      if (!queued) continue;
+      if (!queued) return;
       const cleaned = stripBanners(queued.text);
-      if (!cleaned) continue;
-      messages.push({ line, role: 'user', content: cleaned, timestamp, ...(queued.origin === 'human' ? {} : { origin: queued.origin }) });
+      if (!cleaned) return;
+      this.messages.push({ line, role: 'user', content: cleaned, timestamp, ...(queued.origin === 'human' ? {} : { origin: queued.origin }) });
     } else if (obj.type === 'assistant') {
       const blocks = Array.isArray(obj.message?.content) ? obj.message.content : [];
       const thinkingBlock = blocks.find((c: any) => c?.type === 'thinking');
       const textBlock = blocks.find((c: any) => c?.type === 'text');
       const toolUses = blocks.filter((c: any) => c?.type === 'tool_use');
 
-      const toolCalls = toolUses.map((toolUse: any) => {
-        const result = toolUse.id ? toolResults.get(toolUse.id) : undefined;
-        return {
+      const toolCalls: ToolCall[] = toolUses.map((toolUse: any) => {
+        const known = toolUse.id ? this.results.get(toolUse.id) : undefined;
+        const call: ToolCall = {
           name: toolUse.name || 'unknown',
-          input: toolUse.input,
-          result: result?.content,
-          isError: result?.isError,
+          input: this.cap(toolUse.input),
+          result: known?.content,
+          isError: known?.isError,
         };
+        if (toolUse.id) {
+          const list = this.calls.get(toolUse.id);
+          if (list) list.push(call); else this.calls.set(toolUse.id, [call]);
+        }
+        return call;
       });
 
       const hasThinking = thinkingBlock !== undefined;
       const text = textBlock?.text ?? '';
-      const thinking = thinkingBlock?.thinking ?? (hasThinking ? '' : undefined);
+      const thinking = thinkingBlock?.thinking != null
+        ? this.cap(thinkingBlock.thinking) as string
+        : (hasThinking ? '' : undefined);
 
-      if (!text && !hasThinking && toolCalls.length === 0) continue;
-      messages.push({
+      if (!text && !hasThinking && toolCalls.length === 0) return;
+      this.messages.push({
         line,
         role: 'assistant',
         content: text,
@@ -163,7 +195,7 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
         timestamp,
       });
     } else if (obj.type === 'summary' && typeof obj.summary === 'string') {
-      messages.push({ line, role: 'summary', content: obj.summary });
+      this.messages.push({ line, role: 'summary', content: obj.summary });
     } else if (obj.type === 'system' && obj.subtype === 'away_summary') {
       // "away_summary" is a handoff/checkpoint record Claude Code writes
       // when it captures a session's goal without persisting the turns
@@ -176,10 +208,15 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
         : Array.isArray(c)
           ? c.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n')
           : '';
-      if (text.trim()) messages.push({ line, role: 'summary', content: stripBanners(text), timestamp });
+      if (text.trim()) this.messages.push({ line, role: 'summary', content: stripBanners(text), timestamp });
     }
   }
-  return messages;
+
+  private addResult(id: string, content: unknown, isError: boolean): void {
+    this.results.set(id, { content, isError });
+    const list = this.calls.get(id);
+    if (list) for (const call of list) { call.result = content; call.isError = isError; }
+  }
 }
 
 /**
@@ -195,7 +232,7 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
  * holding the condensed prior history, `agent-aside_question-*` is an aside Q&A,
  * anything else (`agent-a<hash>`) is a generic explore subagent.
  */
-export async function parseClaudeSubagents(sessionPath: string): Promise<Subagent[]> {
+export async function parseClaudeSubagents(sessionPath: string, opts: ClaudeParseOptions = {}): Promise<Subagent[]> {
   const sessionId = basename(sessionPath).replace(/\.jsonl$/i, '');
   const subagentsDir = join(dirname(sessionPath), sessionId, 'subagents');
 
@@ -234,7 +271,7 @@ export async function parseClaudeSubagents(sessionPath: string): Promise<Subagen
 
     let messages: Message[] = [];
     try {
-      messages = await parseMessagesFromFile(filePath);
+      messages = await parseMessagesFromFile(filePath, opts);
     } catch (e) {
       log.error({ err: e, filePath }, 'Failed to parse subagent');
     }
