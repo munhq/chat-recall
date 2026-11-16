@@ -2,6 +2,11 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.55] — 2026-11-16
+
+### Fixed
+- **A ledger check that clears rows starts a full walk, and a backlog is checked again in half an hour.** The check of 0.7.54 cleared the ledger rows of 2,000 sessions that the server stored without a conversation, and the daemon then waited for its daily full walk to send them, because a walk of the changed sessions does not list old files. After a check that cleared rows the daemon now walks every session on its next tick, and a check that left sessions in the backlog runs again after 30 minutes. About 7,300 sessions were in that state on 2026-11-16.
+
 ## [0.7.54] — 2026-11-16
 
 ### Fixed

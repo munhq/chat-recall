@@ -812,6 +812,19 @@ function readWalkState(): Record<string, number> {
   } catch { return {}; }
 }
 
+/**
+ * Make the next daemon tick a full walk. Rows that the ledger check cleared are
+ * old files, and only a full walk lists them: a walk of the changed sessions does not.
+ */
+export function requestFullWalk(serverUrl: string): void {
+  try {
+    const state = readWalkState();
+    state[serverUrl.replace(/\/+$/, '')] = 0;
+    mkdirSync(getDataDir(), { recursive: true });
+    writeFileSync(walkStatePath(), JSON.stringify(state));
+  } catch { /* the stamp only tunes the NEXT walk */ }
+}
+
 function noteWalkSuccess(serverUrl: string): void {
   try {
     const state = readWalkState();
@@ -1561,7 +1574,10 @@ const refs = listAvailableBackends().flatMap((b) => {
   const base = cred.serverUrl.replace(/\/$/, '');
   // Clear the rows of sessions that the server lacks before the ledger is read,
   // so this walk sends them (bounded by the walk cap, newest first).
-  if (opts.useLedger) await reconcileLedgerIfDue(base, cred.token);
+  if (opts.useLedger) {
+    const reconciled = await reconcileLedgerIfDue(base, cred.token);
+    if (reconciled && reconciled.cleared > 0) requestFullWalk(base);
+  }
   const ledger = opts.useLedger ? getSyncedRows(base) : null;
   const convBatch = makeBatcher('conversations', 25, false, (rows) => {
     // Server acked this batch — record exactly these sessions at exactly

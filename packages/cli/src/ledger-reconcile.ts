@@ -18,6 +18,8 @@ export type ReconcileMode = 'off' | 'report' | 'act';
 /** Rows one run may clear, so the walks that follow stay inside their bounds. */
 export const RECONCILE_MAX_PER_RUN = 2000;
 export const RECONCILE_INTERVAL_MS = 24 * 60 * 60_000;
+/** The next run after one that left sessions in the backlog. */
+export const RECONCILE_BACKLOG_RETRY_MS = 30 * 60_000;
 
 /** `CHAT_RECALL_LEDGER_RECONCILE`: `act` (default), `report` or `off`. */
 export function reconcileMode(env: NodeJS.ProcessEnv = process.env): ReconcileMode {
@@ -113,7 +115,11 @@ export async function reconcileLedgerIfDue(
   if (last !== undefined && now - last < RECONCILE_INTERVAL_MS) return null;
   lastRunAt.set(server, now);
   try {
-    return await reconcileLedger(server, token, reconcileMode(), deps);
+    const result = await reconcileLedger(server, token, reconcileMode(), deps);
+    // A run clears at most RECONCILE_MAX_PER_RUN rows. When sessions are left, the
+    // next run is due in half an hour, so a backlog of thousands does not wait days.
+    if (result.mode === 'act' && result.missing > result.cleared) lastRunAt.set(server, now - RECONCILE_INTERVAL_MS + RECONCILE_BACKLOG_RETRY_MS);
+    return result;
   } catch (err) {
     lastRunAt.delete(server);
     (deps.log ?? ((l: string) => console.error(l)))(`[sync] ledger check against the server failed (the walk goes on): ${err instanceof Error ? err.message : err}`);

@@ -5,7 +5,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
   planReconcile, reconcileLedger, reconcileLedgerIfDue, reconcileMode, fetchServerSessions,
-  RECONCILE_MAX_PER_RUN, RECONCILE_INTERVAL_MS, _resetReconcileClockForTests,
+  RECONCILE_MAX_PER_RUN, RECONCILE_INTERVAL_MS, RECONCILE_BACKLOG_RETRY_MS, _resetReconcileClockForTests,
   type ServerSessionList,
 } from './ledger-reconcile.js';
 
@@ -107,6 +107,17 @@ describe('reconcileLedgerIfDue', () => {
     const calls = { n: 0 };
     await reconcileLedgerIfDue('https://two.test', 't', 1_000, deps(calls));
     await reconcileLedgerIfDue('https://two.test', 't', 1_000 + RECONCILE_INTERVAL_MS, deps(calls));
+    expect(calls.n).toBe(2);
+  });
+
+  test('a run that leaves sessions in the backlog is due again in half an hour', async () => {
+    const calls = { n: 0 };
+    const many = rows(Array.from({ length: RECONCILE_MAX_PER_RUN + 5 }, (_, i) => [`s-${i}`, i] as [string, number]));
+    const backlog = { log: () => {}, listServer: async () => { calls.n++; return list([]); }, ledgerRows: () => many, forget: () => {} };
+    await reconcileLedgerIfDue('https://backlog.test', 't', 1_000, backlog);
+    await reconcileLedgerIfDue('https://backlog.test', 't', 1_000 + RECONCILE_BACKLOG_RETRY_MS - 1, backlog);
+    expect(calls.n).toBe(1);
+    await reconcileLedgerIfDue('https://backlog.test', 't', 1_000 + RECONCILE_BACKLOG_RETRY_MS, backlog);
     expect(calls.n).toBe(2);
   });
 
