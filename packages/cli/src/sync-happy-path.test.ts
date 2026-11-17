@@ -166,11 +166,12 @@ describe(`login → sync uploads a real session (${process.platform})`, () => {
     plantSession(join(home, 'claude'));
     await runCli(['login', server.url, '--token', 'ct_happy_path'], home);
     const first = await runCli(['sync', '--paths-cleartext'], home);
-    expect(first.status).toBe(0);
+    expect(first.status, `exit code of the first sync, output:\n${first.out}`).toBe(0);
     const before = server.uploaded().length;
     const second = await runCli(['sync', '--paths-cleartext'], home);
     expect(second.out).not.toMatch(/sync failed|EPERM|EBUSY|ENOENT/i);
-    expect(second.status).toBe(0);
+    // The output goes into the message, so a failure on a runner shows what the command printed.
+    expect(second.status, `exit code of the second sync, output:\n${second.out}`).toBe(0);
     // It re-ships, by design — the assertion is that it got through, not that
     // it stayed quiet.
     expect(server.uploaded().length).toBeGreaterThan(before);
