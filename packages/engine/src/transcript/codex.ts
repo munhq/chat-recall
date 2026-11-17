@@ -136,6 +136,8 @@ export interface CodexParseOptions {
   payloadCap?: number;
   /** The cut to apply to each payload. It wins over `payloadCap` and carries the budget of a whole session. */
   cut?: (v: unknown) => unknown;
+  /** The cut to apply to the text of each message. */
+  cutText?: (v: unknown) => unknown;
 }
 
 /**
@@ -166,6 +168,7 @@ export function parseCodexTranscriptText(text: string, opts: CodexParseOptions =
 
 function codexLineHandler(messages: Message[], opts: CodexParseOptions): (lineNum: number, line: string) => void {
   const cap = opts.cut ?? (opts.payloadCap ? (v: unknown) => capPayload(v, opts.payloadCap) : (v: unknown) => v);
+  const cutText = (v: string): string => (opts.cutText ? opts.cutText(v) as string : v);
   return (lineNum, line) => {
     if (!line.trim()) return;
     try {
@@ -173,14 +176,14 @@ function codexLineHandler(messages: Message[], opts: CodexParseOptions): (lineNu
       if (obj.type === 'event_msg' && obj.payload?.type === 'user_message') {
         const text = String(obj.payload.message || '').trim();
         if (!text || isCodexInjectedWrapper(text)) return;
-        messages.push({ line: lineNum, role: 'user', content: text, timestamp: obj.timestamp });
+        messages.push({ line: lineNum, role: 'user', content: cutText(text), timestamp: obj.timestamp });
       } else if (obj.type === 'response_item' && obj.payload?.type === 'message') {
         // Skip developer/system/user injections — they're environment
         // wrappers, not part of the user-facing transcript.
         if (obj.payload.role !== 'assistant') return;
         const text = flattenCodexContent(obj.payload.content);
         if (!text.trim()) return;
-        messages.push({ line: lineNum, role: 'assistant', content: text, timestamp: obj.timestamp });
+        messages.push({ line: lineNum, role: 'assistant', content: cutText(text), timestamp: obj.timestamp });
       } else if (obj.type === 'response_item' && obj.payload?.type === 'reasoning') {
         // Surface model reasoning summaries as a thinking block on the
         // next assistant message slot. Codex emits these between turns.

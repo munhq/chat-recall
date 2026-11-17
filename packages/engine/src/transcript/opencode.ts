@@ -77,6 +77,8 @@ export interface OpenCodeParseOptions {
   payloadCap?: number;
   /** The cut to apply to each payload. It wins over `payloadCap` and carries the budget of a whole session. */
   cut?: (v: unknown) => unknown;
+  /** The cut to apply to the text of each message. */
+  cutText?: (v: unknown) => unknown;
 }
 
 export async function parseOpenCodeTranscript(sessionId: string, opts: OpenCodeParseOptions = {}): Promise<Message[]> {
@@ -117,7 +119,7 @@ export async function parseOpenCodeTranscript(sessionId: string, opts: OpenCodeP
 
         if (partData.type === 'text' && partData.text?.trim()) {
           lineNum++;
-          messages.push({ line: lineNum, role, content: partData.text });
+          messages.push({ line: lineNum, role, content: opts.cutText ? opts.cutText(partData.text) as string : partData.text });
         } else if (partData.type === 'tool' && partData.tool) {
           lineNum++;
           messages.push({

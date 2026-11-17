@@ -210,3 +210,30 @@ describe('budgetedCut', () => {
       .toEqual(wire(parseClaudeTranscriptText(text, { payloadCap: SYNC_PAYLOAD_CAP })));
   });
 });
+
+describe('the cut of message text', () => {
+  const rec = (type: 'user' | 'assistant', text: string) => JSON.stringify(type === 'user'
+    ? { type, message: { content: text } }
+    : { type, message: { content: [{ type: 'text', text }] } });
+
+  test('a message under the cap is not changed, and one over it keeps 200,000 characters', () => {
+    const body = [rec('user', 'fix the parser'), rec('assistant', 'a'.repeat(300_000)), rec('user', 'u'.repeat(250_000))].join('\n');
+    const got = parseClaudeTranscriptText(body, { payloadCap: SYNC_PAYLOAD_CAP, cutText: budgetedCut(200_000, 96 * 1024 * 1024, 2000) });
+    expect(got[0].content).toBe('fix the parser');
+    expect(got[1].content).toBe(`${'a'.repeat(200_000)}… [+100000 chars]`);
+    expect(got[2].content).toBe(`${'u'.repeat(200_000)}… [+50000 chars]`);
+  });
+
+  test('after the budget the messages keep 2,000 characters', () => {
+    const body = Array.from({ length: 6 }, (_, i) => rec(i % 2 ? 'assistant' : 'user', 'm'.repeat(100_000))).join('\n');
+    const got = parseClaudeTranscriptText(body, { payloadCap: SYNC_PAYLOAD_CAP, cutText: budgetedCut(200_000, 250_000, 2000) });
+    // The budget of 250,000 is passed after the third message, so the first three are whole.
+    expect(got.slice(0, 3).map((m) => m.content.length)).toEqual([100_000, 100_000, 100_000]);
+    expect(got.slice(3).every((m) => m.content.length < 2100)).toBe(true);
+  });
+
+  test('without a cut the text is whole', () => {
+    const body = rec('assistant', 'z'.repeat(300_000));
+    expect(parseClaudeTranscriptText(body)[0].content.length).toBe(300_000);
+  });
+});

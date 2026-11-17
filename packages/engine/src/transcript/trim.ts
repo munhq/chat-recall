@@ -16,6 +16,15 @@ function detach(s: string): string {
   return JSON.parse(JSON.stringify(s)) as string;
 }
 
+/**
+ * The cut of message text. One message keeps up to 200,000 characters, and a transcript keeps up
+ * to 96 million characters of message text; the messages after that keep 2,000 characters each.
+ * A message that a person reads is far below the cap, so only a pasted file or a dumped log is cut.
+ */
+export const SYNC_TEXT_CAP = 200_000;
+export const SYNC_TEXT_BUDGET = 96 * 1024 * 1024;
+export const SYNC_TEXT_CAP_TIGHT = 2000;
+
 /** Characters of cut payloads one transcript keeps before every later payload is cut to `SYNC_PAYLOAD_CAP_TIGHT`. */
 export const SYNC_PAYLOAD_BUDGET = 48 * 1024 * 1024;
 export const SYNC_PAYLOAD_CAP_TIGHT = 200;
