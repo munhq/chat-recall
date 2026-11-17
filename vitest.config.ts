@@ -39,7 +39,9 @@ export default defineConfig({
     // over 15s in the next, and a 2.4s sync-intents test also crossed 15s, with
     // no code change between them (2026-10-02). The same timeouts failed CI on
     // 2026-09-24 and 2026-09-28.
-    testTimeout: process.platform === 'win32' ? 60000 : 15000,
+    // The tests that start the CLI as a process take 2.6 s to 13.5 s on a macOS runner (the same test
+    // timed out at 15 s in 5 of the last 8 runs of the fresh-install gate), so macOS has the limit of Windows.
+    testTimeout: process.platform === 'linux' ? 15000 : 60000,
     // HOOKS GOT LESS TIME THAN THE TESTS THEY SET UP. `hookTimeout` was never
     // set, so it stayed at vitest's 10s default while tests had 15s — and these
     // hooks do real work: mkdtemp, create a SQLite database, open a driver, then
