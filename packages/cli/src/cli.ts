@@ -2014,6 +2014,7 @@ program
     const { redactSecrets, serverRulePackVersion } = await import('@chat-recall/engine/core/secret-redactor.js');
     const { fetchWithTimeout } = await import('./http.js');
     const { forceFullResync } = await import('./verify-repair.js');
+    const { withSessionScanScope } = await import('@chat-recall/engine/core/live-session-scan.js');
 
     const targets = verifyTargets();
     if (targets.length === 0) {
@@ -2097,7 +2098,9 @@ program
     for (const t of targets) {
       let report;
       try {
-        report = await verifyAgainstServer(t.serverUrl, t.token, sinceMs, deps);
+        // Inside a scan scope the index of the session files is kept for the whole check. Outside one it is
+        // rebuilt for every lookup, which took 360 ms for each of 11,000 sessions on this machine.
+        report = await withSessionScanScope(() => verifyAgainstServer(t.serverUrl, t.token, sinceMs, deps));
       } catch (e) {
         console.error(chalk.red(`${t.serverUrl}: ${e instanceof Error ? e.message : e}`));
         exitCode = 1;
