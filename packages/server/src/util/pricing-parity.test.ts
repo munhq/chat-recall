@@ -111,7 +111,7 @@ describe('advertised MCP tool count ↔ the registry', () => {
   // the right way round, because the drift happened locally and CI could never
   // have seen it either way. Reading it unconditionally is what broke this
   // build the first time.
-  test.each(['README.md', 'server.json', 'smithery.yaml', 'docs/REGISTRIES.md', 'CLAUDE.md'])(
+  test.each(['README.md', 'server.json', 'docs/REGISTRIES.md', 'CLAUDE.md'])(
     '%s states the real count everywhere it states one', (file) => {
       const path = resolve(repoRoot, file);
       if (!existsSync(path)) return;      // untracked local file — nothing to check

@@ -61,8 +61,8 @@ describe('server.json version parity', () => {
 
   it('the tool counts the directories advertise match the code', () => {
     // These numbers are the FIRST thing a person reads about this server, on
-    // registry.modelcontextprotocol.io and on smithery.ai, and they are typed
-    // by hand into two files that no test looked at. The 58 -> 60 move needed a
+    // registry.modelcontextprotocol.io, and they are typed
+    // by hand into a manifest that no test looked at. The 58 -> 60 move needed a
     // sweep of five files; the lean count then drifted the moment two tools
     // joined LEAN_TOOLS, because nothing derived it from the set.
     //
@@ -90,8 +90,7 @@ describe('server.json version parity', () => {
     expect(fullCount).toBeGreaterThan(leanCount);
 
     const manifest = JSON.stringify(read('server.json'));
-    const smithery = readFileSync(join(repoRoot, 'smithery.yaml'), 'utf-8');
-    for (const [where, text] of [['server.json', manifest], ['smithery.yaml', smithery]] as const) {
+    for (const [where, text] of [['server.json', manifest]] as const) {
       expect(text, `${where} does not state the lean count of ${leanCount}`)
         .toContain(`${leanCount} tools`);
       expect(text, `${where} does not state the full count of ${fullCount}`)

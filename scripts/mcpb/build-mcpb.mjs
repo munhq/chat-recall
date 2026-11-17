@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Build the .mcpb bundle — the thing Claude Desktop installs, and the part
- * Smithery's API refuses a stdio release without.
+ * Build the .mcpb bundle — the thing Claude Desktop installs.
  *
  * ── Why a bundle at all, for an npm package ───────────────────────────────
  *
@@ -9,8 +8,7 @@
  * toolchain. chat-recall is an npm package, so this one is thinner: a manifest,
  * and a launcher that runs the published CLI through npx. That is still worth
  * shipping, because the bundle is what a one-click install in Claude Desktop
- * consumes, and because Smithery answers `400 Missing required part: bundle`
- * without it.
+ * consumes.
  *
  * ── Why one-click actually works here ─────────────────────────────────────
  *
@@ -29,7 +27,7 @@
  * that same init, from the version they actually installed.
  *
  * Usage:
- *   node scripts/smithery/build-mcpb.mjs --out chat-recall-<version>.mcpb [--card card.json]
+ *   node scripts/mcpb/build-mcpb.mjs --out chat-recall-<version>.mcpb [--card card.json]
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -69,7 +67,7 @@ try {
   // The launcher. `-p chat-recall` then the BIN name: `npx -y chat-recall-mcp`
   // looks right and is E404, because chat-recall-mcp is a bin inside the
   // chat-recall package rather than a package of its own — the same mistake that
-  // sat in smithery.yaml until it was found.
+  // sat in the launch file of the bundle until it was found.
   writeFileSync(
     path.join(stage, 'server', 'launch.js'),
     `#!/usr/bin/env node

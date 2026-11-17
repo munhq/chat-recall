@@ -1,12 +1,8 @@
-# After a release: attach the Claude Desktop bundle to the GitHub Release.
+# After a release: build the Claude Desktop bundle (.mcpb) and attach it to the GitHub Release.
 #
-# The Smithery listing is not updated here. On 2026-11-17 its API answered every update with
-# `HTTP 403: Updating servers has been removed. Contact support@smithery.ai.` The listing is entered
-# by hand at smithery.ai/new (see smithery.yaml).
-#
-# The .mcpb bundle is what Claude Desktop installs in one click, so it goes on the GitHub Release.
+# The .mcpb bundle is what Claude Desktop installs in one click.
 # The tool card in it is captured from the tagged source that release-npm published.
-name: smithery
+name: mcpb-bundle
 
 # AFTER release-npm, as mcp-registry does.
 #
@@ -23,7 +19,7 @@ on:
 
 permissions:
   contents: write   # `gh release upload` of the bundle. `read` was enough while
-                    # this workflow only talked to Smithery.
+                    # this workflow only built the bundle.
 
 jobs:
   publish:
@@ -80,10 +76,10 @@ jobs:
           CHAT_RECALL_NO_DAEMON: '1'
         run: |
           mkdir -p "$CHAT_RECALL_CLAUDE_HOME/projects"
-          node scripts/smithery/capture-card.mjs --out card.json -- node packages/cli/dist/mcp.js
+          node scripts/mcpb/capture-card.mjs --out card.json -- node packages/cli/dist/mcp.js
 
       - name: Build the bundle
-        run: node scripts/smithery/build-mcpb.mjs --out "chat-recall-$VERSION.mcpb" --card card.json
+        run: node scripts/mcpb/build-mcpb.mjs --out "chat-recall-$VERSION.mcpb" --card card.json
 
       # release-npm cuts the Release object in its last step, so it exists here.
       - name: Attach the bundle to the GitHub Release
