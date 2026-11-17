@@ -83,6 +83,10 @@ export async function startConformantServer(opts: ConformantServerOptions = {}):
     void (async () => {
       const path = (req.url || '').split('?')[0];
       const body = await readBody(req);
+      // Every reply closes its connection. A client that sends its next request on a connection the
+      // server is closing gets ECONNRESET (seen on the macOS and Windows runners), and the test then
+      // reads a reset in place of the reply.
+      res.setHeader('connection', 'close');
       const record: RecordedRequest = { method: req.method || 'GET', path, body, at: Date.now() };
       requests.push(record);
 
