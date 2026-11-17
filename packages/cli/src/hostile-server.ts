@@ -57,6 +57,10 @@ export async function startHostileServer(mode: HostileMode): Promise<HostileServ
     // Read the whole request before the reply. A socket closed with unread
     // request bytes is reset on Windows, so a sync POST got ECONNRESET there in
     // place of the reply this server sends.
+    // Every reply closes its connection. A client that sends a second request on a connection the
+    // server is closing gets ECONNRESET on Windows (a sync of the CLI asks for the list of sessions
+    // and the rules one after the other), and the test then reads a reset in place of the reply.
+    res.setHeader('connection', 'close');
     req.resume();
     req.on('end', () => reply(req, res));
   });
