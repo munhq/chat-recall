@@ -61,7 +61,14 @@ type Fetcher = (url: string, init?: RequestInit, ms?: number) => Promise<Respons
 export async function fetchServerSessions(server: string, token: string, fetcher: Fetcher = fetchWithTimeout): Promise<ServerSessionList> {
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
-  const res = await fetcher(`${server}/api/status/sessions`, { headers }, 120_000);
+  // A connection that sat idle while the caller worked (the deep verify computes for an hour between
+  // its two requests) is reset by the server or a proxy, and the request fails with "fetch failed".
+  // The request is a read, so it is sent again on a new connection.
+  let res!: Response;
+  for (let attempt = 1; ; attempt++) {
+    try { res = await fetcher(`${server}/api/status/sessions`, { headers }, 120_000); break; }
+    catch (err) { if (attempt >= 3) throw err; }
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status} from /api/status/sessions`);
   const body = await res.json() as { sessions?: Array<{ id?: unknown }>; deleted?: unknown[]; empty?: unknown[] };
   if (!Array.isArray(body.sessions)) throw new Error('/api/status/sessions did not return a session list');

@@ -15,6 +15,34 @@ const list = (ids: string[], deleted: string[] = []): ServerSessionList => ({ id
 
 beforeEach(() => _resetReconcileClockForTests());
 
+describe('fetchServerSessions', () => {
+  const okBody = { sessions: [{ id: 'a' }, { id: 'b' }], deleted: ['c'] };
+  const ok = () => new Response(JSON.stringify(okBody), { status: 200 });
+
+  test('sends the request again when the connection fails', async () => {
+    let calls = 0;
+    const fetcher = async () => { calls++; if (calls < 3) throw new TypeError('fetch failed'); return ok(); };
+    const got = await fetchServerSessions('http://server.example', 'tok', fetcher as never);
+    expect(calls).toBe(3);
+    expect([...got.ids]).toEqual(['a', 'b']);
+    expect([...got.deleted]).toEqual(['c']);
+  });
+
+  test('gives the error after three failed attempts', async () => {
+    let calls = 0;
+    const fetcher = async () => { calls++; throw new TypeError('fetch failed'); };
+    await expect(fetchServerSessions('http://server.example', 'tok', fetcher as never)).rejects.toThrow('fetch failed');
+    expect(calls).toBe(3);
+  });
+
+  test('does not send again an answer of the server', async () => {
+    let calls = 0;
+    const fetcher = async () => { calls++; return new Response('no', { status: 500 }); };
+    await expect(fetchServerSessions('http://server.example', 'tok', fetcher as never)).rejects.toThrow('HTTP 500');
+    expect(calls).toBe(1);
+  });
+});
+
 describe('planReconcile', () => {
   test('a session whose build gave nothing to ship is not owed to the server', () => {
     const ledger = new Map<string, { m: number; E?: 1 }>([['stub', { m: 500, E: 1 }], ['real', { m: 100 }]]);

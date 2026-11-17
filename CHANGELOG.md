@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.72] — 2026-11-17
+### Fixed
+- **The list of server sessions is requested again when the connection fails.** The deep verify requests the sizes of the archives at its start and the list of sessions an hour later, after it measured 10,892 sessions. The second request went out on a connection that had sat idle for an hour and failed with "fetch failed", so the check for sessions missing from the server did not run and the command ended with exit code 1. The request is a read; it is now sent again on a new connection, three attempts in all (`ledger-reconcile.test.ts`).
 ## [0.7.71] — 2026-11-17
 ### Fixed
 - **A session that its parser reads as no conversation is not counted as missing from the server.** The parsers of OpenCode and of the tools with an event stream (Hermes) return nothing for a session they located and found no message in. The walk marked only a session that a parser returned empty, so the 112 Hermes sessions of this kind stayed in the list of the ledger check after every start of the daemon. The walk now marks a session that a backend locates and a parser returns nothing for (`sync-empty-verdict.test.ts`).
