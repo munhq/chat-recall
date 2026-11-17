@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.75] — 2026-11-17
+### Fixed
+- **`chat-recall verify --deep` installs the rule pack of the server again when the first request failed.** The full check of 0.7.74 ran for 2 hours and 20 minutes and listed `6ec051d9` as 764 bytes short, because the pack was fetched after the first pass on a connection that had been idle for hours, the fetch swallows a failed request, and the second pass then measured with the compiled-in rules. The check now asks for the pack up to three times, stops when it is installed, and prints a warning when it is not. The same check on this session with the real server gives complete (`verify-deep.test.ts`).
 ## [0.7.74] — 2026-11-17
 ### Fixed
 - **`chat-recall verify --deep` takes about as long as before 0.7.70.** 0.7.70 made the check redact every session with the rule pack of the server, which has many more rules than the compiled-in set. At 80 minutes the check had read 4.8 GB of the 10.7 GB of sessions on disk and was on course for about three hours, where the earlier runs took 65 minutes. The check now measures every session with the compiled-in rules, installs the pack once, and measures again only the sessions that show a deficit (`verify-deep.test.ts`).

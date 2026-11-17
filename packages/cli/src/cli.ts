@@ -2011,7 +2011,7 @@ program
     const { verifyAgainstServer, verifyTargets } = await import('./verify-deep.js');
     const { getBackend } = await import('@chat-recall/engine/core/tool-backend.js');
     const { gzipContainer, redactContainer } = await import('@chat-recall/engine/transcript/index.js');
-    const { redactSecrets } = await import('@chat-recall/engine/core/secret-redactor.js');
+    const { redactSecrets, serverRulePackVersion } = await import('@chat-recall/engine/core/secret-redactor.js');
     const { fetchWithTimeout } = await import('./http.js');
     const { forceFullResync } = await import('./verify-repair.js');
 
@@ -2073,7 +2073,15 @@ program
       // The sync redacts with the rule pack of the server, so a session with a deficit is measured
       // again with it: with the compiled-in rules alone a session that the pack redacts looked 764
       // bytes larger than its archive on the server.
-      beforeRecheck: async (server: string, token: string) => { await fetchTenantSecurityConfig({ serverUrl: server, token } as Credentials); },
+      beforeRecheck: async (server: string, token: string) => {
+        // The fetch of the pack swallows a failed request, and the first request of this command was
+        // made hours ago, so a pack that did not install is asked for again on a new connection.
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          await fetchTenantSecurityConfig({ serverUrl: server, token } as Credentials);
+          if (serverRulePackVersion()) return;
+        }
+        console.error(chalk.yellow('  the rule pack of the server could not be installed: a deficit may be a difference of redaction'));
+      },
       serverSizes: async (server: string, token: string) => {
         const headers: Record<string, string> = {};
         if (token) headers.authorization = `Bearer ${token}`;
