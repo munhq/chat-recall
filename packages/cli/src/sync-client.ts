@@ -2553,10 +2553,15 @@ export interface UnchangedConversation { unchanged: true; srcHash: string; }
  *  shadow merge, parse, redacted envelope, joined raw text, and a copy in the
  *  scan worker). Measured on a 42 MB container: 840 MB peak RSS in full, 218 MB
  *  in chunks, for the same 2,392 messages, under a unit with MemoryHigh=1G and
- *  a resting RSS near 400 MB. At about 18 bytes per container byte, 24 MB
- *  stays under the limit. */
+ *  a resting RSS near 400 MB.
+ *
+ *  Measured on 2026-11-17 for a session of 18.6 MB under a heap cap of 640 MB: the build in memory
+ *  peaks 408 MB above the start of the process (about 22 bytes per byte), and the chunked build 80 MB.
+ *  A session over the ceiling keeps its raw archive: it is streamed from the files of the session
+ *  (Claude) or from the rows of the dump (a tool with a database). At 12 MB the build in memory
+ *  stays near 270 MB above the start. */
 export const FULL_BUILD_MAX_BYTES =
-  Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '24', 10)) * 1024 * 1024;
+  Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '12', 10)) * 1024 * 1024;
 
 /** Bytes of transcript an export actually carries.
  *
@@ -3107,8 +3112,8 @@ export async function buildConversationSync(
         source = { kind: 'memory', files: container.files };
         archiveMtime = container.mtime;
         archiveTool = container.tool;
-      } else if (oversized) {
-        source = diskArchiveSource(ref);
+      } else if (oversized || exportOverCeiling) {
+        source = streamedArchiveSource(ref);
       }
       if (source) archive = { file: await writeArchiveFile(source, { tool: archiveTool, mtime: archiveMtime }, redact), tool: archiveTool, mtime: archiveMtime };
     } catch (err) {
@@ -3157,6 +3162,15 @@ export async function buildConversationSync(
  * only, and only when each logical file has one copy: copies in two profile
  * homes must be unioned record by record, which needs them in memory.
  */
+function streamedArchiveSource(ref: SessionRef): ArchiveSource | null {
+  const disk = diskArchiveSource(ref);
+  if (disk) return disk;
+  // A tool with a database gives its dump one row at a time, in the order and with the name of the export.
+  const backend = getBackendForId(ref.prefixedId);
+  if (ref.toolId === 'claude' || !backend?.iterateRawSessionLines) return null;
+  return { kind: 'lines', files: [{ name: `${ref.rawId}.dump.jsonl`, lines: () => backend.iterateRawSessionLines!(ref.prefixedId) }] };
+}
+
 function diskArchiveSource(ref: SessionRef): ArchiveSource | null {
   if (ref.toolId !== 'claude') return null;
   const groups = resolveSessionContentGroups(ref.rawId);

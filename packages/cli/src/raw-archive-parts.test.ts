@@ -55,6 +55,22 @@ describe('writeArchiveFile', () => {
     expect(JSON.parse(gunzipSync(readFileSync(out.path)).toString('utf-8'))).toEqual(inline(files));
   });
 
+  test('from rows: the same container, one row at a time', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-parts-')); dirs.push(dir);
+    const files = texts();
+    let rowsRead = 0;
+    const sources = files.map((f) => ({
+      name: f.name,
+      // The rows of a database dump: a generator, so no row is held after it is written.
+      lines: function* () { for (const line of f.text.split(/(?<=\n)/)) { rowsRead++; yield line; } },
+    }));
+    const out = await writeArchiveFile({ kind: 'lines', files: sources }, { tool: 'opencode', mtime: 1234 }, redact, dir);
+    const json = gunzipSync(readFileSync(out.path)).toString('utf-8');
+    expect(JSON.parse(json)).toEqual({ ...inline(files), tool: 'opencode' });
+    expect(rowsRead).toBeGreaterThan(files.length);
+    for (const v of [SECRET, KEY, ENV_VALUE]) expect(json).not.toContain(v);
+  });
+
   test('a line longer than a read chunk stays one line', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cr-parts-')); dirs.push(dir);
     const long = JSON.stringify({ type: 'file-history-snapshot', blob: 'x'.repeat(3 * 1024 * 1024) }) + '\n';

@@ -37,8 +37,8 @@ describe('exportByteLength', () => {
 });
 
 describe('the ceiling is decided on the export, before the container exists', () => {
-  test('the default ceiling is 24 MB and the environment can raise it', () => {
-    expect(FULL_BUILD_MAX_BYTES).toBe(24 * 1024 * 1024);
+  test('the default ceiling is 12 MB and the environment can raise it', () => {
+    expect(FULL_BUILD_MAX_BYTES).toBe(12 * 1024 * 1024);
   });
 
   test('the export is measured before buildRawContainer is called', () => {

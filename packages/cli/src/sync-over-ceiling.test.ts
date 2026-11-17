@@ -113,6 +113,14 @@ describe('an export over the ceiling', () => {
 
     expect(whole.built.conv.raw_b64).toBeTruthy();
     expect(over.built.conv.raw_b64).toBeUndefined();
+    // The archive of the session over the ceiling is streamed from its files, and holds the same
+    // redacted files as the inline archive of the build under the ceiling.
+    expect(over.built.archive, 'a session over the ceiling has a streamed archive').toBeDefined();
+    const { gunzipSync } = await import('node:zlib');
+    const { readFileSync } = await import('node:fs');
+    const inlineFiles = JSON.parse(gunzipSync(Buffer.from(whole.built.conv.raw_b64, 'base64')).toString('utf-8')).files;
+    const streamedFiles = JSON.parse(gunzipSync(readFileSync(over.built.archive.file.path)).toString('utf-8')).files;
+    expect(streamedFiles).toEqual(inlineFiles);
 
     const rule = (f: any) => `${f.rule}@${f.line}`;
     const wholeFindings = whole.built.findings.map(rule).sort();

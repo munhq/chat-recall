@@ -21,7 +21,9 @@ import { redactJsonLine } from '@chat-recall/engine/transcript/index.js';
 
 export type ArchiveSource =
   | { kind: 'memory'; files: Array<{ name: string; text: string }> }
-  | { kind: 'disk'; files: Array<{ name: string; path: string }> };
+  | { kind: 'disk'; files: Array<{ name: string; path: string }> }
+  /** A tool that keeps its sessions in a database: `lines` gives the JSONL lines of one file, one row at a time, each with its newline. */
+  | { kind: 'lines'; files: Array<{ name: string; lines: () => Iterable<string> }> };
 
 export interface ArchiveFile {
   path: string;
@@ -89,10 +91,12 @@ export async function writeArchiveFile(
     for (const [i, f] of source.files.entries()) {
       await write(`${i ? ',' : ''}{"name":${JSON.stringify(f.name)},"text":"`);
       const whole = () => (source.kind === 'memory' ? (f as { text: string }).text : readFileSync((f as { path: string }).path, 'utf-8'));
-      if (!f.name.endsWith('.jsonl')) {
+      if (source.kind !== 'lines' && !f.name.endsWith('.jsonl')) {
         await write(escapeJson(redact(whole())));
       } else {
-        const lines = source.kind === 'memory' ? textLines((f as { text: string }).text) : fileLines((f as { path: string }).path);
+        const lines = source.kind === 'memory'
+          ? textLines((f as { text: string }).text)
+          : source.kind === 'disk' ? fileLines((f as { path: string }).path) : (f as { lines: () => Iterable<string> }).lines();
         for await (const line of lines) {
           const nl = line.endsWith('\n');
           const body = nl ? line.slice(0, -1) : line;

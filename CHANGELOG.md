@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.76] — 2026-11-17
+### Changed
+- **The build ceiling is 12 MB, and a session over it keeps its raw archive.** A session of 18.6 MB built in memory peaked 408 MB above the start of the process under a heap cap of 640 MB; built in chunks it peaked 80 MB above. The ceiling `CHAT_RECALL_FULL_BUILD_MAX_MB` was 24 and is now 12. The raw archive of a session over the ceiling is streamed from its files (every file of a Claude session, subagents included) or, for OpenCode, from the rows of the dump one at a time; it is the same redacted container as the inline archive (the 49 MB OpenCode session gives 50,786,696 characters in both). A Claude session whose main file is over the ceiling ships its first 8 MB with the full sync and the rest as appends on the next ticks (`raw-archive-parts.test.ts`, `sync-over-ceiling.test.ts`, `sync-build-bound.test.ts`).
 ## [0.7.75] — 2026-11-17
 ### Fixed
 - **`chat-recall verify --deep` installs the rule pack of the server again when the first request failed.** The full check of 0.7.74 ran for 2 hours and 20 minutes and listed `6ec051d9` as 764 bytes short, because the pack was fetched after the first pass on a connection that had been idle for hours, the fetch swallows a failed request, and the second pass then measured with the compiled-in rules. The check now asks for the pack up to three times, stops when it is installed, and prints a warning when it is not. The same check on this session with the real server gives complete (`verify-deep.test.ts`).
