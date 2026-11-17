@@ -106,6 +106,16 @@ function describeProbeError(err: unknown): string {
  * this. A helper rather than a flag at each site, because the next failure path
  * added will otherwise reintroduce the exit.
  */
+/**
+ * Milliseconds of the first wait between the probes of the server in a login: the waits are one
+ * unit, then two. A test sets `CHAT_RECALL_LOGIN_RETRY_UNIT_MS` to a few milliseconds, because the
+ * production waits of three seconds were paid by every test that logs in to an unreachable server.
+ */
+function loginRetryUnitMs(): number {
+  const n = Number(process.env.CHAT_RECALL_LOGIN_RETRY_UNIT_MS);
+  return Number.isFinite(n) && n >= 0 && process.env.CHAT_RECALL_LOGIN_RETRY_UNIT_MS !== undefined ? n : 1000;
+}
+
 function failLogin(opts: { fromInit?: boolean }, message: string): never {
   if (opts.fromInit) throw new Error(message);
   console.error(chalk.red('login failed:'), message);
@@ -3753,7 +3763,7 @@ async function runLogin(
         } else {
           capsError = probeAdvice(probe, base);
         }
-        if (!authProvider && attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1000));
+        if (!authProvider && attempt < 3) await new Promise((r) => setTimeout(r, attempt * loginRetryUnitMs()));
       }
     }
     if (!authProvider && !issuer) {

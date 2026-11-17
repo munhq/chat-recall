@@ -97,11 +97,18 @@ async function build(ceilingMb: string) {
 }
 
 describe('an export over the ceiling', () => {
-  test('finds the secret of a subagent file with the line number the container scan gives, and builds no raw archive', async () => {
+  // The session is 10 MB and a build of it takes about a second, so the two builds are made once for the tests.
+  let builds: Promise<{ whole: Awaited<ReturnType<typeof build>>; over: Awaited<ReturnType<typeof build>> }> | undefined;
+  const bothBuilds = () => (builds ??= (async () => {
     writeSession();
     const whole = await build('64');            // under the ceiling: the container path
     vi.resetModules();
     const over = await build('8');              // over the ceiling: file by file
+    return { whole, over };
+  })());
+
+  test('finds the secret of a subagent file with the line number the container scan gives, and builds no raw archive', async () => {
+    const { whole, over } = await bothBuilds();
     expect(over.ceiling).toBe(8 * 1024 * 1024);
 
     expect(whole.built.conv.raw_b64).toBeTruthy();
@@ -115,10 +122,7 @@ describe('an export over the ceiling', () => {
   });
 
   test('delivers the same messages as the build under the ceiling', async () => {
-    writeSession();
-    const whole = await build('64');
-    vi.resetModules();
-    const over = await build('8');
+    const { whole, over } = await bothBuilds();
     expect(over.built.conv.envelope.messages.length).toBe(whole.built.conv.envelope.messages.length);
     expect(over.built.conv.envelope.subagents.length).toBe(whole.built.conv.envelope.subagents.length);
     // Every message, tool call and cut payload, as the build under the ceiling sends them.
