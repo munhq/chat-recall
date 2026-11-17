@@ -2060,6 +2060,10 @@ program
           return gzipContainer(redacted).size;
         } catch { return null; }
       },
+      // The sync redacts with the rule pack of the server, so a session with a deficit is measured
+      // again with it: with the compiled-in rules alone a session that the pack redacts looked 764
+      // bytes larger than its archive on the server.
+      beforeRecheck: async (server: string, token: string) => { await fetchTenantSecurityConfig({ serverUrl: server, token } as Credentials); },
       serverSizes: async (server: string, token: string) => {
         const headers: Record<string, string> = {};
         if (token) headers.authorization = `Bearer ${token}`;
@@ -2075,10 +2079,6 @@ program
     for (const t of targets) {
       let report;
       try {
-        // The sync redacts with the rule pack of the server, so the deep check measures with it:
-        // with the compiled-in rules alone a session that the pack redacts looked 764 bytes larger
-        // than its archive on the server.
-        await fetchTenantSecurityConfig(t as Credentials);
         report = await verifyAgainstServer(t.serverUrl, t.token, sinceMs, deps);
       } catch (e) {
         console.error(chalk.red(`${t.serverUrl}: ${e instanceof Error ? e.message : e}`));

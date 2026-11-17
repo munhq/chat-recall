@@ -168,3 +168,56 @@ describe('the real 7adc748c shape', () => {
     expect(r.stranded[0].deficit).toBe(7_940_877 - 5_965_361);
   });
 });
+
+describe('the second pass with the rule pack of the server', () => {
+  type Row = { id: string; local: number; disk: number; server?: number };
+
+  /** Deps whose local size drops by `packSaves` for each session once the pack is installed. */
+  function withPack(rows: Row[], packSaves: Record<string, number>) {
+    const calls = { measured: [] as string[], installed: 0 };
+    let installed = false;
+    const base = makeDeps(rows);
+    return {
+      calls,
+      deps: {
+        ...base,
+        localContainerSize: (id: string) => {
+          calls.measured.push(`${id}:${installed ? 'pack' : 'builtin'}`);
+          const r = rows.find((x) => x.id === id);
+          return r ? r.local - (installed ? (packSaves[id] ?? 0) : 0) : null;
+        },
+        beforeRecheck: async () => { installed = true; calls.installed++; },
+      },
+    };
+  }
+
+  test('a session that the first pass finds complete is not measured again, and the pack is installed once', async () => {
+    const { calls, deps } = withPack([
+      { id: 'ok', local: 5000, disk: 5000, server: 5000 },
+      { id: 'short1', local: 9000, disk: 9000, server: 5000 },
+      { id: 'short2', local: 9500, disk: 9500, server: 5000 },
+    ], {});
+    const r = await run(deps as never);
+    expect(calls.installed).toBe(1);
+    expect(calls.measured.filter((m) => m.startsWith('ok:'))).toEqual(['ok:builtin']);
+    expect(calls.measured.filter((m) => m.endsWith(':pack')).sort()).toEqual(['short1:pack', 'short2:pack']);
+    expect(r.checked).toBe(3);
+  });
+
+  test('a deficit that the pack closes is complete, and one that it does not close is reported', async () => {
+    await seedLedger([{ id: 'redacted', cursor: 9000 }, { id: 'lost', cursor: 9000 }]);
+    const { deps } = withPack([
+      { id: 'redacted', local: 6000, disk: 9000, server: 5000 },
+      { id: 'lost', local: 9000, disk: 9000, server: 5000 },
+    ], { redacted: 1500 });
+    const r = await run(deps as never);
+    expect(r.complete).toBe(1);
+    expect(r.stranded.map((f) => f.sessionId)).toEqual(['lost']);
+  });
+
+  test('the pack is not installed when every session is complete', async () => {
+    const { calls, deps } = withPack([{ id: 'ok', local: 5000, disk: 5000, server: 5000 }], {});
+    await run(deps as never);
+    expect(calls.installed).toBe(0);
+  });
+});

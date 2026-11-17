@@ -2,6 +2,9 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.7.74] — 2026-11-17
+### Fixed
+- **`chat-recall verify --deep` takes about as long as before 0.7.70.** 0.7.70 made the check redact every session with the rule pack of the server, which has many more rules than the compiled-in set. At 80 minutes the check had read 4.8 GB of the 10.7 GB of sessions on disk and was on course for about three hours, where the earlier runs took 65 minutes. The check now measures every session with the compiled-in rules, installs the pack once, and measures again only the sessions that show a deficit (`verify-deep.test.ts`).
 ## [0.7.73] — 2026-11-17
 ### Fixed
 - **The text of the messages of a session over the build ceiling is bounded.** The cut of 0.7.69 bounded the tool inputs, tool results and thinking of a transcript, and the text of the messages stayed whole, so a session of pasted files and dumped logs could still hold as much text as it had on disk. A message now keeps up to 200,000 characters, a transcript keeps up to 96 million characters of message text, and the messages after that keep 2,000 characters each. A message that a person writes or reads is far below the cap, and a session under the build ceiling is not cut (`claude-stream.test.ts`).

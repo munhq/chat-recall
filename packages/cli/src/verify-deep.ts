@@ -82,6 +82,13 @@ interface Deps {
   localContainerSize(rawId: string): number | null;
   fileSize(rawId: string): number;
   serverSizes(server: string, token: string): Promise<Map<string, number>>;
+  /**
+   * Called once, before the sessions with a deficit are measured again. The sync redacts with the rule
+   * pack of the server; the pack has many more rules than the compiled-in set, so measuring every
+   * session with it took about three times as long. The first pass measures with the compiled-in
+   * rules and this call installs the pack for the second pass over the sessions with a deficit.
+   */
+  beforeRecheck?(server: string, token: string): Promise<void>;
 }
 
 /**
@@ -102,6 +109,7 @@ export async function verifyAgainstServer(
     server, checked: 0, complete: 0, missingArchive: 0, pending: [], stranded: [],
   };
 
+  const candidates: Array<{ s: ReturnType<Deps['listSessions']>[number]; srv: number; local: number }> = [];
   for (const s of deps.listSessions(sinceMs)) {
     const srv = serverSize.get(s.rawId);
     if (srv === undefined) { report.missingArchive++; continue; }
@@ -110,6 +118,21 @@ export async function verifyAgainstServer(
     if (local === null) continue;              // unreadable/unparseable — not a finding
     report.checked++;
 
+    const deficit = local - srv;
+    if (deficit <= TOLERANCE_BYTES) { report.complete++; continue; }
+    candidates.push({ s, srv, local });
+  }
+
+  // The second pass: the sessions with a deficit, measured with the rule pack of the server.
+  if (candidates.length > 0 && deps.beforeRecheck) {
+    await deps.beforeRecheck(server, token);
+    for (const c of candidates) {
+      const again = deps.localContainerSize(c.s.rawId);
+      if (again !== null) c.local = again;
+    }
+  }
+
+  for (const { s, srv, local } of candidates) {
     const deficit = local - srv;
     if (deficit <= TOLERANCE_BYTES) { report.complete++; continue; }
 
