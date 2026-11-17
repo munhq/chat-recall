@@ -20,10 +20,31 @@ SOURCES = glob(["**", "**/.*", "**/.*/**"], exclude = ["**/.git/**", "**/.desk-w
 
 # vitest of each package in two shards, as the checks `packages/<name>:test-<n>of2` ran. The tests of the cli read the public
 # plugin files, which `build:public` writes first.
+# A shard reads its own package, the packages it imports (the tests resolve `@chat-recall/engine` to its source), the root
+# configuration of vitest and the files at the root that the tests read. A change in another package does not change its inputs,
+# so the cache serves the shard (AGENTS.md, "Keep a check under 60 s", rule 3).
+# The tsconfig and the package.json of every package: the root tsconfig references them all, and vitest reads them.
+ROOT_FILES = glob(["*.json", "*.ts", "*.md", ".npmrc", "packages/*/tsconfig*.json", "packages/*/package.json", "packages/server/client/tsconfig*.json"], exclude = ["package-lock.json"]) + ["package-lock.json"]
+SHARED_DIR_NAMES = ["plugin", "skills", "hooks", "scripts", ".claude-plugin", ".cursor-plugin", "chatgpt-plugin", "docs", "docker"]
+SHARED_DIRS = glob([d + "/**" for d in SHARED_DIR_NAMES] + [d + "/**/.*" for d in SHARED_DIR_NAMES] + [d + "/.*/**" for d in SHARED_DIR_NAMES] + [d + "/.*" for d in SHARED_DIR_NAMES])
+PACKAGE_EXCLUDE = ["**/node_modules/**", "**/dist/**", "**/*.tsbuildinfo"]
+
+ENGINE_FILES = glob(["packages/engine/**", "packages/engine/.*", "packages/engine/**/.*"], exclude = PACKAGE_EXCLUDE)
+CLI_FILES = glob(["packages/cli/**", "packages/cli/.*", "packages/cli/**/.*"], exclude = PACKAGE_EXCLUDE)
+SERVER_FILES = glob(["packages/server/**", "packages/server/.*", "packages/server/**/.*"], exclude = PACKAGE_EXCLUDE)
+
 CHECKS = vitest_shards(
-    folders = ["packages/engine", "packages/cli", "packages/server"],
-    srcs = SOURCES,
+    folders = ["packages/engine"],
+    srcs = ROOT_FILES + SHARED_DIRS + ENGINE_FILES,
+)
+CHECKS += vitest_shards(
+    folders = ["packages/cli"],
+    srcs = ROOT_FILES + SHARED_DIRS + CLI_FILES + ENGINE_FILES,
     before = {"packages/cli": "npm run build:public && "},
+)
+CHECKS += vitest_shards(
+    folders = ["packages/server"],
+    srcs = ROOT_FILES + SHARED_DIRS + SERVER_FILES + ENGINE_FILES + CLI_FILES,
 )
 
 # node --check of every script of the packages, as the checks `packages/<name>:syntax` ran.
