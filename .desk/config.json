@@ -211,6 +211,8 @@
   "budget": {
     "mode": "refuse",
     "checkSeconds": 60,
-    "checks": {}
+    "checks": {
+      "cloud": 150
+    }
   }
 }
