@@ -5,16 +5,42 @@ load("@desk_node//:defs.bzl", "action", "node_action", "node_modules", "vitest_s
 
 WORKSPACES = ["packages/engine", "packages/cli", "packages/server"]
 
-# The three workspaces from the lock file only. The private @munhq packages need the registry token, so the install runs
-# on the machine of the build with NODE_AUTH_TOKEN of its environment: the token is no part of any action or key.
-node_modules(
-    name = "node_modules",
-    srcs = ["package.json", "package-lock.json", ".npmrc"] + [w + "/package.json" for w in WORKSPACES],
-    workspaces = WORKSPACES,
-    private_packages = True,
-    install = "npm ci --no-audit --no-fund --loglevel=error",
-    toolchain = {"DESK_TOOLCHAIN": read_root_config("desk", "toolchain", "")},
+# The manifests of the install, with the version of each package set to 0.0.0. A release changes the version in
+# packages/cli/package.json and nothing that npm ci reads, so the install actions below take their key from these copies and
+# a release leaves the installed packages in the cache (issue #35).
+MANIFESTS = ["package.json"] + [w + "/package.json" for w in WORKSPACES]
+action(
+    name = "manifests",
+    srcs = MANIFESTS,
+    out = "manifests",
+    directory = True,
+    priority = 6,
+    cmd = "O=`realpath -m $OUT` && mkdir -p $O && cd $SRCDIR && for f in " + " ".join(MANIFESTS) + "; do mkdir -p $O/`dirname $f` && sed -E '0,/\"version\": *\"[^\"]*\"/s//\"version\": \"0.0.0\"/' $f > $O/$f; done",
 )
+
+# The install of the three workspaces from the lock file only (node_modules), and the install without the dev dependencies
+# that the server runs with (prod_modules). Each runs as the macro node_modules of the workflow runs it, on the normalized
+# manifests. The private @munhq packages need the registry token, so the install runs on the machine of the build
+# with NODE_AUTH_TOKEN of its environment: the token is no part of any action or key.
+INSTALLS = {
+    "node_modules": "npm ci --no-audit --no-fund --loglevel=error",
+    "prod_modules": "npm ci --no-audit --no-fund --loglevel=error && npm prune --omit=dev --no-audit --no-fund --loglevel=error",
+}
+
+[
+    action(
+        name = name,
+        srcs = ["package-lock.json", ".npmrc"],
+        deps = {"manifests": ":manifests"},
+        out = "install",
+        directory = True,
+        priority = 5,
+        env = {"DESK_TOOLCHAIN": read_root_config("desk", "toolchain", "")},
+        local_only = True,
+        cmd = "O=`realpath -m $OUT` && M=`realpath $DEP_manifests` && B=`mktemp -d -p ${DESK_ACTION_TMP:-/tmp}` && (cd $SRCDIR && cp -L --parents package-lock.json .npmrc $B/) && (cd $M && cp -R --parents " + " ".join(MANIFESTS) + " $B/) && cd $B && " + install + " && mkdir -p $O && mv node_modules $O/ && for w in " + " ".join(WORKSPACES) + "; do if [ -d $w/node_modules ]; then mkdir -p $O/$w && mv $w/node_modules $O/$w/; fi; done",
+    )
+    for name, install in INSTALLS.items()
+]
 
 SOURCES = glob(["**", "**/.*", "**/.*/**"], exclude = ["**/.git/**", "**/.desk-work/**", ".desk/**", "node_modules/**", "packages/*/node_modules/**", "packages/server/client/node_modules/**", "buck-out/**", ".buckconfig*", "BUCK", "coverage/**"])
 
@@ -64,16 +90,6 @@ ENGINE = glob(["packages/engine/**", "packages/engine/.*", "packages/engine/**/.
 SERVER = glob(["packages/server/**", "packages/server/.*", "packages/server/**/.*"], exclude = ["**/*.tsbuildinfo", "packages/server/node_modules/**", "packages/server/dist/**", "packages/server/client/**"])
 CLI = glob(["packages/cli/**", "packages/cli/.*", "packages/cli/**/.*"], exclude = ["**/*.tsbuildinfo", "packages/cli/node_modules/**", "packages/cli/dist/**"])
 CLIENT = glob(["packages/server/client/**", "packages/server/client/.*", "packages/server/client/**/.*"], exclude = ["**/*.tsbuildinfo", "packages/server/client/node_modules/**", "packages/server/client/dist/**"])
-
-# The packages that the server runs with: the install without the dev dependencies.
-node_modules(
-    name = "prod_modules",
-    srcs = ["package.json", "package-lock.json", ".npmrc"] + [w + "/package.json" for w in WORKSPACES],
-    workspaces = WORKSPACES,
-    private_packages = True,
-    install = "npm ci --no-audit --no-fund --loglevel=error && npm prune --omit=dev --no-audit --no-fund --loglevel=error",
-    toolchain = {"DESK_TOOLCHAIN": read_root_config("desk", "toolchain", "")},
-)
 
 # The packages of the web client, which has an install of its own.
 node_modules(
