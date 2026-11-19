@@ -36,6 +36,7 @@ import { readFileSync } from 'node:fs';
 import { reportClientEvent } from './client-events.js';
 import { updateNotice } from './update-notice.js';
 import { beginChannel } from './channel.js';
+import { answerWithin, sharedRun, INDEX_REPLY_MS, INDEX_RUNNING_REPLY } from './index-reply.js';
 
 // Wire the host hooks BEFORE the transport accepts a call, so no early request
 // can see a half-configured surface.
@@ -158,7 +159,7 @@ function startLoginChild(server: string): Promise<LoginPrompt> {
   });
 }
 
-function runIndexChild(force: boolean): Promise<string> {
+function spawnIndexChild(force: boolean): Promise<string> {
   return new Promise((resolve) => {
     let cliPath: string;
     try { cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)); }
@@ -198,6 +199,13 @@ function runIndexChild(force: boolean): Promise<string> {
       }
     });
   });
+}
+
+const sharedIndexRun = sharedRun((force: boolean) => spawnIndexChild(force));
+
+/** The `recall_index` runner: it answers within INDEX_REPLY_MS and the index continues after that. */
+function runIndexChild(force: boolean): Promise<string> {
+  return answerWithin(sharedIndexRun(force), INDEX_REPLY_MS, INDEX_RUNNING_REPLY);
 }
 
 const SYNC_TICK_MS = 3 * 60_000;
