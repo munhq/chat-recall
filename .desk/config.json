@@ -212,7 +212,9 @@
     "mode": "refuse",
     "checkSeconds": 60,
     "checks": {
-      "cloud": 150
+      "cloud": 150,
+      "root": 150,
+      "selfhost": 150
     }
   }
 }
