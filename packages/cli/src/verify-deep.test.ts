@@ -232,3 +232,34 @@ describe('the deep check keeps the index of the session files', () => {
     expect(source).toMatch(/withSessionScanScope\(\(\) => verifyAgainstServer\(/);
   });
 });
+
+describe('a session that took appends and has not settled', () => {
+  const HOUR = 3_600_000;
+
+  /** One session whose archive is 3000 bytes behind, with a ledger cursor at the end of the file and a full-covered offset behind it. */
+  async function seedAppended(F: number) {
+    const m = await import('./sync-ledger.js');
+    m._resetLedgerCacheForTests();
+    m.markSynced(SRV, [{ id: 'appended', mtime: 1000, offset: 9000, size: 9000, acked: true, full: true }]);
+    // The full-covered offset is the file size at the last full sync.
+    const rows = m.getLedgerData(SRV) as Record<string, Record<string, unknown>>;
+    rows.appended.F = F;
+    m.persistLedgerData?.(SRV, rows as never);
+  }
+
+  test('is pending, not stranded, while it is quiet for less than the settle time', async () => {
+    await seedAppended(5000);
+    const deps = makeDeps([{ id: 'appended', local: 12_000, disk: 9000, server: 8000 }]);
+    // The file was last written two hours and a half minus ten minutes ago: quiet, but not for 2 hours.
+    const r = await run(deps, 1000 + 2 * HOUR - 10 * 60_000);
+    expect(r.stranded).toHaveLength(0);
+    expect(r.pending.map((f) => f.sessionId)).toEqual(['appended']);
+  });
+
+  test('is stranded when it has been quiet for the settle time and still has no full sync', async () => {
+    await seedAppended(5000);
+    const deps = makeDeps([{ id: 'appended', local: 12_000, disk: 9000, server: 8000 }]);
+    const r = await run(deps, 1000 + 2 * HOUR + 60_000);
+    expect(r.stranded.map((f) => f.sessionId)).toEqual(['appended']);
+  });
+});

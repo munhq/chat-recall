@@ -29,7 +29,7 @@
  */
 
 import { loadAllCredentials } from './sync-client.js';
-import { getSyncedRows } from './sync-ledger.js';
+import { getSyncedRows, fullCoveredOffset, SETTLE_QUIET_MS } from './sync-ledger.js';
 
 export interface VerifyFinding {
   sessionId: string;
@@ -142,7 +142,11 @@ export async function verifyAgainstServer(
     const row = ledger.get(s.prefixedId) ?? ledger.get(s.rawId);
     const cursor = row?.s ?? 0;
     const live = s.mtime >= now - LIVE_GRACE_MS;
-    const stranded = !live && !!row && cursor >= deps.fileSize(s.rawId);
+    // A session that took appends keeps the raw archive of its last full sync until it has been quiet for
+    // SETTLE_QUIET_MS; then one full sync brings the archive up to date. Until then the archive is
+    // behind by design, and the session settles by itself.
+    const awaitingSettle = !!row && fullCoveredOffset(row) < cursor && now - s.mtime < SETTLE_QUIET_MS;
+    const stranded = !live && !awaitingSettle && !!row && cursor >= deps.fileSize(s.rawId);
 
     const finding: VerifyFinding = {
       sessionId: s.rawId,

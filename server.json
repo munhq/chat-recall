@@ -6,12 +6,12 @@
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
   },
-  "version": "0.7.77",
+  "version": "0.7.78",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "chat-recall",
-      "version": "0.7.77",
+      "version": "0.7.78",
       "transport": {
         "type": "stdio"
       },
