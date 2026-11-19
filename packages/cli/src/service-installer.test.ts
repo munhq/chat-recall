@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { renderSystemdUnit, renderLaunchdPlist, renderWindowsTaskCommand, WATCH_HEAP_MB } from './service-installer.js';
+import { renderSystemdUnit, renderLaunchdPlist, renderWindowsTaskCommand, WATCH_HEAP_MB, WATCH_SEMI_SPACE_MB } from './service-installer.js';
 
 describe('service-installer renders', () => {
   const node = '/usr/local/bin/node';
@@ -10,7 +10,7 @@ describe('service-installer renders', () => {
     const unit = renderSystemdUnit(watchJs, node, logFile);
     // --expose-gc lets the daemon return the pages of a finished unit of work
     // (issue #16). The heap bound alone does not bound the cgroup peak.
-    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} --expose-gc ${watchJs}`);
+    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=${WATCH_HEAP_MB} --max-semi-space-size=${WATCH_SEMI_SPACE_MB} --expose-gc ${watchJs}`);
     // JOURNAL, not append:. A file redirected by systemd cannot be rotated by
     // anyone — systemd holds the fd, so the daemon renaming or truncating it
     // leaves systemd writing into a hole. It reached 45 MB on the maintainer's
@@ -105,6 +105,7 @@ describe('the Windows Scheduled Task command', () => {
     const task = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
     for (const rendered of [unit, plist, task]) {
       expect(rendered).toContain(`--max-old-space-size=${WATCH_HEAP_MB}`);
+      expect(rendered).toContain(`--max-semi-space-size=${WATCH_SEMI_SPACE_MB}`);
       expect(rendered).not.toContain('--max-old-space-size=1536');
     }
   });

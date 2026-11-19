@@ -32,7 +32,7 @@
  */
 
 import chokidar from 'chokidar';
-import { dirname, basename, join, resolve, sep } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
 import {
@@ -58,6 +58,7 @@ import { runAutoUpdate, stopAutoUpdates } from '../src/auto-update.js';
 import { orderByStaleness, noteIndexed, pruneCursor, readCursor, workspaceFingerprint, isUnchangedSinceIndexed } from '../src/code-index-cursor.js';
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { daemonLog } from '../src/daemon-log.js';
+import { sessionWatchIgnored } from '../src/session-watch-ignore.js';
 import { record, flush } from '../src/telemetry.js';
 import { codeFingerprint, checkSelfRestart, EXIT_CODE_CODE_CHANGED } from '../src/self-restart.js';
 import { rotateLogIfLarge } from '../src/log-rotate.js';
@@ -66,7 +67,7 @@ import { runCollectorMigration } from '../src/collector-migrate.js';
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-import { existsSync, readFileSync, statSync, type Stats } from 'fs';
+import { existsSync, readFileSync, type Stats } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
 import { readCollectorHealth, writeCollectorHealth, updateCollectorHealth, collectorHealthPath, crashesAtBoot, recentCrashes, markCleanExit, CRASHLOOP_RESTARTS, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
@@ -370,16 +371,7 @@ const WATCH_WINDOW_MS = Math.max(1, Number(process.env.CHAT_RECALL_WATCH_WINDOW_
 // holds no event for it.
 const CLAUDE_SESSION_ROOTS = claudeProjectDirs();
 const sessionWatcher = watchWithFallback('sessions', CLAUDE_SESSION_ROOTS.map((root) => `${root}/**/*.jsonl`), {
-  ignored: (p: string, stats?: Stats) => {
-    if (/agent-/.test(p) || /^\./.test(basename(p))) return true;
-    // stats is absent for some entries during the initial scan; stat then, so
-    // the decision is never "unknown means watch it".
-    const st = stats ?? statSync(p, { throwIfNoEntry: false });
-    // NEVER prune a directory: returning true stops chokidar descending, and a
-    // new session inside it would then be invisible until the next heartbeat.
-    if (!st || st.isDirectory()) return false;
-    return st.mtimeMs < Date.now() - WATCH_WINDOW_MS;
-  },
+  ignored: sessionWatchIgnored(CLAUDE_SESSION_ROOTS, WATCH_WINDOW_MS),
   interval: 5000,
 });
 
