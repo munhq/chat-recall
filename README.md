@@ -9,7 +9,7 @@
 [![Install in Cursor](https://img.shields.io/badge/Install-Cursor-000?logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=chat-recall&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIi1wIiwiY2hhdC1yZWNhbGwiLCJjaGF0LXJlY2FsbC1tY3AiXX0=)
 [![Install in VS Code](https://img.shields.io/badge/Install-VS%20Code-007ACC?logo=visualstudiocode)](vscode:mcp/install?%7B%22name%22%3A%22chat-recall%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22chat-recall%22%2C%22chat-recall-mcp%22%5D%7D)
 
-**[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/)
+**[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/) · [Docs](https://chatrecall.dev/docs)
 
 > Turn what your AI coding tools already write into shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks.
 
